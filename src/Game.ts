@@ -242,6 +242,9 @@ export class Game {
   private replayPaused = false;
   private replaySpeed = 1;
   private replayScrubbing = false;
+  /** Smooth follow target/pos while replaying (player marble framing). */
+  private readonly _replayLook = new THREE.Vector3();
+  private readonly _replayCamDesired = new THREE.Vector3();
 
   private els: {
     btnDrop: HTMLButtonElement;
@@ -589,7 +592,7 @@ export class Game {
     });
     const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
     edgeRing.rotation.x = -Math.PI / 2;
-    edgeRing.position.y = PLAY_SURFACE_Y + 0.0015;
+    edgeRing.position.y = PLAY_SURFACE_Y + 0.0006;
     edgeRing.renderOrder = 3;
     this.scene.add(edgeRing);
 
@@ -609,7 +612,7 @@ export class Game {
     });
     this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
     this.circleMesh.rotation.x = -Math.PI / 2;
-    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.002;
+    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.0009;
     this.circleMesh.renderOrder = 4;
     this.scene.add(this.circleMesh);
 
@@ -623,7 +626,7 @@ export class Game {
     });
     const fill = new THREE.Mesh(fillGeo, fillMat);
     fill.rotation.x = -Math.PI / 2;
-    fill.position.y = PLAY_SURFACE_Y + 0.0012;
+    fill.position.y = PLAY_SURFACE_Y + 0.0004;
     fill.renderOrder = 2;
     this.scene.add(fill);
 
@@ -743,6 +746,7 @@ export class Game {
       this.replayIndex = Math.max(0, Math.min(max, Math.round(t * max)));
       this.replayAcc = 0;
       this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+      this.updateReplayCamera(0, true);
     });
     const endScrub = () => {
       this.replayScrubbing = false;
@@ -972,22 +976,24 @@ export class Game {
   /** Snap body Y onto the play surface, clear bad velocities / penetration. */
   private snapMarblePhysics(m: MarbleEntity, hardStop: boolean): void {
     const p = m.body.position;
-    const minY = MARBLE_REST_Y;
+    const restY = MARBLE_REST_Y;
     const maxY = PLAY_SURFACE_Y + MARBLE_RADIUS * 4;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
-      p.set(0, minY, 0);
-    }
-    // Sit on dirt pad: center = surface + radius (no intersection with dirt disk)
-    if (p.y < minY || p.y > maxY) {
-      p.y = minY;
+      p.set(0, restY, 0);
     }
     if (hardStop) {
+      // Freeze flush on dirt: center = surface + radius (contact, no gap)
+      p.y = restY;
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
     } else {
-      // Kill downward penetration velocity that leaves mesh half-buried
-      if (m.body.velocity.y < 0) m.body.velocity.y = 0;
-      if (p.y < PLAY_SURFACE_Y + MARBLE_RADIUS) p.y = minY;
+      // Anti-sink / flyaway only — do not lift resting marbles above contact
+      if (p.y < restY || p.y > maxY) {
+        p.y = restY;
+      }
+      if (m.body.velocity.y < 0 && p.y <= restY + 1e-4) {
+        m.body.velocity.y = 0;
+      }
     }
     m.body.wakeUp();
     if (hardStop) m.body.sleep();
@@ -1957,9 +1963,9 @@ private spawnShootersInitial(): void {
 
     this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
-    // Free camera during replay — user can orbit/pinch while scrubbing
-    this.controls.enabled = true;
-    this.controls.enableDamping = true;
+    // Follow player marble for the whole replay (scrub/speed still work)
+    this.controls.enabled = false;
+    this.controls.enableDamping = false;
     this.canPlayerShoot = false;
     this.disarmPlayerIdleHint();
     this.hideLocationBanner();
@@ -1979,13 +1985,19 @@ private spawnShootersInitial(): void {
     this.syncReplayPlayButton();
     this.setPhase('replay');
     this.els.instructions.textContent =
-      'Repetición: órbita libre · pellizca zoom · usa la barra para pausar/rebobinar';
+      'Repetición: cámara sigue tu canica · usa la barra / velocidad para scrub';
+    // Seed framing on first frame immediately
+    if (this.replayPlaying[0]) {
+      this.playReplayFrame(this.replayPlaying[0]);
+      this.updateReplayCamera(0, true);
+    }
   }
 
   private finishReplay(): void {
     this.replayPlaying = [];
     this.recording = true;
     this.controls.enabled = true;
+    this.controls.enableDamping = true;
     this.els.replayControls.classList.add('hidden');
     this.replayPaused = false;
     this.replayScrubbing = false;
@@ -2067,7 +2079,7 @@ private spawnShootersInitial(): void {
     if (this.aiMarble && frame.ai) {
       this.applySnapToMesh(this.aiMarble, frame.ai);
     }
-    // Camera is NOT restored from the frame — free orbit/zoom while replaying.
+    // Camera follows the player marble continuously (see updateReplayCamera).
     this.playerScore = frame.playerScore;
     this.aiScore = frame.aiScore;
     this.turn = frame.turn;
@@ -2651,9 +2663,8 @@ private spawnShootersInitial(): void {
           }
         }
       }
-      if (!this.camEase?.active) {
-        this.controls.update();
-      }
+      // Continuous smooth follow of the player's marble (scrub snaps instantly)
+      this.updateReplayCamera(dt, this.replayScrubbing);
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -2813,11 +2824,81 @@ private spawnShootersInitial(): void {
     this.particles.setHudTarget(v.x, v.y, v.z);
   }
 
+  /**
+   * Keep the replay camera focused on the player's marble (near screen center).
+   * Smooth lerp during playback; instant snap while scrubbing.
+   */
+  private updateReplayCamera(dt: number, instant = false): void {
+    let tx = 0;
+    let ty = MARBLE_REST_Y;
+    let tz = 0;
+    let have = false;
+
+    const mesh = this.playerMarble?.mesh;
+    if (mesh && mesh.visible) {
+      tx = mesh.position.x;
+      ty = mesh.position.y;
+      tz = mesh.position.z;
+      have = Number.isFinite(tx) && Number.isFinite(tz);
+    }
+    if (!have) {
+      const frame = this.replayPlaying[this.replayIndex];
+      const s = frame?.player;
+      if (s && s.visible) {
+        tx = s.x;
+        ty = s.y;
+        tz = s.z;
+        have = Number.isFinite(tx) && Number.isFinite(tz);
+      }
+    }
+    if (!have) {
+      // Fallback: keep looking near the play circle center
+      tx = this.controls.target.x;
+      ty = Math.max(MARBLE_REST_Y, this.controls.target.y);
+      tz = this.controls.target.z;
+    }
+
+    const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(ty) ? ty : MARBLE_REST_Y);
+    this._replayLook.set(tx, lookY, tz);
+
+    const portrait = window.innerHeight > window.innerWidth;
+    let dirX = tx;
+    let dirZ = tz;
+    const radial = Math.hypot(dirX, dirZ);
+    if (radial < 1e-4) {
+      dirX = Math.sin(this.defaultCamAzimuth);
+      dirZ = Math.cos(this.defaultCamAzimuth);
+    } else {
+      dirX /= radial;
+      dirZ /= radial;
+    }
+
+    const back = portrait ? 0.24 : 0.3;
+    const up = portrait ? 0.12 : 0.15;
+    this._replayCamDesired.set(
+      tx + dirX * back,
+      lookY + up,
+      tz + dirZ * back,
+    );
+
+    const k = instant ? 1 : 1 - Math.exp(-10 * Math.max(0, dt));
+    this.controls.target.lerp(this._replayLook, k);
+    this.camera.position.lerp(this._replayCamDesired, k);
+    if (
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.controls.target.x)
+    ) {
+      this.camera.position.copy(this._replayCamDesired);
+      this.controls.target.copy(this._replayLook);
+    }
+    this.camera.lookAt(this.controls.target);
+  }
+
   private syncReplayPlayButton(): void {
     this.els.replayBtnPlay.textContent = this.replayPaused ? '▶' : '⏸';
     this.els.replayBanner.textContent = this.replayPaused
-      ? '⏸ Repetición (pausa) — órbita libre'
-      : '▶ Repetición — órbita libre';
+      ? '⏸ Repetición (pausa) — siguiendo tu canica'
+      : '▶ Repetición — siguiendo tu canica';
   }
 
   private toggleReplayPlay(): void {
@@ -2839,6 +2920,7 @@ private spawnShootersInitial(): void {
     );
     this.replayAcc = 0;
     this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+    this.updateReplayCamera(0, true);
     this.syncReplayPlayButton();
   }
 
@@ -2848,6 +2930,7 @@ private spawnShootersInitial(): void {
     this.replayIndex = 0;
     this.replayAcc = 0;
     this.playReplayFrame(this.replayPlaying[0]!);
+    this.updateReplayCamera(0, true);
     this.syncReplayPlayButton();
   }
 

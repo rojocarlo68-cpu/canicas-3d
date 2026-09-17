@@ -69,7 +69,7 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
   patches.receiveShadow = true;
   root.add(patches);
 
-  // --- Dirt / sand play patch: solid disk raised above grass/ground ---
+  // --- Dirt / sand play patch: thin cylinder, TOP face = PLAY_SURFACE_Y ---
   const dirtMat = new THREE.MeshStandardMaterial({
     color: '#8b6239',
     roughness: 0.98,
@@ -78,12 +78,13 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -2,
   });
+  const dirtThickness = 0.003;
   const dirtPad = new THREE.Mesh(
-    new THREE.CircleGeometry(dirtOuter, 64),
+    new THREE.CylinderGeometry(dirtOuter, dirtOuter, dirtThickness, 64),
     dirtMat,
   );
-  dirtPad.rotation.x = -Math.PI / 2;
-  dirtPad.position.y = PLAY_SURFACE_Y;
+  // Cylinder is Y-up; center so the top face sits exactly at the play surface
+  dirtPad.position.y = PLAY_SURFACE_Y - dirtThickness * 0.5;
   dirtPad.renderOrder = 1;
   dirtPad.receiveShadow = true;
   root.add(dirtPad);
@@ -103,7 +104,7 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
     }),
   );
   soilRing.rotation.x = -Math.PI / 2;
-  soilRing.position.y = PLAY_SURFACE_Y + 0.0005;
+  soilRing.position.y = PLAY_SURFACE_Y + 0.0002;
   soilRing.renderOrder = 2;
   root.add(soilRing);
 
