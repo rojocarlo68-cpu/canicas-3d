@@ -108,7 +108,6 @@ export class Game {
   private charging = false;
   private chargePointerY = 0;
   private power = 0;
-  private aimYaw = 0;
 
   private groundMat!: CANNON.Material;
   private boundaryMat!: CANNON.Material;
@@ -914,7 +913,6 @@ private spawnShootersInitial(): void {
     this.world.addBody(ai.body);
     this.aiMarble = ai;
 
-    this.aimYaw = 0;
   }
 
   private getActiveShooter(): MarbleEntity | null {
@@ -935,7 +933,6 @@ private spawnShootersInitial(): void {
     shooter.body.angularVelocity.setZero();
     shooter.body.type = CANNON.Body.KINEMATIC;
     this.scoringEnabled = false;
-    this.aimYaw = 0;
     this.snapMarblePhysics(shooter, true);
     this.syncOneMesh(shooter);
 
@@ -1108,10 +1105,8 @@ private spawnShootersInitial(): void {
 
   private onShootPointerMove(e: PointerEvent): void {
     if (!this.charging || !this.playerMarble) return;
-    // Horizontal drag → yaw offset AND orbit camera around shooter so aim matches view
+    // Horizontal drag → orbit camera around shooter (aim = camera forward; no extra yaw)
     const dx = e.movementX || 0;
-    this.aimYaw += dx * 0.01;
-    this.aimYaw = Math.max(-1.1, Math.min(1.1, this.aimYaw));
     if (dx !== 0) this.orbitAimCamera(dx * 0.01);
     // Vertical drag → power (up increases, down decreases)
     const dy = e.movementY !== 0 ? e.movementY : e.clientY - this.chargePointerY;
@@ -1145,7 +1140,7 @@ private spawnShootersInitial(): void {
     this.els.powerPct.textContent = '';
 
     if (!this.playerMarble) return;
-    const { dirX, dirZ } = this.getCameraAimDirection(this.aimYaw);
+    const { dirX, dirZ } = this.getCameraAimDirection(0);
     this.startThrow('player', dirX, dirZ, power01);
   }
 
