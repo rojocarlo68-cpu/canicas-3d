@@ -32,13 +32,21 @@ import {
   SLOWMO_IMPACT_THRESHOLD,
   KNOCKOUT_PUNCH_IN,
   KNOCKOUT_PUNCH_HOLD,
-  KNOCKOUT_PUNCH_OUT,
   KNOCKOUT_PUNCH_ZOOM,
+  AI_DIRECTOR_MIN_CUT,
   MARBLE_PICK_TOLERANCE,
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
   PLAYER_IDLE_HINT_SEC,
 } from './constants';
+import {
+  pickDirectorSubject,
+  framingForDirectorMode,
+  nextDirectorMode,
+  directorModeDuration,
+  directorBlendDuration,
+  type DirectorMode,
+} from './cameraDirector';
 import {
   createAIDesign,
   createFieldDesigns,
@@ -215,18 +223,16 @@ export class Game {
   private readonly _slowMoCamOffset = new THREE.Vector3();
   /**
    * Celebratory knockout punch-in: ease toward the exiting marble, hold a beat,
-   * then ease back to the current turn shooter. Owns the camera while active.
+   * then release — no mandatory ease-back to the player/shooter marble.
+   * Owns the camera while active.
    */
   private knockoutPunch: {
     active: boolean;
-    phase: 'in' | 'hold' | 'out';
+    phase: 'in' | 'hold';
     t: number;
     inDur: number;
     holdDur: number;
-    outDur: number;
     follow: MarbleEntity | null;
-    homePos: THREE.Vector3;
-    homeTarget: THREE.Vector3;
     fromPos: THREE.Vector3;
     fromTarget: THREE.Vector3;
     offsetDir: THREE.Vector3;
@@ -238,11 +244,37 @@ export class Game {
   private readonly _aimFwd = new THREE.Vector3();
   private readonly _aimRight = new THREE.Vector3();
 
+  /**
+   * AI-turn TV director camera. Picks a subject (active AI shooter or hottest
+   * action) and cycles dramatic but stable angles while the AI shot is live.
+   */
+  private aiDirector: {
+    active: boolean;
+    mode: DirectorMode;
+    modeT: number;
+    modeDur: number;
+    blendT: number;
+    blendDur: number;
+    blending: boolean;
+    hardCut: boolean;
+    subject: MarbleEntity | null;
+    impactHint: MarbleEntity | null;
+    impactUntil: number;
+    fromPos: THREE.Vector3;
+    toPos: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    toTarget: THREE.Vector3;
+    cutGate: number;
+  } | null = null;
+  private readonly _dirLook = new THREE.Vector3();
+
   // Replay transport
   private replayPaused = false;
   private replaySpeed = 1;
   private replayScrubbing = false;
-  /** Smooth follow target/pos while replaying (player marble framing). */
+  /** After first seed, replay keeps orbit/zoom; only the look target tracks the marble. */
+  private replayCamSeeded = false;
+  /** Smooth follow target while replaying (player marble = orbit target). */
   private readonly _replayLook = new THREE.Vector3();
   private readonly _replayCamDesired = new THREE.Vector3();
 
@@ -1051,6 +1083,9 @@ private spawnShootersInitial(): void {
     const shooter = this.getActiveShooter();
     if (!shooter) return;
 
+    // Player turn: classic aim cam. AI turn: establish hero, then TV director.
+    if (side === 'player') this.stopAIDirector();
+
     // Clamp shooter onto ground / finite coords before framing camera
     this.sanitizeShooterPose(shooter);
 
@@ -1201,7 +1236,7 @@ private spawnShootersInitial(): void {
 
   /** Subtle look-at nudge toward the player marble (skipped if already framed). */
   private nudgeCameraTowardPlayerMarble(): void {
-    if (!this.playerMarble || this.camEase?.active || this.knockoutPunch?.active) return;
+    if (!this.playerMarble || this.camEase?.active || this.knockoutPunch?.active || this.aiDirector?.active) return;
     const p = this.playerMarble.body.position;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) return;
 
@@ -1642,7 +1677,9 @@ private spawnShootersInitial(): void {
     }
     // Keep OrbitControls enabled during aim so a second finger can orbit;
     // never leave them disabled after cancel (unless a camera ease / punch owns them).
-    if (!this.camEase?.active && !this.knockoutPunch?.active) this.controls.enabled = true;
+    if (!this.camEase?.active && !this.knockoutPunch?.active && !this.aiDirector?.active) {
+      this.controls.enabled = true;
+    }
   }
 
   private onAimPointerDown(e: PointerEvent): void {
@@ -1907,6 +1944,7 @@ private spawnShootersInitial(): void {
     this.markerGroup.visible = false;
     this.camEase = null;
     this.clearKnockoutCamPunch(false);
+    this.stopAIDirector();
 
     const p = this.playerScore;
     const a = this.aiScore;
@@ -1945,6 +1983,7 @@ private spawnShootersInitial(): void {
     this.recording = true;
     this.camEase = null;
     this.clearKnockoutCamPunch(false);
+    this.stopAIDirector();
     this.throwPendingImpulse = null;
     this.particles?.clear();
     this.dirtCooldown.clear();
@@ -1963,9 +2002,11 @@ private spawnShootersInitial(): void {
 
     this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
-    // Follow player marble for the whole replay (scrub/speed still work)
-    this.controls.enabled = false;
-    this.controls.enableDamping = false;
+    // Follow player marble as orbit target; drag = orbit, pinch = zoom
+    this.controls.enabled = true;
+    this.controls.enableDamping = true;
+    this.replayCamSeeded = false;
+    this.stopAIDirector();
     this.canPlayerShoot = false;
     this.disarmPlayerIdleHint();
     this.hideLocationBanner();
@@ -1985,7 +2026,7 @@ private spawnShootersInitial(): void {
     this.syncReplayPlayButton();
     this.setPhase('replay');
     this.els.instructions.textContent =
-      'Repetición: cámara sigue tu canica · usa la barra / velocidad para scrub';
+      'Repetición: sigue tu canica · arrastra para orbitar · pellizca para zoom';
     // Seed framing on first frame immediately
     if (this.replayPlaying[0]) {
       this.playReplayFrame(this.replayPlaying[0]);
@@ -2131,6 +2172,7 @@ private spawnShootersInitial(): void {
 
     this.clearKnockoutCamPunch(true);
     this.exitSlowMo(true);
+    this.stopAIDirector();
     this.scoringEnabled = false;
 
     // Keep shooters where they stopped (dynamic → freeze for next turn)
@@ -2354,9 +2396,8 @@ private spawnShootersInitial(): void {
     ) {
       this.camEase.active = false;
       this.camEase = null;
-      this.controls.enableDamping = true;
       this.fitCameraToArena(true);
-      this.controls.enabled = true;
+      this.restoreControlsAfterCinematic();
       return;
     }
 
@@ -2368,10 +2409,9 @@ private spawnShootersInitial(): void {
       this.controls.target.copy(this.camEase.toTarget);
       this.camEase.active = false;
       this.camEase = null;
-      this.controls.enableDamping = true;
-      this.controls.enabled = true;
-      // Sync OrbitControls internal spherical from final pose
-      this.controls.update();
+      // AI turn → director takes over; player turn → free orbit / aim
+      this.restoreControlsAfterCinematic();
+      if (this.controls.enabled) this.controls.update();
     }
   }
 
@@ -2382,6 +2422,14 @@ private spawnShootersInitial(): void {
     if (this.knockoutPunch?.active) {
       this.timeScale = SLOWMO_SCALE;
       this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.45);
+      return;
+    }
+    // AI TV director owns framing — slow-mo time only + brief impact cut
+    if (this.shouldAIDirectorRun()) {
+      this.timeScale = SLOWMO_SCALE;
+      this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.55);
+      this.slowMoFollow = null;
+      this.aiDirectorRequestImpact(follow);
       return;
     }
     // Capture camera offset relative to follow target so we can keep framing it
@@ -2421,8 +2469,12 @@ private spawnShootersInitial(): void {
         this.syncOneMesh(m);
       }
     }
-    // Punch still owns orbit disable — don't re-enable under it
+    // Punch / AI director still own orbit disable — don't re-enable under them
     if (this.knockoutPunch?.active) return;
+    if (this.shouldAIDirectorRun()) {
+      this.controls.enabled = false;
+      return;
+    }
     if (this.phase === 'playing' || this.phase === 'ai_thinking' || this.phase === 'shot_flying') {
       this.controls.enabled = true;
       this.controls.enableDamping = true;
@@ -2451,53 +2503,11 @@ private spawnShootersInitial(): void {
   }
 
   /**
-   * Celebratory punch-in toward a scoring knockout marble, then ease back to shooter.
-   * Multiple near-simultaneous exits retarget the most recent without stacking
-   * long interruptions. Skips while aiming so multitouch orbit stays free.
+   * Celebratory punch-in toward a scoring knockout marble, hold, then release
+   * in place (no ease-back to the shooter). Multiple near-simultaneous exits
+   * retarget the most recent. Skips while aiming so multitouch orbit stays free.
    */
-  /** Billiards-style framing behind a shooter (same as turn-start camera). */
-  private shooterCamFraming(shooter: MarbleEntity): {
-    pos: THREE.Vector3;
-    target: THREE.Vector3;
-  } | null {
-    const px = shooter.body.position.x;
-    const py = shooter.body.position.y;
-    const pz = shooter.body.position.z;
-    if (!Number.isFinite(px) || !Number.isFinite(pz)) return null;
-
-    const portrait = window.innerHeight > window.innerWidth;
-    let radial = Math.hypot(px, pz);
-    let dirX: number;
-    let dirZ: number;
-    if (radial < 1e-4) {
-      dirX = Math.sin(this.defaultCamAzimuth);
-      dirZ = Math.cos(this.defaultCamAzimuth);
-    } else {
-      dirX = px / radial;
-      dirZ = pz / radial;
-    }
-    const lookY = Number.isFinite(py) ? Math.max(MARBLE_RADIUS, py) : MARBLE_RADIUS;
-    const back = portrait ? 0.26 : 0.34;
-    const up = portrait ? 0.13 : 0.16;
-    return {
-      pos: new THREE.Vector3(px + dirX * back, up, pz + dirZ * back),
-      target: new THREE.Vector3(px, lookY, pz),
-    };
-  }
-
-  /** Point knockout punch return framing at the current turn shooter. */
-  private retargetPunchHomeToShooter(kp: { homePos: THREE.Vector3; homeTarget: THREE.Vector3 }): void {
-    const shooter =
-      this.getActiveShooter() ?? this.playerMarble ?? this.aiMarble;
-    if (!shooter) return;
-    const frame = this.shooterCamFraming(shooter);
-    if (!frame) return;
-    kp.homePos.copy(frame.pos);
-    kp.homeTarget.copy(frame.target);
-  }
-
   private startKnockoutCamPunch(follow: MarbleEntity): void {
-
     if (this.phase === 'replay') return;
     // Don't steal the view mid-aim / multitouch orbit gesture
     if (this.aiming) return;
@@ -2531,17 +2541,15 @@ private spawnShootersInitial(): void {
       kp.offsetDir.set(dx, dy, dz);
       kp.offsetLen = punchLen;
       kp.lastFollow.set(fp.x, lookY, fp.z);
-      // Retarget most recent; don't queue a fresh full beat
-      if (kp.phase === 'out') {
-        kp.phase = 'hold';
-        kp.t = 0;
-        kp.holdDur = Math.min(0.95, KNOCKOUT_PUNCH_HOLD);
+      // Retarget most recent; refresh hold beat without stacking a return ease
+      if (kp.phase === 'hold') {
+        kp.t = Math.min(kp.t, kp.holdDur * 0.35);
+      } else {
+        // Still easing in — keep in, just retarget
         kp.fromPos.copy(this.camera.position);
         kp.fromTarget.copy(this.controls.target);
-      } else if (kp.phase === 'hold') {
-        kp.t = Math.min(kp.t, kp.holdDur * 0.35);
+        kp.t = Math.min(kp.t, kp.inDur * 0.5);
       }
-      // Keep original home so we ease back to pre-first-knockout framing
     } else {
       this.camEase = null;
       this.controls.enabled = false;
@@ -2552,10 +2560,7 @@ private spawnShootersInitial(): void {
         t: 0,
         inDur: KNOCKOUT_PUNCH_IN,
         holdDur: KNOCKOUT_PUNCH_HOLD,
-        outDur: KNOCKOUT_PUNCH_OUT,
         follow,
-        homePos: this.camera.position.clone(),
-        homeTarget: this.controls.target.clone(),
         fromPos: this.camera.position.clone(),
         fromTarget: this.controls.target.clone(),
         offsetDir: new THREE.Vector3(dx, dy, dz),
@@ -2565,8 +2570,7 @@ private spawnShootersInitial(): void {
     }
 
     // Matching celebratory slow-mo (camera owned by punch)
-    const total =
-      KNOCKOUT_PUNCH_IN + KNOCKOUT_PUNCH_HOLD + KNOCKOUT_PUNCH_OUT + 0.05;
+    const total = KNOCKOUT_PUNCH_IN + KNOCKOUT_PUNCH_HOLD + 0.05;
     this.timeScale = SLOWMO_SCALE;
     this.slowMoTimer = Math.max(this.slowMoTimer, total);
     this.slowMoFollow = null;
@@ -2577,33 +2581,33 @@ private spawnShootersInitial(): void {
     this.knockoutPunch.active = false;
     this.knockoutPunch = null;
     if (restoreControls) {
-      if (
-        this.phase === 'playing' ||
-        this.phase === 'ai_thinking' ||
-        this.phase === 'shot_flying'
-      ) {
-        this.controls.enabled = true;
-        this.controls.enableDamping = true;
-        this.controls.update();
-      }
+      this.restoreControlsAfterCinematic();
     }
   }
 
-  private finishKnockoutCamPunch(): void {
-    const kp = this.knockoutPunch;
-    if (!kp) return;
-    this.camera.position.copy(kp.homePos);
-    this.controls.target.copy(kp.homeTarget);
-    this.knockoutPunch = null;
-    this.controls.enableDamping = true;
+  /** After punch/cinematic: AI director keeps ownership; else free orbit. */
+  private restoreControlsAfterCinematic(): void {
+    if (this.shouldAIDirectorRun()) {
+      this.controls.enabled = false;
+      this.controls.enableDamping = false;
+      return;
+    }
     if (
       this.phase === 'playing' ||
       this.phase === 'ai_thinking' ||
       this.phase === 'shot_flying'
     ) {
       this.controls.enabled = true;
+      this.controls.enableDamping = true;
       this.controls.update();
     }
+  }
+
+  /** End punch in place — leave framing on the exiting marble / current pose. */
+  private finishKnockoutCamPunch(): void {
+    if (!this.knockoutPunch) return;
+    this.knockoutPunch = null;
+    this.restoreControlsAfterCinematic();
     // End punch-tied slow-mo if it was only for this beat
     if (this.slowMoFollow === null && this.slowMoTimer > 0) {
       this.exitSlowMo(true);
@@ -2647,24 +2651,11 @@ private spawnShootersInitial(): void {
         kp.phase = 'hold';
         kp.t = 0;
       }
-    } else if (kp.phase === 'hold') {
+    } else {
+      // Hold on the exiting marble, then release — no ease-back to shooter
       this.camera.position.copy(this._punchPos);
       this.controls.target.copy(this._punchTarget);
       if (kp.t >= kp.holdDur) {
-        kp.phase = 'out';
-        kp.t = 0;
-        kp.fromPos.copy(this.camera.position);
-        kp.fromTarget.copy(this.controls.target);
-        // Ease back onto the current turn's shooter (player during aftermath; AI when theirs)
-        this.retargetPunchHomeToShooter(kp);
-      }
-    } else {
-      // Keep return framing on the live shooter so we never strand on the knockout
-      this.retargetPunchHomeToShooter(kp);
-      const e = smooth(kp.t / Math.max(1e-6, kp.outDur));
-      this.camera.position.lerpVectors(kp.fromPos, kp.homePos, e);
-      this.controls.target.lerpVectors(kp.fromTarget, kp.homeTarget, e);
-      if (kp.t >= kp.outDur) {
         this.finishKnockoutCamPunch();
         return;
       }
@@ -2679,6 +2670,180 @@ private spawnShootersInitial(): void {
       return;
     }
     this.camera.lookAt(this.controls.target);
+  }
+
+  // ─── AI TV director camera ───────────────────────────────────────────
+
+  private shouldAIDirectorRun(): boolean {
+    return (
+      this.turn === 'ai' &&
+      (this.phase === 'ai_thinking' || this.phase === 'shot_flying')
+    );
+  }
+
+  private stopAIDirector(): void {
+    if (!this.aiDirector) return;
+    this.aiDirector.active = false;
+    this.aiDirector = null;
+  }
+
+  private ensureAIDirector(): void {
+    if (this.aiDirector?.active) return;
+    this.aiDirector = {
+      active: true,
+      mode: 'hero',
+      modeT: 0,
+      modeDur: directorModeDuration('hero', 'thinking'),
+      blendT: 0,
+      blendDur: 0.45,
+      blending: true,
+      hardCut: false,
+      subject: this.aiMarble,
+      impactHint: null,
+      impactUntil: 0,
+      fromPos: this.camera.position.clone(),
+      toPos: this.camera.position.clone(),
+      fromTarget: this.controls.target.clone(),
+      toTarget: this.controls.target.clone(),
+      cutGate: 0,
+    };
+    this.controls.enabled = false;
+    this.controls.enableDamping = false;
+    // Blend from current pose into the first director shot (no hard pop)
+    this.refreshAIDirectorFraming(false);
+  }
+
+  private aiDirectorRequestImpact(follow: MarbleEntity): void {
+    if (!this.shouldAIDirectorRun()) return;
+    this.ensureAIDirector();
+    const d = this.aiDirector!;
+    d.impactHint = follow;
+    d.impactUntil = performance.now() + 700;
+    this.switchAIDirectorMode('impact', true);
+  }
+
+  private switchAIDirectorMode(mode: DirectorMode, hardCut: boolean): void {
+    const d = this.aiDirector;
+    if (!d) return;
+    d.mode = mode;
+    d.modeT = 0;
+    const phase = this.phase === 'ai_thinking' ? 'thinking' : 'action';
+    d.modeDur = directorModeDuration(mode, phase);
+    d.hardCut = hardCut;
+    d.blendDur = directorBlendDuration(mode, hardCut);
+    d.blendT = 0;
+    d.blending = true;
+    d.cutGate = AI_DIRECTOR_MIN_CUT;
+    d.fromPos.copy(this.camera.position);
+    d.fromTarget.copy(this.controls.target);
+    this.refreshAIDirectorFraming(false);
+  }
+
+  private refreshAIDirectorFraming(snap: boolean): void {
+    const d = this.aiDirector;
+    if (!d) return;
+    const portrait = window.innerHeight > window.innerWidth;
+    const shooters: MarbleEntity[] = [];
+    if (this.aiMarble) shooters.push(this.aiMarble);
+    // Future: push every AI shooter; preferred = active turn's marble
+    const hint =
+      d.impactUntil > performance.now() ? d.impactHint : null;
+    const subject = pickDirectorSubject(
+      shooters,
+      this.fieldMarbles,
+      this.aiMarble,
+      hint,
+    );
+    d.subject = subject;
+    if (!subject) {
+      d.toTarget.set(0, MARBLE_REST_Y, 0);
+      d.toPos.set(0.35, 0.4, 0.45);
+      if (snap) {
+        this.camera.position.copy(d.toPos);
+        this.controls.target.copy(d.toTarget);
+      }
+      return;
+    }
+    const frame = framingForDirectorMode(
+      d.mode,
+      subject,
+      this.fieldMarbles,
+      this.defaultCamAzimuth,
+      portrait,
+      this._dirLook,
+    );
+    d.toPos.copy(frame.pos);
+    d.toTarget.copy(frame.target);
+    if (snap) {
+      this.camera.position.copy(d.toPos);
+      this.controls.target.copy(d.toTarget);
+      d.blending = false;
+    }
+  }
+
+  private updateAIDirector(dt: number): void {
+    if (!this.shouldAIDirectorRun()) {
+      this.stopAIDirector();
+      return;
+    }
+    // Yield while turn-start ease or knockout punch owns the lens
+    if (this.camEase?.active || this.knockoutPunch?.active) return;
+
+    this.ensureAIDirector();
+    const d = this.aiDirector!;
+    d.modeT += dt;
+    d.cutGate = Math.max(0, d.cutGate - dt);
+
+    const phase = this.phase === 'ai_thinking' ? 'thinking' : 'action';
+
+    // Continuously refresh chase targets so low_chase / side_track track motion
+    if (!d.blending && (d.mode === 'low_chase' || d.mode === 'side_track' || d.mode === 'impact')) {
+      this.refreshAIDirectorFraming(false);
+      const trackK = 1 - Math.exp(-5.5 * dt);
+      this.camera.position.lerp(d.toPos, trackK);
+      this.controls.target.lerp(d.toTarget, trackK);
+    } else if (d.blending) {
+      d.blendT += dt;
+      const u = Math.min(1, d.blendT / Math.max(1e-6, d.blendDur));
+      const e = d.hardCut ? u : u * u * (3 - 2 * u);
+      // Keep destination fresh while blending into chase modes
+      if (d.mode === 'low_chase' || d.mode === 'side_track' || d.mode === 'impact') {
+        this.refreshAIDirectorFraming(false);
+      }
+      this.camera.position.lerpVectors(d.fromPos, d.toPos, e);
+      this.controls.target.lerpVectors(d.fromTarget, d.toTarget, e);
+      if (u >= 1) {
+        d.blending = false;
+        this.camera.position.copy(d.toPos);
+        this.controls.target.copy(d.toTarget);
+      }
+    } else if (d.mode === 'high_wide' || d.mode === 'cluster' || d.mode === 'hero') {
+      // Soft drift toward refreshed framing
+      this.refreshAIDirectorFraming(false);
+      const k = 1 - Math.exp(-2.2 * dt);
+      this.camera.position.lerp(d.toPos, k);
+      this.controls.target.lerp(d.toTarget, k);
+    }
+
+    if (
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.controls.target.x)
+    ) {
+      this.stopAIDirector();
+      this.fitCameraToArena(true);
+      return;
+    }
+    this.camera.lookAt(this.controls.target);
+    this.controls.enabled = false;
+
+    // Advance shot vocabulary when the beat ends
+    if (d.modeT >= d.modeDur && d.cutGate <= 0 && !d.blending) {
+      const wantImpact = d.impactUntil > performance.now();
+      const next = nextDirectorMode(d.mode, phase, wantImpact && d.mode !== 'impact');
+      // Prefer smooth blends; hard cut into/out of impact only
+      const hard = next === 'impact' || d.mode === 'impact';
+      this.switchAIDirectorMode(next, hard);
+    }
   }
 
   private update(): void {
@@ -2720,6 +2885,7 @@ private spawnShootersInitial(): void {
     this.world.step(1 / 60, physDt, 4);
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
+    this.updateAIDirector(dt);
     this.processImpactFX();
     this.processDirtRollFX(dt);
     this.updateMoneyHudTarget();
@@ -2762,6 +2928,7 @@ private spawnShootersInitial(): void {
     ) {
       this.camEase = null;
       this.clearKnockoutCamPunch(false);
+      this.stopAIDirector();
       this.fitCameraToArena(true);
       this.controls.enabled = true;
     }
@@ -2775,9 +2942,13 @@ private spawnShootersInitial(): void {
       }
     }
 
-    // Do NOT call controls.update() while camEase / knockout punch is active —
+    // Do NOT call controls.update() while camEase / knockout punch / AI director is active —
     // OrbitControls damping/spherical rewrite would fight the lerp and could point at sky.
-    if (!this.camEase?.active && !this.knockoutPunch?.active) {
+    if (
+      !this.camEase?.active &&
+      !this.knockoutPunch?.active &&
+      !this.aiDirector?.active
+    ) {
       this.controls.update();
     }
     this.renderer.render(this.scene, this.camera);
@@ -2819,8 +2990,12 @@ private spawnShootersInitial(): void {
       this.camera.position.set(target.x + x, target.y + y, target.z + z);
       this.controls.target.copy(target);
       this.camEase = null;
-    } else if (!this.camEase?.active && !this.knockoutPunch?.active) {
-      // Soft-correct only when not mid turn-ease / knockout punch
+    } else if (
+      !this.camEase?.active &&
+      !this.knockoutPunch?.active &&
+      !this.aiDirector?.active
+    ) {
+      // Soft-correct only when not mid cinematic
       this.controls.target.lerp(target, 0.2);
     }
     this.controls.update();
@@ -2871,8 +3046,8 @@ private spawnShootersInitial(): void {
   }
 
   /**
-   * Keep the replay camera focused on the player's marble (near screen center).
-   * Smooth lerp during playback; instant snap while scrubbing.
+   * Replay camera: keep orbit target on the player's marble, preserve user
+   * orbit angle + pinch zoom (OrbitControls). Seed once behind the marble.
    */
   private updateReplayCamera(dt: number, instant = false): void {
     let tx = 0;
@@ -2898,7 +3073,6 @@ private spawnShootersInitial(): void {
       }
     }
     if (!have) {
-      // Fallback: keep looking near the play circle center
       tx = this.controls.target.x;
       ty = Math.max(MARBLE_REST_Y, this.controls.target.y);
       tz = this.controls.target.z;
@@ -2907,44 +3081,64 @@ private spawnShootersInitial(): void {
     const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(ty) ? ty : MARBLE_REST_Y);
     this._replayLook.set(tx, lookY, tz);
 
-    const portrait = window.innerHeight > window.innerWidth;
-    let dirX = tx;
-    let dirZ = tz;
-    const radial = Math.hypot(dirX, dirZ);
-    if (radial < 1e-4) {
-      dirX = Math.sin(this.defaultCamAzimuth);
-      dirZ = Math.cos(this.defaultCamAzimuth);
-    } else {
-      dirX /= radial;
-      dirZ /= radial;
+    // First frame / fresh replay: seed a readable behind-marble framing once
+    if (!this.replayCamSeeded) {
+      const portrait = window.innerHeight > window.innerWidth;
+      let dirX = tx;
+      let dirZ = tz;
+      const radial = Math.hypot(dirX, dirZ);
+      if (radial < 1e-4) {
+        dirX = Math.sin(this.defaultCamAzimuth);
+        dirZ = Math.cos(this.defaultCamAzimuth);
+      } else {
+        dirX /= radial;
+        dirZ /= radial;
+      }
+      const back = portrait ? 0.24 : 0.3;
+      const up = portrait ? 0.12 : 0.15;
+      this._replayCamDesired.set(tx + dirX * back, lookY + up, tz + dirZ * back);
+      this.controls.target.copy(this._replayLook);
+      this.camera.position.copy(this._replayCamDesired);
+      this.replayCamSeeded = true;
+      this.controls.enabled = true;
+      this.controls.enableDamping = true;
+      this.controls.update();
+      return;
     }
 
-    const back = portrait ? 0.24 : 0.3;
-    const up = portrait ? 0.12 : 0.15;
-    this._replayCamDesired.set(
-      tx + dirX * back,
-      lookY + up,
-      tz + dirZ * back,
-    );
+    // Track marble: move target (and camera by the same delta) so orbit/zoom stick
+    const prevX = this.controls.target.x;
+    const prevY = this.controls.target.y;
+    const prevZ = this.controls.target.z;
+    const k = instant ? 1 : 1 - Math.exp(-12 * Math.max(0, dt));
+    const nx = prevX + (this._replayLook.x - prevX) * k;
+    const ny = prevY + (this._replayLook.y - prevY) * k;
+    const nz = prevZ + (this._replayLook.z - prevZ) * k;
+    const dx = nx - prevX;
+    const dy = ny - prevY;
+    const dz = nz - prevZ;
+    this.controls.target.set(nx, ny, nz);
+    this.camera.position.x += dx;
+    this.camera.position.y += dy;
+    this.camera.position.z += dz;
 
-    const k = instant ? 1 : 1 - Math.exp(-10 * Math.max(0, dt));
-    this.controls.target.lerp(this._replayLook, k);
-    this.camera.position.lerp(this._replayCamDesired, k);
     if (
       !Number.isFinite(this.camera.position.x) ||
       !Number.isFinite(this.controls.target.x)
     ) {
-      this.camera.position.copy(this._replayCamDesired);
       this.controls.target.copy(this._replayLook);
+      this.replayCamSeeded = false;
+      return;
     }
-    this.camera.lookAt(this.controls.target);
+    this.controls.enabled = true;
+    this.controls.update();
   }
 
   private syncReplayPlayButton(): void {
     this.els.replayBtnPlay.textContent = this.replayPaused ? '▶' : '⏸';
     this.els.replayBanner.textContent = this.replayPaused
-      ? '⏸ Repetición (pausa) — siguiendo tu canica'
-      : '▶ Repetición — siguiendo tu canica';
+      ? '⏸ Repetición (pausa) — órbita / zoom activos'
+      : '▶ Repetición — órbita / zoom activos';
   }
 
   private toggleReplayPlay(): void {

@@ -15,9 +15,10 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 8. **Multi-touch flick:** dedo en canica = apuntar; segundo dedo fuera = órbita (OrbitControls sigue activo; solo se captura el pointerId de mira).
 9. **Calibración de mira:** dirección del impulso = vector suelo canica→dedo (misma que la línea); `applyImpulse` en el COM (antes `body.position` torcía el tiro).
 10. **Empuje más ágil:** `PUSH_VELOCITY_GAIN` 1.45, `PUSH_MAX_SPEED` 2.25 m/s; velocidad por muestras recientes en plano suelo (pico + promedio).
-11. **Punch-in de cámara al sacar:** al contar un knockout, la cámara acerca más fuerte a esa canica (~2s, hold +1s) y luego vuelve al shooter del turno; varias salidas casi juntas retargetean la más reciente.
-12. **Repetición:** la cámara sigue la canica del jugador todo el tiempo (encuadre suave, canica cerca del centro); scrub/velocidad siguen disponibles.
-13. **Superficie:** física + dirt pad + `MARBLE_REST_Y` alineados (tiny bias) — las canicas reposan al ras del dirt sin flotar.
+11. **Punch-in de cámara al sacar:** al contar un knockout, la cámara acerca a esa canica (ease-in + hold) y **libera el encuadre ahí** — ya no vuelve obligatoriamente a la canica del jugador/shooter.
+12. **Cámara director en turno IA:** mientras la IA tira / hay movimiento, la cámara actúa como director de TV deportiva (low chase, high wide, side track, cluster, punch-ins en impactos); el sujeto es el tirador IA activo o la acción más caliente (preparado para varias IAs).
+13. **Repetición:** sigue la canica del jugador como *target* de órbita; **arrastra para orbitar** y **pellizca para zoom** de nuevo; scrub/velocidad siguen disponibles.
+14. **Superficie:** física + dirt pad + `MARBLE_REST_Y` alineados (tiny bias) — las canicas reposan al ras del dirt sin flotar.
 
 ## Stack
 
