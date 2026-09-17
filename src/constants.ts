@@ -28,8 +28,17 @@ export const POWER_DRAG_PX = 160;
 /** Out-of-circle when center is beyond circle + small margin */
 export const OUT_MARGIN = MARBLE_RADIUS * 0.25;
 
-/** Soft despawn distance (still on endless ground) */
-export const DESPAWN_DIST = CIRCLE_RADIUS * 4;
+/** Invisible physics boundary ~3 m outside the play circle */
+export const BOUNDARY_OFFSET = 3;
+export const BOUNDARY_RADIUS = CIRCLE_RADIUS + BOUNDARY_OFFSET; // ≈ 3.32 m
+export const BOUNDARY_WALL_HEIGHT = 0.45;
+export const BOUNDARY_WALL_THICKNESS = 0.1;
+export const BOUNDARY_SEGMENTS = 48;
+export const BOUNDARY_FRICTION = 0.35;
+export const BOUNDARY_RESTITUTION = 0.55;
+
+/** Soft despawn just beyond the invisible wall (tunneling safety net) */
+export const DESPAWN_DIST = BOUNDARY_RADIUS + 0.5;
 
 /** Replay ring buffer ~10 s at 60 fps */
 export const REPLAY_SECONDS = 10;

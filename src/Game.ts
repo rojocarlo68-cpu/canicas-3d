@@ -3,6 +3,12 @@ import * as CANNON from 'cannon-es';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import {
+  BOUNDARY_FRICTION,
+  BOUNDARY_RADIUS,
+  BOUNDARY_RESTITUTION,
+  BOUNDARY_SEGMENTS,
+  BOUNDARY_WALL_HEIGHT,
+  BOUNDARY_WALL_THICKNESS,
   CIRCLE_RADIUS,
   DROP_HEIGHT,
   FIELD_MARBLE_COUNT,
@@ -86,6 +92,7 @@ export class Game {
   private aimYaw = 0;
 
   private groundMat!: CANNON.Material;
+  private boundaryMat!: CANNON.Material;
 
   private throwPendingImpulse: {
     side: Side;
@@ -245,6 +252,16 @@ export class Game {
       new CANNON.ContactMaterial(marbleMat, marbleMat, {
         friction: 0.3,
         restitution: 0.45,
+      }),
+    );
+
+    this.boundaryMat = new CANNON.Material('boundary');
+    this.world.addContactMaterial(
+      new CANNON.ContactMaterial(this.boundaryMat, marbleMat, {
+        friction: BOUNDARY_FRICTION,
+        restitution: BOUNDARY_RESTITUTION,
+        contactEquationStiffness: 1e7,
+        contactEquationRelaxation: 3,
       }),
     );
 
@@ -436,6 +453,43 @@ export class Game {
 
     this.containerMesh.position.set(0, DROP_HEIGHT + 0.02, 0);
     this.scene.add(this.containerMesh);
+
+    this.buildInvisibleBoundary();
+  }
+
+  /**
+   * Invisible circular enclosure ~BOUNDARY_OFFSET m outside the play circle.
+   * Segmented static boxes (no render mesh) so marbles bounce back instead of drifting away.
+   */
+  private buildInvisibleBoundary(): void {
+    const halfH = BOUNDARY_WALL_HEIGHT / 2;
+    const halfT = BOUNDARY_WALL_THICKNESS / 2;
+    const innerR = BOUNDARY_RADIUS;
+    const centerR = innerR + halfT;
+    const chord =
+      2 * centerR * Math.tan(Math.PI / BOUNDARY_SEGMENTS) * 1.08; // slight overlap
+    const halfLen = chord / 2;
+
+    for (let i = 0; i < BOUNDARY_SEGMENTS; i++) {
+      const angle = (i / BOUNDARY_SEGMENTS) * Math.PI * 2;
+      const body = new CANNON.Body({
+        mass: 0,
+        type: CANNON.Body.STATIC,
+        material: this.boundaryMat,
+      });
+      body.addShape(
+        new CANNON.Box(new CANNON.Vec3(halfT, halfH, halfLen)),
+      );
+      body.position.set(
+        Math.cos(angle) * centerR,
+        halfH,
+        Math.sin(angle) * centerR,
+      );
+      // Face inward: box X is radial; rotate so +X points outward
+      body.quaternion.setFromEuler(0, -angle, 0);
+      this.world.addBody(body);
+    }
+
   }
 
   private bindUI(): void {
