@@ -1146,9 +1146,9 @@ private spawnShootersInitial(): void {
 
 
   /**
-   * Shot direction = camera look projected onto the ground plane, then yawed
-   * by aimYaw. When aimYaw is 0 (“straight”), impulse goes toward what is
-   * visually ahead (camera forward through the look-at / view center).
+   * Shot direction = camera look projected onto the ground plane.
+   * With the charge gesture orbiting the camera, a “straight” release sends
+   * the marble toward whatever is visually ahead (view center / look-at).
    */
   private getCameraAimDirection(yawOffset = 0): { dirX: number; dirZ: number } {
     this.camera.getWorldDirection(this._aimFwd);
