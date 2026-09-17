@@ -1,7 +1,8 @@
 /** Scale: 1 Three/Cannon unit = 1 meter */
 export const MARBLE_RADIUS = 0.008; // 1.6 cm diameter
 export const DROP_HEIGHT = 0.1; // 10 cm above ground
-export const CIRCLE_RADIUS = 0.16; // play circle on ground
+/** Play circle on ground (2× original 0.16) */
+export const CIRCLE_RADIUS = 0.32;
 export const GROUND_SIZE = 40; // very large so edge is not visible
 export const FIELD_MARBLE_COUNT = 10;
 export const GRAVITY = -9.81;
@@ -19,8 +20,8 @@ export const SETTLE_WAIT_MS = 900;
 export const SETTLE_MAX_MS = 6000;
 
 /** Shot power: impulse magnitude range */
-export const SHOT_MIN = 0.0008;
-export const SHOT_MAX = 0.0065;
+export const SHOT_MIN = 0.0012;
+export const SHOT_MAX = 0.0095;
 /** Vertical drag distance (px) from 0→1 power while holding shoot */
 export const POWER_DRAG_PX = 160;
 

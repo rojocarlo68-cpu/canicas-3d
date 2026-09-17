@@ -29,7 +29,6 @@ import {
   getMarbleCannonMaterial,
   type MarbleEntity,
 } from './marbles';
-import { StylizedHand } from './hands';
 import { planAIShot, impulseFromPower } from './ai';
 import {
   ReplayBuffer,
@@ -88,8 +87,6 @@ export class Game {
 
   private groundMat!: CANNON.Material;
 
-  private playerHand: StylizedHand;
-  private aiHand: StylizedHand;
   private throwPendingImpulse: {
     side: Side;
     dirX: number;
@@ -206,7 +203,7 @@ export class Game {
     this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x9ec8e6, 0.045);
+    this.scene.fog = new THREE.FogExp2(0x9ec8e6, 0.028);
 
     this.camera = new THREE.PerspectiveCamera(
       45,
@@ -219,8 +216,8 @@ export class Game {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.target.set(0, 0, 0);
-    this.controls.minDistance = 0.14;
-    this.controls.maxDistance = 2.5;
+    this.controls.minDistance = 0.2;
+    this.controls.maxDistance = 4.5;
     this.controls.maxPolarAngle = Math.PI * 0.49;
     this.controls.minPolarAngle = 0.12;
     this.controls.enablePan = false;
@@ -250,11 +247,6 @@ export class Game {
         restitution: 0.45,
       }),
     );
-
-    this.playerHand = new StylizedHand(true, 0xd4a574);
-    this.aiHand = new StylizedHand(false, 0xc68642);
-    this.scene.add(this.playerHand.group);
-    this.scene.add(this.aiHand.group);
 
     this.markerGroup = new THREE.Group();
     this.markerGroup.visible = false;
@@ -294,8 +286,6 @@ export class Game {
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
-    this.playerHand.dispose();
-    this.aiHand.dispose();
     window.removeEventListener('resize', this.boundOrient);
     window.removeEventListener('orientationchange', this.boundOrient);
   }
@@ -341,7 +331,7 @@ export class Game {
     this.sunLight.shadow.mapSize.set(2048, 2048);
     this.sunLight.shadow.camera.near = 0.05;
     this.sunLight.shadow.camera.far = 8;
-    const s = 1.2;
+    const s = 2.2;
     this.sunLight.shadow.camera.left = -s;
     this.sunLight.shadow.camera.right = s;
     this.sunLight.shadow.camera.top = s;
@@ -549,14 +539,14 @@ export class Game {
     this.els.endScreen.classList.add('hidden');
     this.replay.clear();
     this.recording = true;
-    this.playerHand.setPose('hidden');
-    this.aiHand.setPose('hidden');
+    this.camEase = null;
     this.setPhase('dropping');
 
     const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
     for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
       const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2;
-      const r = 0.012 + (i % 3) * 0.006;
+      // Cluster under hopper; scale lightly with circle so they spread on bounce
+      const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
       const y = DROP_HEIGHT + 0.01 + Math.floor(i / 5) * (MARBLE_RADIUS * 2.2);
@@ -616,7 +606,10 @@ export class Game {
       const dist = Math.hypot(dx, dz);
       if (dist > limit || m.body.position.y < 0) {
         const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2 + 0.2;
-        const r = Math.min(limit * 0.7, 0.02 + (i % 4) * 0.012);
+        const r = Math.min(
+          limit * 0.75,
+          CIRCLE_RADIUS * (0.18 + (i % 4) * 0.12),
+        );
         m.body.position.set(
           Math.cos(angle) * r,
           MARBLE_RADIUS + 0.0005,
@@ -673,6 +666,9 @@ export class Game {
     const shooter = this.getActiveShooter();
     if (!shooter) return;
 
+    // Clamp shooter onto ground / finite coords before framing camera
+    this.sanitizeShooterPose(shooter);
+
     // Freeze shooter until shot
     shooter.body.velocity.setZero();
     shooter.body.angularVelocity.setZero();
@@ -682,18 +678,12 @@ export class Game {
     this.easeCameraToward(shooter);
 
     if (side === 'player') {
-      this.playerHand.setPose('hold');
-      this.aiHand.setPose('hidden');
-      this.placeHandFor(this.playerHand, shooter, true);
       this.setPhase('playing');
       this.els.btnShoot.disabled = false;
       this.els.locationBanner.textContent = 'Tu canica está aquí';
       this.els.locationBanner.classList.remove('hidden', 'banner-ai');
       this.els.locationBanner.classList.add('banner-player');
     } else {
-      this.aiHand.setPose('hold');
-      this.playerHand.setPose('hidden');
-      this.placeHandFor(this.aiHand, shooter, false);
       this.els.btnShoot.disabled = true;
       this.els.locationBanner.textContent = 'Canica de la IA';
       this.els.locationBanner.classList.remove('hidden', 'banner-player');
@@ -706,6 +696,29 @@ export class Game {
     window.setTimeout(() => {
       this.els.locationBanner.classList.add('hidden');
     }, 2200);
+  }
+
+  /** Keep shooter body in a renderable, finite pose for camera framing. */
+  private sanitizeShooterPose(shooter: MarbleEntity): void {
+    const p = shooter.body.position;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+      const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+      const x = this.turn === 'player' ? sideDist : -sideDist;
+      p.set(x, MARBLE_RADIUS + 0.0005, 0);
+    }
+    if (p.y < MARBLE_RADIUS * 0.5 || p.y > 1) {
+      p.y = MARBLE_RADIUS + 0.0005;
+    }
+    // Soft clamp extreme flyaways so turn handoff stays on-arena
+    const horiz = Math.hypot(p.x, p.z);
+    const maxR = CIRCLE_RADIUS * 3.5;
+    if (horiz > maxR) {
+      const s = maxR / horiz;
+      p.x *= s;
+      p.z *= s;
+    }
+    shooter.body.velocity.setZero();
+    shooter.body.angularVelocity.setZero();
   }
 
   private showLocationMarker(shooter: MarbleEntity, side: Side): void {
@@ -722,47 +735,72 @@ export class Game {
     this.markerLife = 2.4;
   }
 
+  /**
+   * Frame active marble + play circle. Avoids OrbitControls fighting the lerp
+   * (root cause of blank/sky handoff after AI turns).
+   */
   private easeCameraToward(shooter: MarbleEntity): void {
     const px = shooter.body.position.x;
     const pz = shooter.body.position.z;
-    const look = new THREE.Vector3(px * 0.35, 0, pz * 0.35);
-    const offset = new THREE.Vector3(0.22, 0.18, 0.22);
-    // Keep similar orbit relative to look point
-    const toPos = look.clone().add(offset);
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) {
+      this.camEase = null;
+      this.fitCameraToArena(true);
+      return;
+    }
+
+    const portrait = window.innerHeight > window.innerWidth;
+    // Blend marble ↔ origin so the circle stays in view
+    const look = new THREE.Vector3(px * 0.42, 0, pz * 0.42);
+
+    let radial = Math.hypot(px, pz);
+    let dirX: number;
+    let dirZ: number;
+    if (radial < 1e-4) {
+      dirX = Math.sin(this.defaultCamAzimuth);
+      dirZ = Math.cos(this.defaultCamAzimuth);
+      radial = CIRCLE_RADIUS;
+    } else {
+      dirX = px / radial;
+      dirZ = pz / radial;
+    }
+
+    // Camera outside the marble, slightly off-axis, height scaled to circle
+    const back = CIRCLE_RADIUS * (portrait ? 1.55 : 1.3);
+    const side = CIRCLE_RADIUS * (portrait ? 0.55 : 0.45);
+    const up = CIRCLE_RADIUS * (portrait ? 1.15 : 0.95);
+    const toPos = new THREE.Vector3(
+      look.x + dirX * back + dirZ * side,
+      up,
+      look.z + dirZ * back - dirX * side,
+    );
+
+    // Guard against NaN / degenerate ease endpoints
+    if (
+      !Number.isFinite(toPos.x) ||
+      !Number.isFinite(toPos.y) ||
+      !Number.isFinite(toPos.z) ||
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.controls.target.x)
+    ) {
+      this.camEase = null;
+      this.camera.position.copy(toPos);
+      this.controls.target.copy(look);
+      this.controls.enabled = true;
+      this.controls.update();
+      return;
+    }
+
+    // Pause orbit while easing so damping/spherical state cannot yank the view
+    this.controls.enabled = false;
     this.camEase = {
       active: true,
       t: 0,
-      dur: 0.7,
+      dur: 0.65,
       fromPos: this.camera.position.clone(),
       toPos,
       fromTarget: this.controls.target.clone(),
       toTarget: look,
     };
-  }
-
-  private placeHandFor(
-    hand: StylizedHand,
-    shooter: MarbleEntity,
-    towardCenter: boolean,
-  ): void {
-    const p = new THREE.Vector3(
-      shooter.body.position.x,
-      shooter.body.position.y,
-      shooter.body.position.z,
-    );
-    let dx = -shooter.body.position.x;
-    let dz = -shooter.body.position.z;
-    if (!towardCenter && this.aiPlan) {
-      dx = this.aiPlan.dirX;
-      dz = this.aiPlan.dirZ;
-    } else if (towardCenter && this.charging) {
-      // aim already baked into marble pose when at rim; from anywhere aim to center + yaw
-      const base = Math.atan2(-shooter.body.position.z, -shooter.body.position.x);
-      const yaw = base + this.aimYaw;
-      dx = Math.cos(yaw);
-      dz = Math.sin(yaw);
-    }
-    hand.placeAt(p, dx, dz);
   }
 
   private syncPowerMeter(): void {
@@ -786,8 +824,6 @@ export class Game {
     this.els.powerWrap.classList.add('visible');
     this.syncPowerMeter();
     this.controls.enabled = false;
-    this.playerHand.setPose('charge');
-    this.playerHand.setCharge(this.power);
   }
 
   private onShootPointerMove(e: PointerEvent): void {
@@ -801,8 +837,6 @@ export class Game {
     this.chargePointerY = e.clientY;
     this.power = Math.max(0, Math.min(1, this.power - dy / POWER_DRAG_PX));
     this.syncPowerMeter();
-    this.playerHand.setCharge(this.power);
-    this.placeHandFor(this.playerHand, this.playerMarble, true);
   }
 
   private onShootPointerCancel(_e: PointerEvent): void {
@@ -814,7 +848,6 @@ export class Game {
     this.els.powerBar.style.width = '0%';
     this.els.powerPct.textContent = '';
     this.controls.enabled = true;
-    this.playerHand.setPose('hold');
   }
 
   private onShootPointerUp(e: PointerEvent): void {
@@ -851,14 +884,8 @@ export class Game {
     if (!shooter) return;
 
     this.throwPendingImpulse = { side, dirX, dirZ, power01 };
-    const hand = side === 'player' ? this.playerHand : this.aiHand;
-    hand.setPose('throw');
-    this.placeHandFor(hand, shooter, side === 'player');
-
-    // Apply impulse mid-flick for responsive feel (~90ms)
-    window.setTimeout(() => {
-      this.applyPendingImpulse();
-    }, 90);
+    // Apply immediately (no hand wind-up)
+    this.applyPendingImpulse();
 
     this.els.btnShoot.disabled = true;
     this.setPhase('shot_flying');
@@ -944,9 +971,8 @@ export class Game {
     this.charging = false;
     this.els.powerWrap.classList.add('hidden');
     this.controls.enabled = true;
-    this.playerHand.setPose('hidden');
-    this.aiHand.setPose('hidden');
     this.markerGroup.visible = false;
+    this.camEase = null;
 
     const p = this.playerScore;
     const a = this.aiScore;
@@ -978,8 +1004,6 @@ export class Game {
     this.els.powerWrap.classList.add('hidden');
     this.els.powerBar.style.width = '0%';
     this.controls.enabled = true;
-    this.playerHand.setPose('hidden');
-    this.aiHand.setPose('hidden');
     this.markerGroup.visible = false;
     this.recording = true;
     this.camEase = null;
@@ -1000,10 +1024,9 @@ export class Game {
     this.els.powerWrap.classList.add('hidden');
     this.controls.enabled = false;
     this.els.btnShoot.disabled = true;
-    this.playerHand.setPose('hidden');
-    this.aiHand.setPose('hidden');
     this.markerGroup.visible = false;
     this.recording = false;
+    this.camEase = null;
 
     this.replayPlaying = frames;
     this.replayIndex = 0;
@@ -1030,9 +1053,8 @@ export class Game {
     if (this.turn === 'player') {
       this.setPhase('playing');
       this.els.btnShoot.disabled = false;
-      this.playerHand.setPose('hold');
-      if (this.playerMarble) this.placeHandFor(this.playerHand, this.playerMarble, true);
       this.updateTurnHUD();
+      if (this.playerMarble) this.easeCameraToward(this.playerMarble);
     } else {
       this.beginTurn('ai');
     }
@@ -1094,9 +1116,18 @@ export class Game {
     if (this.aiMarble && frame.ai) {
       this.applySnapToMesh(this.aiMarble, frame.ai);
     }
-    this.camera.position.set(frame.camX, frame.camY, frame.camZ);
-    this.controls.target.set(frame.targetX, frame.targetY, frame.targetZ);
-    this.controls.update();
+    if (
+      Number.isFinite(frame.camX) &&
+      Number.isFinite(frame.camY) &&
+      Number.isFinite(frame.camZ) &&
+      Number.isFinite(frame.targetX) &&
+      Number.isFinite(frame.targetY) &&
+      Number.isFinite(frame.targetZ)
+    ) {
+      this.camera.position.set(frame.camX, frame.camY, frame.camZ);
+      this.controls.target.set(frame.targetX, frame.targetY, frame.targetZ);
+      this.controls.update();
+    }
     this.playerScore = frame.playerScore;
     this.aiScore = frame.aiScore;
     this.turn = frame.turn;
@@ -1148,9 +1179,16 @@ export class Game {
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
       m.body.type = CANNON.Body.KINEMATIC;
-      // Keep on ground
       if (m.body.position.y < MARBLE_RADIUS) {
         m.body.position.y = MARBLE_RADIUS + 0.0005;
+      }
+      if (
+        !Number.isFinite(m.body.position.x) ||
+        !Number.isFinite(m.body.position.z)
+      ) {
+        const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+        const x = m.owner === 'player' ? sideDist : -sideDist;
+        m.body.position.set(x, MARBLE_RADIUS + 0.0005, 0);
       }
     }
 
@@ -1163,14 +1201,10 @@ export class Game {
   private updateAI(dt: number): void {
     if (this.phase !== 'ai_thinking' || !this.aiMarble || !this.aiPlan) return;
 
-    // Charge visual
+    // Charge visual on power meter only
     const remain = this.aiThinkUntil - performance.now();
     const chargeT = Math.max(0, Math.min(1, 1 - remain / 900));
-    this.aiHand.setPose('charge');
-    this.aiHand.setCharge(chargeT * this.aiPlan.power01);
-    this.placeHandFor(this.aiHand, this.aiMarble, false);
 
-    // Show power bar for AI too (read-only feel)
     this.els.powerWrap.classList.remove('hidden');
     this.els.powerWrap.classList.add('visible');
     const pct = Math.round(chargeT * this.aiPlan.power01 * 100);
@@ -1212,7 +1246,34 @@ export class Game {
     const e = u * u * (3 - 2 * u);
     this.camera.position.lerpVectors(this.camEase.fromPos, this.camEase.toPos, e);
     this.controls.target.lerpVectors(this.camEase.fromTarget, this.camEase.toTarget, e);
-    if (u >= 1) this.camEase.active = false;
+
+    if (
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.camera.position.y) ||
+      !Number.isFinite(this.camera.position.z) ||
+      !Number.isFinite(this.controls.target.x) ||
+      !Number.isFinite(this.controls.target.y) ||
+      !Number.isFinite(this.controls.target.z)
+    ) {
+      this.camEase.active = false;
+      this.camEase = null;
+      this.fitCameraToArena(true);
+      this.controls.enabled = true;
+      return;
+    }
+
+    // Keep camera looking at target without OrbitControls overwriting the ease
+    this.camera.lookAt(this.controls.target);
+
+    if (u >= 1) {
+      this.camera.position.copy(this.camEase.toPos);
+      this.controls.target.copy(this.camEase.toTarget);
+      this.camEase.active = false;
+      this.camEase = null;
+      this.controls.enabled = true;
+      // Sync OrbitControls internal spherical from final pose
+      this.controls.update();
+    }
   }
 
   private update(): void {
@@ -1238,8 +1299,6 @@ export class Game {
 
     if (this.charging && this.playerMarble) {
       this.syncPowerMeter();
-      this.playerHand.setCharge(this.power);
-      this.placeHandFor(this.playerHand, this.playerMarble, true);
     }
 
     if (this.phase === 'settling') {
@@ -1270,24 +1329,19 @@ export class Game {
       this.updateScoreAndWin();
     }
 
-    // Hands
-    this.playerHand.update(dt);
-    this.aiHand.update(dt);
-
-    // Keep hold/charge hands tracking marble
-    if (
-      this.phase === 'playing' &&
-      this.turn === 'player' &&
-      this.playerMarble &&
-      this.playerHand.getPose() !== 'throw' &&
-      this.playerHand.getPose() !== 'hidden'
-    ) {
-      this.placeHandFor(this.playerHand, this.playerMarble, true);
-    }
-
     this.updateMarker(dt);
     this.updateCamEase(dt);
     this.syncMeshes();
+
+    // Recover if camera ever becomes invalid (blank/white handoff)
+    if (
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.controls.target.x)
+    ) {
+      this.camEase = null;
+      this.fitCameraToArena(true);
+      this.controls.enabled = true;
+    }
 
     if (this.recording && this.phase !== 'ready') {
       this.recordAcc += dt;
@@ -1298,9 +1352,9 @@ export class Game {
       }
     }
 
+    // Do NOT call controls.update() while camEase is active — OrbitControls
+    // damping/spherical rewrite would fight the lerp and could point at sky.
     if (!this.camEase?.active) {
-      this.controls.update();
-    } else {
       this.controls.update();
     }
     this.renderer.render(this.scene, this.camera);
@@ -1318,28 +1372,33 @@ export class Game {
     // Usable framing offsets in NDC-ish vertical bias
     const topHud = portrait ? 0.1 : 0.07;
     const bottomHud = portrait ? 0.14 : 0.1;
-    const usableCenterY = (bottomHud - topHud) * 0.5; // shift look slightly up in frame when bottom is heavier
+    const usableCenterY = (bottomHud - topHud) * 0.5;
 
     const baseFov = portrait ? 52 : 42;
     this.camera.fov = baseFov;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
 
-    // Desired orbit around origin; nudge target so circle appears centered
-    const target = new THREE.Vector3(0, usableCenterY * 0.08, portrait ? 0.01 : 0);
-    const dist = portrait ? 0.48 : 0.4;
+    // Orbit distance scales with play circle so 2× radius stays framed
+    const target = new THREE.Vector3(
+      0,
+      usableCenterY * CIRCLE_RADIUS * 0.25,
+      portrait ? CIRCLE_RADIUS * 0.03 : 0,
+    );
+    const dist = CIRCLE_RADIUS * (portrait ? 3.0 : 2.5);
     const polar = portrait ? 1.05 : 0.92;
     const az = this.defaultCamAzimuth;
 
     if (forcePos || this.phase === 'ready') {
       const x = Math.sin(az) * Math.sin(polar) * dist;
-      const y = Math.cos(polar) * dist + 0.02;
+      const y = Math.cos(polar) * dist + CIRCLE_RADIUS * 0.12;
       const z = Math.cos(az) * Math.sin(polar) * dist;
       this.camera.position.set(target.x + x, target.y + y, target.z + z);
       this.controls.target.copy(target);
-    } else {
-      // Soft-correct target toward arena center bias without yanking orbit
-      this.controls.target.lerp(target, 0.35);
+      this.camEase = null;
+    } else if (!this.camEase?.active) {
+      // Soft-correct only when not mid turn-ease
+      this.controls.target.lerp(target, 0.2);
     }
     this.controls.update();
     this.renderer.setSize(w, h, false);

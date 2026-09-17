@@ -8,7 +8,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 - [Three.js](https://threejs.org/) (render, OrbitControls, Sky)
 - [cannon-es](https://github.com/pmndrs/cannon-es) (física)
 
-**Escala:** `1` unidad = `1` metro. Radio de canica ≈ `0.008` m. Altura de soltado = **0.10 m** (10 cm).
+**Escala:** `1` unidad = `1` metro. Radio de canica ≈ `0.008` m. Círculo de juego = **0.32 m** (2×). Altura de soltado = **0.10 m** (10 cm).
 
 Despliegue GitHub Pages con `base: '/canicas-3d/'`.
 
@@ -39,9 +39,8 @@ npm run preview
    Controles de tiro desactivados en turno de la IA.
 4. **IA:** apunta a cúmulos o canicas cerca del borde; la dificultad sube con el **Nivel**.
 5. Marcador: canicas de campo sacadas del círculo por cada lado. Gana quien tenga más cuando no quede ninguna dentro.
-6. Al inicio de cada turno se marca la canica activa (anillo/flecha + aviso).
+6. Al inicio de cada turno se marca la canica activa (anillo/flecha + aviso) y la cámara encuadra la canica + círculo.
 7. **Repetición:** reproduce los últimos ~10 s de acción.
-8. Manos 3D estilizadas acompañan la carga y el lanzamiento (jugador e IA).
 
 ### Controles
 
@@ -64,7 +63,8 @@ npm run preview
 - Medidor de potencia grande y claro en móvil.
 - Indicador de ubicación de la canica activa.
 - Buffer de repetición (~10 s).
-- Manos 3D low-poly con animación de carga y tiro.
+- Círculo de juego ampliado (2×) sin manos 3D (tiro por mantén/arrastra/suelta).
+- Cámara estable en el cambio de turno IA → jugador.
 
 ## Limitaciones
 
