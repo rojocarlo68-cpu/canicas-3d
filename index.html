@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>Canicas 3D</title>
   </head>
@@ -15,24 +15,35 @@
         <div id="top-bar">
           <button id="btn-drop" type="button">Soltar canicas</button>
           <div id="score-panel">
-            <span id="score-label">Canicas fuera:</span>
-            <span id="score-value">0</span>
-            <span id="sep">/</span>
-            <span id="score-total">10</span>
+            <span class="score-side player">
+              <span class="score-name">Jugador</span>
+              <span id="score-player">0</span>
+            </span>
+            <span class="score-vs">vs</span>
+            <span class="score-side ai">
+              <span class="score-name">IA</span>
+              <span id="score-ai">0</span>
+            </span>
           </div>
+          <div id="meta-panel">
+            <span id="turn-label" class="turn-player">Turno: Jugador</span>
+            <span id="level-label">Nivel 1</span>
+          </div>
+          <button id="btn-replay" type="button" disabled title="Repetición de los últimos ~10 s">Repetición</button>
         </div>
 
-        <p id="instructions">Arrastra para orbitar · Pellizca/rueda para zoom · Mantén el botón de la canica para cargar y suelta para disparar</p>
+        <p id="instructions">Orbitar · Zoom · Mantén tu canica: desliza ↑↓ potencia, ↔ apunta; suelta para disparar</p>
 
         <div id="power-wrap" class="hidden">
           <div id="power-label">Potencia</div>
           <div id="power-bar-bg">
             <div id="power-bar"></div>
           </div>
+          <div id="power-pct"></div>
         </div>
 
         <div id="player-marble-ui">
-          <div id="player-marble-hint">Mantén para cargar</div>
+          <div id="player-marble-hint">↑↓ Potencia · suelta = tiro</div>
           <button id="btn-shoot" type="button" disabled aria-label="Disparar canica">
             <canvas id="player-preview" width="128" height="128"></canvas>
             <span id="shoot-label">Tu canica</span>
@@ -40,12 +51,18 @@
         </div>
       </div>
 
+      <div id="location-banner" class="hidden">Tu canica está aquí</div>
+      <div id="replay-banner" class="hidden">▶ Repetición</div>
+
       <div id="end-screen" class="hidden">
         <div id="end-card">
           <h1 id="end-title">¡Victoria!</h1>
           <p id="end-message"></p>
           <p id="end-score"></p>
-          <button id="btn-restart" type="button">Jugar de nuevo</button>
+          <div id="end-actions">
+            <button id="btn-restart" type="button">Jugar de nuevo</button>
+            <button id="btn-end-replay" type="button">Repetición</button>
+          </div>
         </div>
       </div>
 

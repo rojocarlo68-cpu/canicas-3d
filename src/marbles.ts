@@ -14,6 +14,8 @@ export type MarbleDesign = {
   material: THREE.MeshPhysicalMaterial;
 };
 
+export type MarbleOwner = 'field' | 'player' | 'ai';
+
 function canvasTexture(
   draw: (ctx: CanvasRenderingContext2D, size: number) => void,
   size = 128,
@@ -172,11 +174,35 @@ export function createPlayerDesign(): MarbleDesign {
   };
 }
 
+export function createAIDesign(): MarbleDesign {
+  return {
+    id: 'ia',
+    name: 'Canica IA',
+    material: patternedMat(
+      (ctx, s) => {
+        const g = ctx.createRadialGradient(s * 0.35, s * 0.35, 4, s / 2, s / 2, s * 0.55);
+        g.addColorStop(0, '#e3f2fd');
+        g.addColorStop(0.35, '#42a5f5');
+        g.addColorStop(0.7, '#1565c0');
+        g.addColorStop(1, '#0d47a1');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, s, s);
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.floor(s * 0.28)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('IA', s / 2, s / 2);
+      },
+      { roughness: 0.18, clearcoat: 1 },
+    ),
+  };
+}
+
 export type MarbleEntity = {
   mesh: THREE.Mesh;
   body: CANNON.Body;
   design: MarbleDesign;
-  isPlayer: boolean;
+  owner: MarbleOwner;
   active: boolean;
 };
 
@@ -189,7 +215,7 @@ export function getMarbleCannonMaterial(): CANNON.Material {
 export function createMarbleEntity(
   design: MarbleDesign,
   position: CANNON.Vec3,
-  isPlayer: boolean,
+  owner: MarbleOwner,
 ): MarbleEntity {
   const geo = new THREE.SphereGeometry(MARBLE_RADIUS, 32, 24);
   const mesh = new THREE.Mesh(geo, design.material.clone());
@@ -199,7 +225,7 @@ export function createMarbleEntity(
 
   const shape = new CANNON.Sphere(MARBLE_RADIUS);
   const body = new CANNON.Body({
-    mass: 0.0055, // ~5.5 g typical glass marble
+    mass: 0.0055,
     shape,
     position: position.clone(),
     material: marbleMaterial,
@@ -209,7 +235,7 @@ export function createMarbleEntity(
   body.material!.friction = MARBLE_FRICTION;
   body.material!.restitution = MARBLE_RESTITUTION;
 
-  return { mesh, body, design, isPlayer, active: true };
+  return { mesh, body, design, owner, active: true };
 }
 
 export function drawPreviewMarble(
@@ -242,7 +268,6 @@ export function drawPreviewMarble(
     ctx.fill();
   }
 
-  // Gloss highlight
   const hl = ctx.createRadialGradient(w * 0.35, h * 0.3, 1, w * 0.35, h * 0.3, w * 0.2);
   hl.addColorStop(0, 'rgba(255,255,255,0.75)');
   hl.addColorStop(1, 'rgba(255,255,255,0)');
@@ -251,7 +276,6 @@ export function drawPreviewMarble(
   ctx.arc(w * 0.35, h * 0.3, w * 0.18, 0, Math.PI * 2);
   ctx.fill();
 
-  // Rim
   ctx.strokeStyle = 'rgba(255,224,138,0.5)';
   ctx.lineWidth = 2;
   ctx.beginPath();
