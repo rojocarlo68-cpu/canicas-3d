@@ -3,6 +3,19 @@
 Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara táctil y repetición.
 
 
+
+## Escenas / niveles de mapa
+
+- **Nivel 1 (Parque):** `?level=1` — parque día/noche (ciclo 30 min).
+- **Nivel 2 (Campamento):** `?level=2` — desierto de noche con fogata, montañas y círculo imperfecto en arena.
+
+Ejemplos:
+
+- https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=1
+- https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=2
+
+También hay enlaces **Parque · Campamento** en la esquina de controles.
+
 ## Fixes (2026-09-17)
 
 1. **Cámara lenta:** follows the relevant marble for the whole slow-mo window; on exit, meshes snap to bodies and Y is corrected so marbles are not half-buried.

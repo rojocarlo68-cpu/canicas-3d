@@ -299,8 +299,12 @@ body {
 }
 
 #settle-banner {
-  top: 50%;
-  transform: translate(-50%, -50%);
+  /* High on screen so it does not cover the play circle / falling marbles */
+  top: max(72px, calc(env(safe-area-inset-top) + 58px));
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  font-size: clamp(12px, 2.8vw, 14px);
+  background: rgba(0, 0, 0, 0.55);
 }
 
 #location-banner {
@@ -583,4 +587,23 @@ body {
     gap: 4px;
     padding: 8px;
   }
+}
+
+
+#level-toggle {
+  font-size: 11px;
+  color: rgba(245, 230, 200, 0.75);
+  margin-top: 2px;
+}
+
+#level-toggle a {
+  color: rgba(144, 202, 249, 0.95);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+#level-toggle a:hover,
+#level-toggle a.active {
+  color: #ffe08a;
+  text-decoration: underline;
 }

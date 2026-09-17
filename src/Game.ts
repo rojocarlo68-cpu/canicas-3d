@@ -34,6 +34,7 @@ import {
   KNOCKOUT_PUNCH_HOLD,
   KNOCKOUT_PUNCH_ZOOM,
   AI_DIRECTOR_MIN_CUT,
+  AI_DIRECTOR_MAX_CUTS,
   MARBLE_PICK_TOLERANCE,
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
@@ -47,6 +48,13 @@ import {
   directorBlendDuration,
   type DirectorMode,
 } from './cameraDirector';
+import {
+  resolveSceneLevel,
+  sceneLevelLabel,
+  buildGameHref,
+  type SceneLevel,
+} from './levelSelect';
+import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
 import {
   createAIDesign,
   createFieldDesigns,
@@ -110,7 +118,10 @@ export class Game {
   private hemiLight!: THREE.HemisphereLight;
   private playFillLight!: THREE.PointLight;
   private streetLamps: StreetLamp[] = [];
-  private parkLife!: ParkLife;
+  private parkLife: ParkLife | null = null;
+  private desertCamp: DesertCampBuild | null = null;
+  /** Map / scene from URL (?level=1 park, ?level=2 desert camp). */
+  private sceneLevel: SceneLevel = resolveSceneLevel();
   private sunDir = new THREE.Vector3();
   /** Elapsed seconds for the 30-min day/night cycle (independent of match reset). */
   private dayNightTime = 0;
@@ -265,6 +276,8 @@ export class Game {
     fromTarget: THREE.Vector3;
     toTarget: THREE.Vector3;
     cutGate: number;
+    /** Shot changes after establish (cap ≈1 → max ~2 shots total). */
+    cutsUsed: number;
   } | null = null;
   private readonly _dirLook = new THREE.Vector3();
 
@@ -315,6 +328,8 @@ export class Game {
     moneyToast: HTMLElement;
     punchOverlay: HTMLElement;
     gameRoot: HTMLElement;
+    linkLevel1: HTMLAnchorElement | null;
+    linkLevel2: HTMLAnchorElement | null;
   };
 
   private playerDesign = createPlayerDesign();
@@ -366,6 +381,8 @@ export class Game {
       moneyToast: document.getElementById('money-toast')!,
       punchOverlay: document.getElementById('punch-overlay')!,
       gameRoot: document.getElementById('game-root')!,
+      linkLevel1: document.getElementById('link-level-1') as HTMLAnchorElement | null,
+      linkLevel2: document.getElementById('link-level-2') as HTMLAnchorElement | null,
     };
 
     this.rollOpponentName();
@@ -573,7 +590,7 @@ export class Game {
     // Base grass ground — keep center flat so displaced quads never poke through dirt
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
     const groundMat3 = new THREE.MeshStandardMaterial({
-      color: '#5a7a42',
+      color: this.sceneLevel === 2 ? '#c4a574' : '#5a7a42',
       roughness: 0.95,
       metalness: 0.0,
     });
@@ -611,56 +628,63 @@ export class Game {
     groundBody.position.y = PLAY_SURFACE_Y;
     this.world.addBody(groundBody);
 
-    // Dark under-edge so the scoring limit reads against dirt and grass
-    const edgeGeo = new THREE.RingGeometry(
-      CIRCLE_RADIUS - 0.012,
-      CIRCLE_RADIUS + 0.012,
-      96,
-    );
-    const edgeMat = new THREE.MeshBasicMaterial({
-      color: '#1a120c',
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
-    edgeRing.rotation.x = -Math.PI / 2;
-    edgeRing.position.y = PLAY_SURFACE_Y + 0.00045;
-    edgeRing.renderOrder = 3;
-    this.scene.add(edgeRing);
+    // Scoring ring visuals — park: chalk; desert: imperfect sand line from desertCamp
+    if (this.sceneLevel === 1) {
+      const edgeGeo = new THREE.RingGeometry(
+        CIRCLE_RADIUS - 0.012,
+        CIRCLE_RADIUS + 0.012,
+        96,
+      );
+      const edgeMat = new THREE.MeshBasicMaterial({
+        color: '#1a120c',
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
+      edgeRing.rotation.x = -Math.PI / 2;
+      edgeRing.position.y = PLAY_SURFACE_Y + 0.00045;
+      edgeRing.renderOrder = 3;
+      this.scene.add(edgeRing);
 
-    // High-contrast chalk scoring ring at CIRCLE_RADIUS (gameplay radius unchanged)
-    const ringGeo = new THREE.RingGeometry(
-      CIRCLE_RADIUS - 0.007,
-      CIRCLE_RADIUS + 0.007,
-      96,
-    );
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: '#fff8e7',
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
-    this.circleMesh.rotation.x = -Math.PI / 2;
-    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.0007;
-    this.circleMesh.renderOrder = 4;
-    this.scene.add(this.circleMesh);
+      const ringGeo = new THREE.RingGeometry(
+        CIRCLE_RADIUS - 0.007,
+        CIRCLE_RADIUS + 0.007,
+        96,
+      );
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#fff8e7',
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
+      this.circleMesh.rotation.x = -Math.PI / 2;
+      this.circleMesh.position.y = PLAY_SURFACE_Y + 0.0007;
+      this.circleMesh.renderOrder = 4;
+      this.scene.add(this.circleMesh);
 
-    const fillGeo = new THREE.CircleGeometry(CIRCLE_RADIUS - 0.008, 64);
-    const fillMat = new THREE.MeshBasicMaterial({
-      color: '#5c3d1e',
-      transparent: true,
-      opacity: 0.22,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const fill = new THREE.Mesh(fillGeo, fillMat);
-    fill.rotation.x = -Math.PI / 2;
-    fill.position.y = PLAY_SURFACE_Y + 0.00015;
-    fill.renderOrder = 2;
-    this.scene.add(fill);
+      const fillGeo = new THREE.CircleGeometry(CIRCLE_RADIUS - 0.008, 64);
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: '#5c3d1e',
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const fill = new THREE.Mesh(fillGeo, fillMat);
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.y = PLAY_SURFACE_Y + 0.00015;
+      fill.renderOrder = 2;
+      this.scene.add(fill);
+    } else {
+      // Placeholder so circleMesh exists; desertCamp draws the imperfect ring
+      this.circleMesh = new THREE.Mesh(
+        new THREE.RingGeometry(CIRCLE_RADIUS - 0.001, CIRCLE_RADIUS + 0.001, 8),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      );
+    }
 
     // Drop hopper
     this.containerMesh = new THREE.Group();
@@ -686,18 +710,30 @@ export class Game {
 
     this.buildInvisibleBoundary();
 
-    // Park scenery (grass, trees, paths, benches, faroles — no stadium)
-    const park = buildPark(this.scene);
-    this.streetLamps = park.lamps;
-
-    // Ambient park life (birds only — walkers removed)
-    this.parkLife = new ParkLife(this.scene);
-
     // Impact sparks + dirt dust + money bill FX
     this.particles = new ParticleFX(this.scene);
 
-    // Seed day/night from current elapsed (morning-ish start offset)
-    this.dayNightTime = DAY_CYCLE_SECONDS * 0.18; // late morning
+    if (this.sceneLevel === 2) {
+      // Night desert camp (mountains, sand, campfire) — same gameplay
+      this.desertCamp = buildDesertCamp(this.scene, this.groundMat);
+      for (const b of this.desertCamp.bumpBodies) {
+        this.world.addBody(b);
+      }
+      this.streetLamps = [];
+      this.parkLife = null;
+      // Start at night; full day cycle still 30 minutes
+      this.dayNightTime = DAY_CYCLE_SECONDS * 0.72;
+      // Dim generic play fill — campfire is the hero light
+      this.playFillLight.intensity = 0.12;
+      this.playFillLight.distance = 1.8;
+      this.playFillLight.color.setHex(0xffc080);
+    } else {
+      const park = buildPark(this.scene);
+      this.streetLamps = park.lamps;
+      this.parkLife = new ParkLife(this.scene);
+      this.desertCamp = null;
+      this.dayNightTime = DAY_CYCLE_SECONDS * 0.18; // late morning
+    }
     this.syncDayNight();
   }
 
@@ -714,6 +750,33 @@ export class Game {
       playFill: this.playFillLight,
       sunDir: this.sunDir,
     });
+    // Desert: warmer night fog + campfire carries night readability
+    if (this.sceneLevel === 2 && this.desertCamp) {
+      const phase =
+        (((this.dayNightTime % DAY_CYCLE_SECONDS) + DAY_CYCLE_SECONDS) %
+          DAY_CYCLE_SECONDS) /
+        DAY_CYCLE_SECONDS;
+      const elev = Math.sin(phase * Math.PI * 2);
+      const dayAmount = THREE.MathUtils.smoothstep(elev, -0.05, 0.35);
+      const nightAmount = 1 - dayAmount;
+      fog.color.lerp(new THREE.Color(0x1a1210), nightAmount * 0.55);
+      // Keep play fill modest; fire light is primary
+      this.playFillLight.intensity = 0.08 + nightAmount * 0.22;
+      this.desertCamp.fireLight.visible = true;
+      // Slightly boost fire at night, ease off in daytime
+      this.desertCamp.fireLight.distance = 5.5 + nightAmount * 1.5;
+    }
+  }
+
+  /** Night amount 0..1 for desert FX (stars / fire). */
+  private currentNightAmount(): number {
+    const phase =
+      (((this.dayNightTime % DAY_CYCLE_SECONDS) + DAY_CYCLE_SECONDS) %
+        DAY_CYCLE_SECONDS) /
+      DAY_CYCLE_SECONDS;
+    const elev = Math.sin(phase * Math.PI * 2);
+    const dayAmount = THREE.MathUtils.smoothstep(elev, -0.05, 0.35);
+    return 1 - dayAmount;
   }
 
   /**
@@ -804,7 +867,7 @@ export class Game {
     if (phase === 'ai_thinking') {
       this.els.settleBanner.textContent = `Turno de ${this.opponentName}…`;
     } else if (phase === 'settling') {
-      this.els.settleBanner.textContent = 'Canicas cayendo… se congelan a los 5 s';
+      this.els.settleBanner.textContent = 'Canicas cayendo…';
     }
 
     this.els.replayBanner.classList.toggle('hidden', phase !== 'replay');
@@ -818,7 +881,7 @@ export class Game {
       this.els.instructions.textContent =
         `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Modo ${controlModeLabel(this.controlMode)}.`;
     } else if (phase === 'settling') {
-      this.els.instructions.textContent = 'Espera 5 segundos: las canicas de campo se congelan donde queden.';
+      this.els.instructions.textContent = 'Las canicas caen y se acomodan…';
     } else if (phase === 'playing') {
       this.els.instructions.textContent =
         this.turn === 'player' ? modeHint : `Turno de ${this.opponentName}…`;
@@ -843,8 +906,16 @@ export class Game {
     this.els.linkPush.classList.toggle('active', this.controlMode === 'push');
     // Keep shareable relative links under the Pages base path
     const base = import.meta.env.BASE_URL || '/canicas-3d/';
-    this.els.linkFlick.href = `${base}?control=flick`;
-    this.els.linkPush.href = `${base}?control=push`;
+    this.els.linkFlick.href = buildGameHref('flick', this.sceneLevel, base);
+    this.els.linkPush.href = buildGameHref('push', this.sceneLevel, base);
+    if (this.els.linkLevel1) {
+      this.els.linkLevel1.href = buildGameHref(this.controlMode, 1, base);
+      this.els.linkLevel1.classList.toggle('active', this.sceneLevel === 1);
+    }
+    if (this.els.linkLevel2) {
+      this.els.linkLevel2.href = buildGameHref(this.controlMode, 2, base);
+      this.els.linkLevel2.classList.toggle('active', this.sceneLevel === 2);
+    }
   }
 
   private updateTurnHUD(): void {
@@ -855,7 +926,7 @@ export class Game {
     this.els.turnLabel.textContent = turnText;
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
     this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
-    this.els.levelLabel.textContent = `Nivel ${this.level}`;
+    this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
   }
 
   private updateScoreHUD(): void {
@@ -1963,7 +2034,7 @@ private spawnShootersInitial(): void {
         'Misma cantidad de canicas fuera. ¡Casi!';
     }
     this.els.endScore.textContent =
-      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (Nivel ${this.level})`;
+      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA ${this.level})`;
     this.els.endScreen.classList.remove('hidden');
     this.updateTurnHUD();
   }
@@ -2695,7 +2766,7 @@ private spawnShootersInitial(): void {
       modeT: 0,
       modeDur: directorModeDuration('hero', 'thinking'),
       blendT: 0,
-      blendDur: 0.45,
+      blendDur: 0.7,
       blending: true,
       hardCut: false,
       subject: this.aiMarble,
@@ -2706,6 +2777,7 @@ private spawnShootersInitial(): void {
       fromTarget: this.controls.target.clone(),
       toTarget: this.controls.target.clone(),
       cutGate: 0,
+      cutsUsed: 0,
     };
     this.controls.enabled = false;
     this.controls.enableDamping = false;
@@ -2718,13 +2790,22 @@ private spawnShootersInitial(): void {
     this.ensureAIDirector();
     const d = this.aiDirector!;
     d.impactHint = follow;
-    d.impactUntil = performance.now() + 700;
+    d.impactUntil = performance.now() + 900;
+    // Impact counts as the (optional) second shot — skip if already cut once
+    if (d.mode === 'impact') return;
+    if (d.cutsUsed >= AI_DIRECTOR_MAX_CUTS) {
+      // Stay on current framing; still bias subject toward the impact marble
+      return;
+    }
     this.switchAIDirectorMode('impact', true);
   }
 
   private switchAIDirectorMode(mode: DirectorMode, hardCut: boolean): void {
     const d = this.aiDirector;
     if (!d) return;
+    if (mode !== d.mode) {
+      d.cutsUsed += 1;
+    }
     d.mode = mode;
     d.modeT = 0;
     const phase = this.phase === 'ai_thinking' ? 'thinking' : 'action';
@@ -2836,13 +2917,23 @@ private spawnShootersInitial(): void {
     this.camera.lookAt(this.controls.target);
     this.controls.enabled = false;
 
-    // Advance shot vocabulary when the beat ends
-    if (d.modeT >= d.modeDur && d.cutGate <= 0 && !d.blending) {
+    // Advance shot vocabulary rarely — at most ~2 shots (establish + one cut)
+    if (
+      d.modeT >= d.modeDur &&
+      d.cutGate <= 0 &&
+      !d.blending &&
+      d.cutsUsed < AI_DIRECTOR_MAX_CUTS
+    ) {
       const wantImpact = d.impactUntil > performance.now();
-      const next = nextDirectorMode(d.mode, phase, wantImpact && d.mode !== 'impact');
-      // Prefer smooth blends; hard cut into/out of impact only
-      const hard = next === 'impact' || d.mode === 'impact';
-      this.switchAIDirectorMode(next, hard);
+      const next = nextDirectorMode(
+        d.mode,
+        phase,
+        wantImpact && d.mode !== 'impact',
+      );
+      if (next && next !== d.mode) {
+        const hard = next === 'impact' || d.mode === 'impact';
+        this.switchAIDirectorMode(next, hard);
+      }
     }
   }
 
@@ -2852,6 +2943,9 @@ private spawnShootersInitial(): void {
     this.dayNightTime += dt;
     this.syncDayNight();
     this.parkLife?.update(dt);
+    if (this.desertCamp) {
+      this.desertCamp.update(dt, this.currentNightAmount());
+    }
 
     if (this.phase === 'replay') {
       this.updateMoneyHudTarget();

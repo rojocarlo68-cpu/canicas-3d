@@ -209,49 +209,47 @@ export function framingForDirectorMode(
   }
 }
 
-/** Next mode after current — weighted toward variety, impact only when requested. */
+/**
+ * Next mode after current. Returns null when no further cut should happen
+ * (caller caps to ~2 shots: establish + one follow/impact).
+ */
 export function nextDirectorMode(
   current: DirectorMode,
   phase: 'thinking' | 'action',
   wantImpact: boolean,
-): DirectorMode {
-  if (wantImpact) return 'impact';
-  if (phase === 'thinking') {
-    return current === 'hero' ? 'high_wide' : 'hero';
-  }
-  const cycle: DirectorMode[] = [
-    'low_chase',
-    'side_track',
-    'cluster',
-    'high_wide',
-    'low_chase',
-    'hero',
-  ];
-  const i = cycle.indexOf(current);
-  const start = i < 0 ? 0 : i + 1;
-  return cycle[start % cycle.length]!;
+): DirectorMode | null {
+  // Prefer a single impact cut when something dramatic happens
+  if (wantImpact && current !== 'impact') return 'impact';
+  // Hold establish through thinking — no restless cuts
+  if (phase === 'thinking') return null;
+  // Action: one follow shot only (establish → low_chase or side_track)
+  if (current === 'hero' || current === 'high_wide') return 'low_chase';
+  if (current === 'low_chase') return null;
+  if (current === 'impact') return null;
+  return null;
 }
 
+/** Long holds so the marble stays readable — rare cuts. */
 export function directorModeDuration(mode: DirectorMode, phase: 'thinking' | 'action'): number {
   switch (mode) {
     case 'impact':
-      return 0.55;
+      return 0.85;
     case 'hero':
-      return phase === 'thinking' ? 1.4 : 1.1;
+      return phase === 'thinking' ? 4.0 : 3.2;
     case 'high_wide':
-      return 1.6;
+      return 3.5;
     case 'cluster':
-      return 1.25;
+      return 3.0;
     case 'side_track':
-      return 1.15;
+      return 3.0;
     case 'low_chase':
     default:
-      return 1.35;
+      return 3.4;
   }
 }
 
 /** Soft blend duration between shots (cuts are shorter). */
 export function directorBlendDuration(mode: DirectorMode, hardCut: boolean): number {
-  if (hardCut || mode === 'impact') return 0.18;
-  return 0.55;
+  if (hardCut || mode === 'impact') return 0.22;
+  return 0.7;
 }
