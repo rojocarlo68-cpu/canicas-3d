@@ -123,8 +123,9 @@ export function framingForDirectorMode(
   const sx = -fz;
   const sz = fx;
 
-  const back = portrait ? 0.22 : 0.28;
-  const side = portrait ? 0.18 : 0.24;
+  // Pulled farther than before so director shots read wider / less tight
+  const back = portrait ? 0.34 : 0.44;
+  const side = portrait ? 0.28 : 0.38;
 
   switch (mode) {
     case 'hero': {
@@ -139,7 +140,7 @@ export function framingForDirectorMode(
         dirX /= radial;
         dirZ /= radial;
       }
-      const up = portrait ? 0.12 : 0.15;
+      const up = portrait ? 0.16 : 0.2;
       return {
         pos: new THREE.Vector3(p.x + dirX * back, up, p.z + dirZ * back),
         target: new THREE.Vector3(p.x, lookY, p.z),
@@ -147,11 +148,11 @@ export function framingForDirectorMode(
     }
     case 'low_chase': {
       // Low chase behind motion
-      const dist = portrait ? 0.2 : 0.26;
+      const dist = portrait ? 0.32 : 0.4;
       return {
         pos: new THREE.Vector3(
           p.x - fx * dist,
-          portrait ? 0.06 : 0.075,
+          portrait ? 0.08 : 0.1,
           p.z - fz * dist,
         ),
         target: new THREE.Vector3(p.x + fx * 0.04, lookY, p.z + fz * 0.04),
@@ -159,8 +160,8 @@ export function framingForDirectorMode(
     }
     case 'high_wide': {
       clusterLookAt(subject, field, scratchLook);
-      const elev = portrait ? 0.42 : 0.5;
-      const pull = portrait ? 0.38 : 0.48;
+      const elev = portrait ? 0.52 : 0.62;
+      const pull = portrait ? 0.55 : 0.7;
       return {
         pos: new THREE.Vector3(
           scratchLook.x + fx * pull * 0.35 + Math.sin(fallbackAz) * pull * 0.65,
@@ -173,20 +174,20 @@ export function framingForDirectorMode(
     case 'side_track': {
       return {
         pos: new THREE.Vector3(
-          p.x + sx * side - fx * 0.06,
-          portrait ? 0.1 : 0.12,
-          p.z + sz * side - fz * 0.06,
+          p.x + sx * side - fx * 0.08,
+          portrait ? 0.14 : 0.17,
+          p.z + sz * side - fz * 0.08,
         ),
         target: new THREE.Vector3(p.x, lookY, p.z),
       };
     }
     case 'cluster': {
       clusterLookAt(subject, field, scratchLook);
-      const pull = portrait ? 0.3 : 0.36;
+      const pull = portrait ? 0.44 : 0.54;
       return {
         pos: new THREE.Vector3(
           scratchLook.x - fx * pull,
-          portrait ? 0.22 : 0.28,
+          portrait ? 0.3 : 0.38,
           scratchLook.z - fz * pull,
         ),
         target: scratchLook.clone(),
@@ -195,11 +196,11 @@ export function framingForDirectorMode(
     case 'impact':
     default: {
       // Brief punch-in — close but readable
-      const dist = portrait ? 0.11 : 0.13;
+      const dist = portrait ? 0.17 : 0.2;
       return {
         pos: new THREE.Vector3(
           p.x - fx * dist * 0.4 + sx * dist * 0.75,
-          portrait ? 0.08 : 0.09,
+          portrait ? 0.1 : 0.12,
           p.z - fz * dist * 0.4 + sz * dist * 0.75,
         ),
         target: new THREE.Vector3(p.x, lookY, p.z),

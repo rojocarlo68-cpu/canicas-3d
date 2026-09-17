@@ -157,7 +157,7 @@ export class ParticleFX {
     sparkGeo.setAttribute('color', new THREE.BufferAttribute(this.sparkCol, 3));
     sparkGeo.setDrawRange(0, 0);
     const sparkMat = new THREE.PointsMaterial({
-      size: 0.012,
+      size: 0.006,
       vertexColors: true,
       transparent: true,
       opacity: 0.95,
@@ -217,7 +217,7 @@ export class ParticleFX {
 
   /** Exaggerated metal-style sparks at contact. */
   spawnSparks(x: number, y: number, z: number, intensity = 1): void {
-    const n = Math.min(22, Math.floor(8 + intensity * 14));
+    const n = Math.min(14, Math.floor(5 + intensity * 9));
     for (let i = 0; i < n; i++) {
       if (this.sparks.length >= SPARK_MAX) this.sparks.shift();
       const speed = 0.3 + Math.random() * 0.95 * intensity;
@@ -232,7 +232,7 @@ export class ParticleFX {
         ),
         life: 0.1 + Math.random() * 0.2,
         maxLife: 0.25,
-        size: 0.006 + Math.random() * 0.008,
+        size: 0.003 + Math.random() * 0.004,
       });
       const p = this.sparks[this.sparks.length - 1]!;
       p.maxLife = p.life;
@@ -349,7 +349,7 @@ export class ParticleFX {
       true;
     this.sparkPoints.geometry.setDrawRange(0, this.sparks.length);
     (this.sparkPoints.material as THREE.PointsMaterial).size =
-      this.sparks.length > 0 ? 0.012 : 0.01;
+      this.sparks.length > 0 ? 0.006 : 0.005;
 
     // Dirt — tiny & faint
     for (let i = this.dirt.length - 1; i >= 0; i--) {
