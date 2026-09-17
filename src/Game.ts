@@ -272,9 +272,7 @@ export class Game {
   private replayPaused = false;
   private replaySpeed = 1;
   private replayScrubbing = false;
-  /** After first seed, replay keeps orbit/zoom; only the look target tracks the marble. */
-  private replayCamSeeded = false;
-  /** Smooth follow target while replaying (player marble = orbit target). */
+  /** Smooth follow target/pos while replaying (locked on player marble). */
   private readonly _replayLook = new THREE.Vector3();
   private readonly _replayCamDesired = new THREE.Vector3();
 
@@ -2002,10 +2000,9 @@ private spawnShootersInitial(): void {
 
     this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
-    // Follow player marble as orbit target; drag = orbit, pinch = zoom
-    this.controls.enabled = true;
-    this.controls.enableDamping = true;
-    this.replayCamSeeded = false;
+    // Locked follow on player marble — no free orbit/pinch during replay
+    this.controls.enabled = false;
+    this.controls.enableDamping = false;
     this.stopAIDirector();
     this.canPlayerShoot = false;
     this.disarmPlayerIdleHint();
@@ -2026,7 +2023,7 @@ private spawnShootersInitial(): void {
     this.syncReplayPlayButton();
     this.setPhase('replay');
     this.els.instructions.textContent =
-      'Repetición: sigue tu canica · arrastra para orbitar · pellizca para zoom';
+      'Repetición: cámara sigue tu canica · usa la barra / velocidad para scrub';
     // Seed framing on first frame immediately
     if (this.replayPlaying[0]) {
       this.playReplayFrame(this.replayPlaying[0]);
@@ -3046,8 +3043,9 @@ private spawnShootersInitial(): void {
   }
 
   /**
-   * Replay camera: keep orbit target on the player's marble, preserve user
-   * orbit angle + pinch zoom (OrbitControls). Seed once behind the marble.
+   * Keep the replay camera focused on the player's marble (near screen center).
+   * OrbitControls stay off — locked follow only (no drag orbit / pinch zoom).
+   * Smooth lerp during playback; instant snap while scrubbing.
    */
   private updateReplayCamera(dt: number, instant = false): void {
     let tx = 0;
@@ -3073,6 +3071,7 @@ private spawnShootersInitial(): void {
       }
     }
     if (!have) {
+      // Fallback: keep looking near the play circle center
       tx = this.controls.target.x;
       ty = Math.max(MARBLE_REST_Y, this.controls.target.y);
       tz = this.controls.target.z;
@@ -3081,64 +3080,44 @@ private spawnShootersInitial(): void {
     const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(ty) ? ty : MARBLE_REST_Y);
     this._replayLook.set(tx, lookY, tz);
 
-    // First frame / fresh replay: seed a readable behind-marble framing once
-    if (!this.replayCamSeeded) {
-      const portrait = window.innerHeight > window.innerWidth;
-      let dirX = tx;
-      let dirZ = tz;
-      const radial = Math.hypot(dirX, dirZ);
-      if (radial < 1e-4) {
-        dirX = Math.sin(this.defaultCamAzimuth);
-        dirZ = Math.cos(this.defaultCamAzimuth);
-      } else {
-        dirX /= radial;
-        dirZ /= radial;
-      }
-      const back = portrait ? 0.24 : 0.3;
-      const up = portrait ? 0.12 : 0.15;
-      this._replayCamDesired.set(tx + dirX * back, lookY + up, tz + dirZ * back);
-      this.controls.target.copy(this._replayLook);
-      this.camera.position.copy(this._replayCamDesired);
-      this.replayCamSeeded = true;
-      this.controls.enabled = true;
-      this.controls.enableDamping = true;
-      this.controls.update();
-      return;
+    const portrait = window.innerHeight > window.innerWidth;
+    let dirX = tx;
+    let dirZ = tz;
+    const radial = Math.hypot(dirX, dirZ);
+    if (radial < 1e-4) {
+      dirX = Math.sin(this.defaultCamAzimuth);
+      dirZ = Math.cos(this.defaultCamAzimuth);
+    } else {
+      dirX /= radial;
+      dirZ /= radial;
     }
 
-    // Track marble: move target (and camera by the same delta) so orbit/zoom stick
-    const prevX = this.controls.target.x;
-    const prevY = this.controls.target.y;
-    const prevZ = this.controls.target.z;
-    const k = instant ? 1 : 1 - Math.exp(-12 * Math.max(0, dt));
-    const nx = prevX + (this._replayLook.x - prevX) * k;
-    const ny = prevY + (this._replayLook.y - prevY) * k;
-    const nz = prevZ + (this._replayLook.z - prevZ) * k;
-    const dx = nx - prevX;
-    const dy = ny - prevY;
-    const dz = nz - prevZ;
-    this.controls.target.set(nx, ny, nz);
-    this.camera.position.x += dx;
-    this.camera.position.y += dy;
-    this.camera.position.z += dz;
+    const back = portrait ? 0.24 : 0.3;
+    const up = portrait ? 0.12 : 0.15;
+    this._replayCamDesired.set(
+      tx + dirX * back,
+      lookY + up,
+      tz + dirZ * back,
+    );
 
+    const k = instant ? 1 : 1 - Math.exp(-10 * Math.max(0, dt));
+    this.controls.target.lerp(this._replayLook, k);
+    this.camera.position.lerp(this._replayCamDesired, k);
     if (
       !Number.isFinite(this.camera.position.x) ||
       !Number.isFinite(this.controls.target.x)
     ) {
+      this.camera.position.copy(this._replayCamDesired);
       this.controls.target.copy(this._replayLook);
-      this.replayCamSeeded = false;
-      return;
     }
-    this.controls.enabled = true;
-    this.controls.update();
+    this.camera.lookAt(this.controls.target);
   }
 
   private syncReplayPlayButton(): void {
     this.els.replayBtnPlay.textContent = this.replayPaused ? '▶' : '⏸';
     this.els.replayBanner.textContent = this.replayPaused
-      ? '⏸ Repetición (pausa) — órbita / zoom activos'
-      : '▶ Repetición — órbita / zoom activos';
+      ? '⏸ Repetición (pausa) — siguiendo tu canica'
+      : '▶ Repetición — siguiendo tu canica';
   }
 
   private toggleReplayPlay(): void {
