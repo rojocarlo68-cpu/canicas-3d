@@ -39,6 +39,13 @@ export const SLOWMO_SCALE = 0.22;
 export const SLOWMO_DURATION = 1.15; // real-time seconds
 export const SLOWMO_IMPACT_THRESHOLD = 0.55;
 
+/** Knockout camera punch-in: ease in → hold → ease back (total ~0.9–1.1s) */
+export const KNOCKOUT_PUNCH_IN = 0.22;
+export const KNOCKOUT_PUNCH_HOLD = 0.38;
+export const KNOCKOUT_PUNCH_OUT = 0.42;
+/** Scale current cam→marble distance for the punch framing (closer = smaller) */
+export const KNOCKOUT_PUNCH_ZOOM = 0.58;
+
 /** Shot power: impulse magnitude range */
 export const SHOT_MIN = 0.0012;
 export const SHOT_MAX = 0.021; // ~2.2× prior — full-draw flick cañonazo

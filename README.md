@@ -15,6 +15,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 8. **Multi-touch flick:** dedo en canica = apuntar; segundo dedo fuera = órbita (OrbitControls sigue activo; solo se captura el pointerId de mira).
 9. **Calibración de mira:** dirección del impulso = vector suelo canica→dedo (misma que la línea); `applyImpulse` en el COM (antes `body.position` torcía el tiro).
 10. **Empuje más ágil:** `PUSH_VELOCITY_GAIN` 1.45, `PUSH_MAX_SPEED` 2.25 m/s; velocidad por muestras recientes en plano suelo (pico + promedio).
+11. **Punch-in de cámara al sacar:** al contar un knockout (jugador o rival), la cámara acerca suavemente a esa canica ~0.9s y vuelve al encuadre previo; varias salidas casi juntas retargetean la más reciente sin encadenar pausas largas.
 
 ## Stack
 

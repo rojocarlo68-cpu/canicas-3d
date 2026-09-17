@@ -30,6 +30,10 @@ import {
   SLOWMO_SCALE,
   SLOWMO_DURATION,
   SLOWMO_IMPACT_THRESHOLD,
+  KNOCKOUT_PUNCH_IN,
+  KNOCKOUT_PUNCH_HOLD,
+  KNOCKOUT_PUNCH_OUT,
+  KNOCKOUT_PUNCH_ZOOM,
   MARBLE_PICK_TOLERANCE,
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
@@ -209,6 +213,28 @@ export class Game {
   private slowMoTimer = 0;
   private slowMoFollow: MarbleEntity | null = null;
   private readonly _slowMoCamOffset = new THREE.Vector3();
+  /**
+   * Celebratory knockout punch-in: ease toward the exiting marble, hold a beat,
+   * then ease back to the pre-punch turn/follow framing. Owns the camera while active.
+   */
+  private knockoutPunch: {
+    active: boolean;
+    phase: 'in' | 'hold' | 'out';
+    t: number;
+    inDur: number;
+    holdDur: number;
+    outDur: number;
+    follow: MarbleEntity | null;
+    homePos: THREE.Vector3;
+    homeTarget: THREE.Vector3;
+    fromPos: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    offsetDir: THREE.Vector3;
+    offsetLen: number;
+    lastFollow: THREE.Vector3;
+  } | null = null;
+  private readonly _punchPos = new THREE.Vector3();
+  private readonly _punchTarget = new THREE.Vector3();
   private readonly _aimFwd = new THREE.Vector3();
   private readonly _aimRight = new THREE.Vector3();
 
@@ -821,6 +847,7 @@ export class Game {
     this.aiScore = 0;
     this.playerMoney = 0;
     this.lastScorer = null;
+    this.clearKnockoutCamPunch(false);
     this.exitSlowMo(false);
     this.particles?.clear();
     this.updateScoreHUD();
@@ -1168,7 +1195,7 @@ private spawnShootersInitial(): void {
 
   /** Subtle look-at nudge toward the player marble (skipped if already framed). */
   private nudgeCameraTowardPlayerMarble(): void {
-    if (!this.playerMarble || this.camEase?.active) return;
+    if (!this.playerMarble || this.camEase?.active || this.knockoutPunch?.active) return;
     const p = this.playerMarble.body.position;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) return;
 
@@ -1608,8 +1635,8 @@ private spawnShootersInitial(): void {
       }
     }
     // Keep OrbitControls enabled during aim so a second finger can orbit;
-    // never leave them disabled after cancel (unless a camera ease owns them).
-    if (!this.camEase?.active) this.controls.enabled = true;
+    // never leave them disabled after cancel (unless a camera ease / punch owns them).
+    if (!this.camEase?.active && !this.knockoutPunch?.active) this.controls.enabled = true;
   }
 
   private onAimPointerDown(e: PointerEvent): void {
@@ -1841,7 +1868,7 @@ private spawnShootersInitial(): void {
         }
         this.scoringMarbles.delete(m);
         this.updateScoreHUD();
-        this.enterSlowMo(m);
+        this.startKnockoutCamPunch(m);
       }
 
       if (fallen || dist > DESPAWN_DIST) {
@@ -1873,6 +1900,7 @@ private spawnShootersInitial(): void {
     this.controls.enabled = true;
     this.markerGroup.visible = false;
     this.camEase = null;
+    this.clearKnockoutCamPunch(false);
 
     const p = this.playerScore;
     const a = this.aiScore;
@@ -1910,6 +1938,7 @@ private spawnShootersInitial(): void {
     this.markerGroup.visible = false;
     this.recording = true;
     this.camEase = null;
+    this.clearKnockoutCamPunch(false);
     this.throwPendingImpulse = null;
     this.particles?.clear();
     this.dirtCooldown.clear();
@@ -1937,6 +1966,7 @@ private spawnShootersInitial(): void {
     this.markerGroup.visible = false;
     this.recording = false;
     this.camEase = null;
+    this.clearKnockoutCamPunch(false);
 
     this.replayPlaying = frames;
     this.replayIndex = 0;
@@ -2087,6 +2117,7 @@ private spawnShootersInitial(): void {
     // Ensure pending impulse applied
     if (this.throwPendingImpulse) this.applyPendingImpulse();
 
+    this.clearKnockoutCamPunch(true);
     this.exitSlowMo(true);
     this.scoringEnabled = false;
 
@@ -2293,6 +2324,7 @@ private spawnShootersInitial(): void {
   }
 
   private updateCamEase(dt: number): void {
+    if (this.knockoutPunch?.active) return;
     if (!this.camEase || !this.camEase.active) return;
     this.camEase.t += dt;
     const u = Math.min(1, this.camEase.t / this.camEase.dur);
@@ -2334,6 +2366,12 @@ private spawnShootersInitial(): void {
 
   private enterSlowMo(follow: MarbleEntity): void {
     if (this.phase === 'replay') return;
+    // Knockout punch owns the camera — only refresh celebratory time scale
+    if (this.knockoutPunch?.active) {
+      this.timeScale = SLOWMO_SCALE;
+      this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.45);
+      return;
+    }
     // Capture camera offset relative to follow target so we can keep framing it
     const fp = follow.body.position;
     this._slowMoCamOffset.set(
@@ -2371,6 +2409,8 @@ private spawnShootersInitial(): void {
         this.syncOneMesh(m);
       }
     }
+    // Punch still owns orbit disable — don't re-enable under it
+    if (this.knockoutPunch?.active) return;
     if (this.phase === 'playing' || this.phase === 'ai_thinking' || this.phase === 'shot_flying') {
       this.controls.enabled = true;
       this.controls.enableDamping = true;
@@ -2381,7 +2421,8 @@ private spawnShootersInitial(): void {
     if (this.slowMoTimer <= 0) return;
     this.slowMoTimer -= realDt;
     const follow = this.slowMoFollow;
-    if (follow && follow.active) {
+    // Knockout punch owns framing; impact slow-mo only moves camera when free
+    if (!this.knockoutPunch?.active && follow && follow.active) {
       const fp = follow.body.position;
       // Continuously follow + look at the relevant marble for the whole slow-mo window
       this.camera.position.set(
@@ -2395,6 +2436,191 @@ private spawnShootersInitial(): void {
     if (this.slowMoTimer <= 0) {
       this.exitSlowMo(true);
     }
+  }
+
+  /**
+   * Celebratory punch-in toward a scoring knockout marble, then ease back.
+   * Multiple near-simultaneous exits retarget the most recent without stacking
+   * long interruptions. Skips while aiming so multitouch orbit stays free.
+   */
+  private startKnockoutCamPunch(follow: MarbleEntity): void {
+    if (this.phase === 'replay') return;
+    // Don't steal the view mid-aim / multitouch orbit gesture
+    if (this.aiming) return;
+
+    const fp = follow.body.position;
+    if (!Number.isFinite(fp.x) || !Number.isFinite(fp.z)) return;
+
+    const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(fp.y) ? fp.y : MARBLE_RADIUS);
+    const ox = this.camera.position.x - fp.x;
+    const oy = this.camera.position.y - fp.y;
+    const oz = this.camera.position.z - fp.z;
+    let len = Math.hypot(ox, oy, oz);
+    let dx = ox;
+    let dy = oy;
+    let dz = oz;
+    if (len < 0.08) {
+      dx = 0.12;
+      dy = 0.14;
+      dz = 0.18;
+      len = Math.hypot(dx, dy, dz);
+    }
+    dx /= len;
+    dy /= len;
+    dz /= len;
+    // Mild zoom — celebratory without a hard cut or seasick swing
+    const punchLen = Math.min(len * 0.92, Math.max(0.1, len * KNOCKOUT_PUNCH_ZOOM));
+
+    if (this.knockoutPunch?.active) {
+      const kp = this.knockoutPunch;
+      kp.follow = follow;
+      kp.offsetDir.set(dx, dy, dz);
+      kp.offsetLen = punchLen;
+      kp.lastFollow.set(fp.x, lookY, fp.z);
+      // Retarget most recent; don't queue a fresh full beat
+      if (kp.phase === 'out') {
+        kp.phase = 'hold';
+        kp.t = 0;
+        kp.holdDur = Math.min(0.28, KNOCKOUT_PUNCH_HOLD);
+        kp.fromPos.copy(this.camera.position);
+        kp.fromTarget.copy(this.controls.target);
+      } else if (kp.phase === 'hold') {
+        kp.t = Math.min(kp.t, kp.holdDur * 0.35);
+      }
+      // Keep original home so we ease back to pre-first-knockout framing
+    } else {
+      this.camEase = null;
+      this.controls.enabled = false;
+      this.controls.enableDamping = false;
+      this.knockoutPunch = {
+        active: true,
+        phase: 'in',
+        t: 0,
+        inDur: KNOCKOUT_PUNCH_IN,
+        holdDur: KNOCKOUT_PUNCH_HOLD,
+        outDur: KNOCKOUT_PUNCH_OUT,
+        follow,
+        homePos: this.camera.position.clone(),
+        homeTarget: this.controls.target.clone(),
+        fromPos: this.camera.position.clone(),
+        fromTarget: this.controls.target.clone(),
+        offsetDir: new THREE.Vector3(dx, dy, dz),
+        offsetLen: punchLen,
+        lastFollow: new THREE.Vector3(fp.x, lookY, fp.z),
+      };
+    }
+
+    // Matching celebratory slow-mo (camera owned by punch)
+    const total =
+      KNOCKOUT_PUNCH_IN + KNOCKOUT_PUNCH_HOLD + KNOCKOUT_PUNCH_OUT + 0.05;
+    this.timeScale = SLOWMO_SCALE;
+    this.slowMoTimer = Math.max(this.slowMoTimer, total);
+    this.slowMoFollow = null;
+  }
+
+  private clearKnockoutCamPunch(restoreControls: boolean): void {
+    if (!this.knockoutPunch) return;
+    this.knockoutPunch.active = false;
+    this.knockoutPunch = null;
+    if (restoreControls) {
+      if (
+        this.phase === 'playing' ||
+        this.phase === 'ai_thinking' ||
+        this.phase === 'shot_flying'
+      ) {
+        this.controls.enabled = true;
+        this.controls.enableDamping = true;
+        this.controls.update();
+      }
+    }
+  }
+
+  private finishKnockoutCamPunch(): void {
+    const kp = this.knockoutPunch;
+    if (!kp) return;
+    this.camera.position.copy(kp.homePos);
+    this.controls.target.copy(kp.homeTarget);
+    this.knockoutPunch = null;
+    this.controls.enableDamping = true;
+    if (
+      this.phase === 'playing' ||
+      this.phase === 'ai_thinking' ||
+      this.phase === 'shot_flying'
+    ) {
+      this.controls.enabled = true;
+      this.controls.update();
+    }
+    // End punch-tied slow-mo if it was only for this beat
+    if (this.slowMoFollow === null && this.slowMoTimer > 0) {
+      this.exitSlowMo(true);
+    }
+  }
+
+  private updateKnockoutCamPunch(dt: number): void {
+    const kp = this.knockoutPunch;
+    if (!kp?.active) return;
+
+    // Track follow marble (or last known if it despawned)
+    const f = kp.follow;
+    if (f && f.active) {
+      const bp = f.body.position;
+      if (Number.isFinite(bp.x) && Number.isFinite(bp.z)) {
+        kp.lastFollow.set(
+          bp.x,
+          Math.max(MARBLE_RADIUS, Number.isFinite(bp.y) ? bp.y : MARBLE_RADIUS),
+          bp.z,
+        );
+      }
+    }
+    this._punchTarget.copy(kp.lastFollow);
+    this._punchPos.set(
+      this._punchTarget.x + kp.offsetDir.x * kp.offsetLen,
+      Math.max(0.08, this._punchTarget.y + kp.offsetDir.y * kp.offsetLen),
+      this._punchTarget.z + kp.offsetDir.z * kp.offsetLen,
+    );
+
+    kp.t += dt;
+    const smooth = (u: number) => {
+      const x = Math.min(1, Math.max(0, u));
+      return x * x * (3 - 2 * x);
+    };
+
+    if (kp.phase === 'in') {
+      const e = smooth(kp.t / Math.max(1e-6, kp.inDur));
+      this.camera.position.lerpVectors(kp.fromPos, this._punchPos, e);
+      this.controls.target.lerpVectors(kp.fromTarget, this._punchTarget, e);
+      if (kp.t >= kp.inDur) {
+        kp.phase = 'hold';
+        kp.t = 0;
+      }
+    } else if (kp.phase === 'hold') {
+      this.camera.position.copy(this._punchPos);
+      this.controls.target.copy(this._punchTarget);
+      if (kp.t >= kp.holdDur) {
+        kp.phase = 'out';
+        kp.t = 0;
+        kp.fromPos.copy(this.camera.position);
+        kp.fromTarget.copy(this.controls.target);
+      }
+    } else {
+      const e = smooth(kp.t / Math.max(1e-6, kp.outDur));
+      this.camera.position.lerpVectors(kp.fromPos, kp.homePos, e);
+      this.controls.target.lerpVectors(kp.fromTarget, kp.homeTarget, e);
+      if (kp.t >= kp.outDur) {
+        this.finishKnockoutCamPunch();
+        return;
+      }
+    }
+
+    if (
+      !Number.isFinite(this.camera.position.x) ||
+      !Number.isFinite(this.controls.target.x)
+    ) {
+      this.clearKnockoutCamPunch(true);
+      this.fitCameraToArena(true);
+      return;
+    }
+    this.camera.lookAt(this.controls.target);
   }
 
   private update(): void {
@@ -2436,6 +2662,7 @@ private spawnShootersInitial(): void {
     const physDt = dt * this.timeScale;
     this.world.step(1 / 60, physDt, 4);
     this.updateSlowMo(dt);
+    this.updateKnockoutCamPunch(dt);
     this.processImpactFX();
     this.processDirtRollFX(dt);
     this.updateMoneyHudTarget();
@@ -2477,6 +2704,7 @@ private spawnShootersInitial(): void {
       !Number.isFinite(this.controls.target.x)
     ) {
       this.camEase = null;
+      this.clearKnockoutCamPunch(false);
       this.fitCameraToArena(true);
       this.controls.enabled = true;
     }
@@ -2490,9 +2718,9 @@ private spawnShootersInitial(): void {
       }
     }
 
-    // Do NOT call controls.update() while camEase is active — OrbitControls
-    // damping/spherical rewrite would fight the lerp and could point at sky.
-    if (!this.camEase?.active) {
+    // Do NOT call controls.update() while camEase / knockout punch is active —
+    // OrbitControls damping/spherical rewrite would fight the lerp and could point at sky.
+    if (!this.camEase?.active && !this.knockoutPunch?.active) {
       this.controls.update();
     }
     this.renderer.render(this.scene, this.camera);
@@ -2534,8 +2762,8 @@ private spawnShootersInitial(): void {
       this.camera.position.set(target.x + x, target.y + y, target.z + z);
       this.controls.target.copy(target);
       this.camEase = null;
-    } else if (!this.camEase?.active) {
-      // Soft-correct only when not mid turn-ease
+    } else if (!this.camEase?.active && !this.knockoutPunch?.active) {
+      // Soft-correct only when not mid turn-ease / knockout punch
       this.controls.target.lerp(target, 0.2);
     }
     this.controls.update();
