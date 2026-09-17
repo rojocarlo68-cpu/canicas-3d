@@ -317,6 +317,16 @@ body {
   color: #ffe08a;
 }
 
+#location-banner.banner-player:not(.hidden) {
+  animation: location-banner-flash 1.2s ease-out;
+}
+
+@keyframes location-banner-flash {
+  0% { opacity: 0; transform: translateX(-50%) scale(0.92); }
+  18% { opacity: 1; transform: translateX(-50%) scale(1.04); }
+  100% { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
 #replay-banner {
   top: max(88px, calc(env(safe-area-inset-top) + 72px));
   background: rgba(13, 71, 161, 0.85);

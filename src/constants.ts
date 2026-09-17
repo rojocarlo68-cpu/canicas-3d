@@ -1,5 +1,9 @@
 /** Scale: 1 Three/Cannon unit = 1 meter */
 export const MARBLE_RADIUS = 0.008; // 1.6 cm diameter
+/** Top of the dirt play pad (visual). Physics ground + marble rest align here. */
+export const PLAY_SURFACE_Y = 0.004;
+/** Center Y of a marble resting cleanly on the play surface */
+export const MARBLE_REST_Y = PLAY_SURFACE_Y + MARBLE_RADIUS + 0.0005;
 /** Glass-marble mass ≈ density 2500 kg/m³ × (4/3)πr³ */
 export const MARBLE_MASS = 0.0055;
 /** Fat-finger pick radius vs visual marble radius (screen or world) */
@@ -63,3 +67,6 @@ export const START_LEVEL = 1;
 
 /** Dollars credited per field marble knocked out of the circle */
 export const MONEY_PER_KNOCKOUT = 2;
+
+/** Player turn: idle “here’s your marble” reminder interval (seconds) */
+export const PLAYER_IDLE_HINT_SEC = 5;

@@ -18,6 +18,8 @@ import {
   GROUND_RESTITUTION,
   GROUND_SIZE,
   MARBLE_RADIUS,
+  MARBLE_REST_Y,
+  PLAY_SURFACE_Y,
   OUT_MARGIN,
   SETTLE_MAX_MS,
   SETTLE_SPEED,
@@ -31,6 +33,7 @@ import {
   MARBLE_PICK_TOLERANCE,
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
+  PLAYER_IDLE_HINT_SEC,
 } from './constants';
 import {
   createAIDesign,
@@ -132,7 +135,7 @@ export class Game {
   private aimShaft: THREE.Mesh | null = null;
   private aimHead: THREE.Mesh | null = null;
   private readonly raycaster = new THREE.Raycaster();
-  private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -PLAY_SURFACE_Y);
   private readonly _ndc = new THREE.Vector2();
   private readonly _groundHit = new THREE.Vector3();
   private readonly _tmpV = new THREE.Vector3();
@@ -155,6 +158,12 @@ export class Game {
   private markerArrow!: THREE.Mesh;
   private markerBeam!: THREE.Mesh;
   private markerLife = 0;
+  /** Stronger pulse while an idle / turn-start location cue is active. */
+  private markerHintBoost = 0;
+  /** Player-turn idle “Tu canica” reminder: armed only while player can shoot. */
+  private playerIdleHintArmed = false;
+  private playerIdleHintAcc = 0;
+  private locationBannerHideTimer: ReturnType<typeof setTimeout> | null = null;
 
   private camEase: {
     active: boolean;
@@ -427,35 +436,35 @@ export class Game {
   }
 
   private buildMarker(): void {
-    const ringGeo = new THREE.RingGeometry(MARBLE_RADIUS * 2.2, MARBLE_RADIUS * 3.2, 32);
+    const ringGeo = new THREE.RingGeometry(MARBLE_RADIUS * 2.4, MARBLE_RADIUS * 3.8, 40);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xffe08a,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
       depthWrite: false,
     });
     this.markerRing = new THREE.Mesh(ringGeo, ringMat);
     this.markerRing.rotation.x = -Math.PI / 2;
     this.markerGroup.add(this.markerRing);
 
-    const beamGeo = new THREE.CylinderGeometry(0.0015, 0.004, 0.08, 8);
+    const beamGeo = new THREE.CylinderGeometry(0.0018, 0.005, 0.1, 8);
     const beamMat = new THREE.MeshBasicMaterial({
       color: 0xffe08a,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.65,
       depthWrite: false,
     });
     this.markerBeam = new THREE.Mesh(beamGeo, beamMat);
-    this.markerBeam.position.y = 0.045;
+    this.markerBeam.position.y = 0.055;
     this.markerGroup.add(this.markerBeam);
 
-    const arrowGeo = new THREE.ConeGeometry(0.008, 0.018, 10);
+    const arrowGeo = new THREE.ConeGeometry(0.01, 0.022, 10);
     const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffc107 });
     this.markerArrow = new THREE.Mesh(arrowGeo, arrowMat);
     // Cone default tip is +Y; flip so it points DOWN toward the marble
     this.markerArrow.rotation.x = Math.PI;
-    this.markerArrow.position.y = 0.095;
+    this.markerArrow.position.y = 0.115;
     this.markerGroup.add(this.markerArrow);
   }
 
@@ -537,6 +546,8 @@ export class Game {
       material: this.groundMat,
     });
     groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    // Match dirt pad top so marbles rest on the visual play surface
+    groundBody.position.y = PLAY_SURFACE_Y;
     this.world.addBody(groundBody);
 
     // Dark under-edge so the scoring limit reads against dirt and grass
@@ -552,7 +563,7 @@ export class Game {
     });
     const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
     edgeRing.rotation.x = -Math.PI / 2;
-    edgeRing.position.y = 0.0055;
+    edgeRing.position.y = PLAY_SURFACE_Y + 0.0015;
     edgeRing.renderOrder = 3;
     this.scene.add(edgeRing);
 
@@ -572,7 +583,7 @@ export class Game {
     });
     this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
     this.circleMesh.rotation.x = -Math.PI / 2;
-    this.circleMesh.position.y = 0.006;
+    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.002;
     this.circleMesh.renderOrder = 4;
     this.scene.add(this.circleMesh);
 
@@ -586,7 +597,7 @@ export class Game {
     });
     const fill = new THREE.Mesh(fillGeo, fillMat);
     fill.rotation.x = -Math.PI / 2;
-    fill.position.y = 0.0052;
+    fill.position.y = PLAY_SURFACE_Y + 0.0012;
     fill.renderOrder = 2;
     this.scene.add(fill);
 
@@ -931,15 +942,17 @@ export class Game {
     }
   }
 
-  /** Snap body Y onto the ground plane, clear bad velocities / penetration. */
+  /** Snap body Y onto the play surface, clear bad velocities / penetration. */
   private snapMarblePhysics(m: MarbleEntity, hardStop: boolean): void {
     const p = m.body.position;
+    const minY = MARBLE_REST_Y;
+    const maxY = PLAY_SURFACE_Y + MARBLE_RADIUS * 4;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
-      p.set(0, MARBLE_RADIUS + 0.0005, 0);
+      p.set(0, minY, 0);
     }
-    // Sit on ground: radius above terrain (y=0 plane)
-    if (p.y < MARBLE_RADIUS || p.y > MARBLE_RADIUS * 4) {
-      p.y = MARBLE_RADIUS + 0.0005;
+    // Sit on dirt pad: center = surface + radius (no intersection with dirt disk)
+    if (p.y < minY || p.y > maxY) {
+      p.y = minY;
     }
     if (hardStop) {
       m.body.velocity.setZero();
@@ -947,7 +960,7 @@ export class Game {
     } else {
       // Kill downward penetration velocity that leaves mesh half-buried
       if (m.body.velocity.y < 0) m.body.velocity.y = 0;
-      if (p.y < MARBLE_RADIUS + 0.0002) p.y = MARBLE_RADIUS + 0.0005;
+      if (p.y < PLAY_SURFACE_Y + MARBLE_RADIUS) p.y = minY;
     }
     m.body.wakeUp();
     if (hardStop) m.body.sleep();
@@ -967,7 +980,7 @@ private spawnShootersInitial(): void {
     this.removeShooter('player');
     this.removeShooter('ai');
     const dist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
-    const y = MARBLE_RADIUS + 0.0005;
+    const y = MARBLE_REST_Y;
 
     const player = createMarbleEntity(
       this.playerDesign,
@@ -1022,23 +1035,21 @@ private spawnShootersInitial(): void {
     if (side === 'player') {
       this.setPhase('playing');
       this.canPlayerShoot = true;
-      this.els.locationBanner.textContent = 'Aquí está tu canica';
-      this.els.locationBanner.classList.remove('hidden', 'banner-ai');
-      this.els.locationBanner.classList.add('banner-player');
+      this.flashLocationBanner('Aquí está tu canica', 'banner-player', 2200);
+      this.armPlayerIdleHint();
     } else {
       this.canPlayerShoot = false;
+      this.disarmPlayerIdleHint();
       this.cancelAimGesture(false);
-      this.els.locationBanner.textContent = `Aquí está la canica de ${this.opponentName}`;
-      this.els.locationBanner.classList.remove('hidden', 'banner-player');
-      this.els.locationBanner.classList.add('banner-ai');
+      this.flashLocationBanner(
+        `Aquí está la canica de ${this.opponentName}`,
+        'banner-ai',
+        2200,
+      );
       this.aiPlan = planAIShot(shooter, this.fieldMarbles, this.level);
       this.aiThinkUntil = performance.now() + 700 + Math.random() * 500;
       this.setPhase('ai_thinking');
     }
-
-    window.setTimeout(() => {
-      this.els.locationBanner.classList.add('hidden');
-    }, 2200);
   }
 
   /** Keep shooter body in a renderable, finite pose for camera framing. */
@@ -1047,10 +1058,10 @@ private spawnShootersInitial(): void {
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
       const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
       const x = this.turn === 'player' ? sideDist : -sideDist;
-      p.set(x, MARBLE_RADIUS + 0.0005, 0);
+      p.set(x, MARBLE_REST_Y, 0);
     }
-    if (p.y < MARBLE_RADIUS * 0.5 || p.y > 1) {
-      p.y = MARBLE_RADIUS + 0.0005;
+    if (p.y < PLAY_SURFACE_Y + MARBLE_RADIUS * 0.5 || p.y > 1) {
+      p.y = MARBLE_REST_Y;
     }
     // Soft clamp extreme flyaways so turn handoff stays on-arena
     const horiz = Math.hypot(p.x, p.z);
@@ -1069,13 +1080,133 @@ private spawnShootersInitial(): void {
     (this.markerRing.material as THREE.MeshBasicMaterial).color.setHex(color);
     (this.markerBeam.material as THREE.MeshBasicMaterial).color.setHex(color);
     (this.markerArrow.material as THREE.MeshBasicMaterial).color.setHex(color);
+    (this.markerRing.material as THREE.MeshBasicMaterial).opacity = 0.95;
+    (this.markerBeam.material as THREE.MeshBasicMaterial).opacity = 0.7;
     this.markerGroup.position.set(
       shooter.body.position.x,
-      0.001,
+      PLAY_SURFACE_Y + 0.001,
       shooter.body.position.z,
     );
     this.markerGroup.visible = true;
-    this.markerLife = 2.4;
+    this.markerLife = 2.8;
+    this.markerHintBoost = 2.6;
+  }
+
+  private armPlayerIdleHint(): void {
+    this.playerIdleHintArmed = true;
+    this.playerIdleHintAcc = 0;
+  }
+
+  private disarmPlayerIdleHint(): void {
+    this.playerIdleHintArmed = false;
+    this.playerIdleHintAcc = 0;
+  }
+
+  private clearLocationBannerTimer(): void {
+    if (this.locationBannerHideTimer !== null) {
+      clearTimeout(this.locationBannerHideTimer);
+      this.locationBannerHideTimer = null;
+    }
+  }
+
+  private hideLocationBanner(): void {
+    this.clearLocationBannerTimer();
+    this.els.locationBanner.classList.add('hidden');
+  }
+
+  private flashLocationBanner(
+    text: string,
+    kind: 'banner-player' | 'banner-ai',
+    ms: number,
+  ): void {
+    this.clearLocationBannerTimer();
+    this.els.locationBanner.textContent = text;
+    this.els.locationBanner.classList.remove('hidden', 'banner-player', 'banner-ai');
+    this.els.locationBanner.classList.add(kind);
+    this.locationBannerHideTimer = setTimeout(() => {
+      this.els.locationBanner.classList.add('hidden');
+      this.locationBannerHideTimer = null;
+    }, ms);
+  }
+
+  /**
+   * Player-turn only: every PLAYER_IDLE_HINT_SEC while idle (not aiming),
+   * flash the location marker + brief “Tu canica” cue.
+   */
+  private updatePlayerIdleHint(dt: number): void {
+    if (!this.playerIdleHintArmed) return;
+    if (
+      this.phase !== 'playing' ||
+      this.turn !== 'player' ||
+      !this.playerMarble
+    ) {
+      this.disarmPlayerIdleHint();
+      return;
+    }
+    // Pause while holding/aiming the marble — timer resumes (fresh) on release.
+    if (this.aiming) return;
+
+    this.playerIdleHintAcc += dt;
+    if (this.playerIdleHintAcc < PLAYER_IDLE_HINT_SEC) return;
+    this.playerIdleHintAcc = 0;
+    this.showPlayerIdleMarbleHint();
+  }
+
+  private showPlayerIdleMarbleHint(): void {
+    if (
+      !this.playerMarble ||
+      this.phase !== 'playing' ||
+      this.turn !== 'player' ||
+      this.aiming
+    ) {
+      return;
+    }
+    this.showLocationMarker(this.playerMarble, 'player');
+    this.flashLocationBanner('Tu canica', 'banner-player', 1400);
+    this.nudgeCameraTowardPlayerMarble();
+  }
+
+  /** Subtle look-at nudge toward the player marble (skipped if already framed). */
+  private nudgeCameraTowardPlayerMarble(): void {
+    if (!this.playerMarble || this.camEase?.active) return;
+    const p = this.playerMarble.body.position;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) return;
+
+    const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(p.y) ? p.y : MARBLE_RADIUS);
+    const marble = new THREE.Vector3(p.x, lookY, p.z);
+    const distLook = this.controls.target.distanceTo(marble);
+    // Already looking near it — marker/banner is enough
+    if (distLook < 0.08) return;
+
+    const fromTarget = this.controls.target.clone();
+    const toTarget = fromTarget.clone().lerp(marble, 0.4);
+    const fromPos = this.camera.position.clone();
+    // Soft pull closer along the current camera→marble vector
+    const toPos = fromPos.clone().lerp(
+      new THREE.Vector3(
+        p.x + (fromPos.x - p.x) * 0.9,
+        fromPos.y,
+        p.z + (fromPos.z - p.z) * 0.9,
+      ),
+      0.22,
+    );
+    if (
+      !Number.isFinite(toPos.x) ||
+      !Number.isFinite(toTarget.x) ||
+      !Number.isFinite(fromPos.x)
+    ) {
+      return;
+    }
+    this.controls.enableDamping = false;
+    this.camEase = {
+      active: true,
+      t: 0,
+      dur: 0.4,
+      fromPos,
+      toPos,
+      fromTarget,
+      toTarget,
+    };
   }
 
   /**
@@ -1504,6 +1635,10 @@ private spawnShootersInitial(): void {
     }
     this.aiming = true;
     this.canPlayerShoot = false;
+    // Touching marble resets the idle Tu canica timer; hide cue while gesturing
+    this.armPlayerIdleHint();
+    this.markerGroup.visible = false;
+    this.hideLocationBanner();
     this.aimPointerId = e.pointerId;
     this.aimStartClientX = e.clientX;
     this.aimStartClientY = e.clientY;
@@ -1536,6 +1671,8 @@ private spawnShootersInitial(): void {
     if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
     this.cancelAimGesture(true);
     this.canPlayerShoot = this.phase === 'playing' && this.turn === 'player';
+    if (this.canPlayerShoot) this.armPlayerIdleHint();
+    else this.disarmPlayerIdleHint();
   }
 
   private onAimPointerUp(e: PointerEvent): void {
@@ -1562,6 +1699,7 @@ private spawnShootersInitial(): void {
     }
     if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
       this.canPlayerShoot = true;
+      this.armPlayerIdleHint();
       return;
     }
 
@@ -1597,6 +1735,9 @@ private spawnShootersInitial(): void {
     this.applyPendingImpulse();
 
     this.canPlayerShoot = false;
+    this.disarmPlayerIdleHint();
+    this.markerGroup.visible = false;
+    this.hideLocationBanner();
     this.hideAimLine();
     this.setPhase('shot_flying');
     this.shotSettleTimer = performance.now();
@@ -1725,6 +1866,8 @@ private spawnShootersInitial(): void {
   private endGame(): void {
     this.setPhase('ended');
     this.canPlayerShoot = false;
+    this.disarmPlayerIdleHint();
+    this.hideLocationBanner();
     this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
     this.controls.enabled = true;
@@ -1758,6 +1901,8 @@ private spawnShootersInitial(): void {
     this.clearFieldMarbles();
     this.removeShooter('player');
     this.removeShooter('ai');
+    this.disarmPlayerIdleHint();
+    this.hideLocationBanner();
     this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
     this.els.powerBar.style.width = '0%';
@@ -1787,6 +1932,8 @@ private spawnShootersInitial(): void {
     this.controls.enabled = true;
     this.controls.enableDamping = true;
     this.canPlayerShoot = false;
+    this.disarmPlayerIdleHint();
+    this.hideLocationBanner();
     this.markerGroup.visible = false;
     this.recording = false;
     this.camEase = null;
@@ -1951,8 +2098,8 @@ private spawnShootersInitial(): void {
       m.body.type = CANNON.Body.KINEMATIC;
       this.snapMarblePhysics(m, true);
       this.syncOneMesh(m);
-      if (m.body.position.y < MARBLE_RADIUS) {
-        m.body.position.y = MARBLE_RADIUS + 0.0005;
+      if (m.body.position.y < MARBLE_REST_Y) {
+        m.body.position.y = MARBLE_REST_Y;
       }
       if (
         !Number.isFinite(m.body.position.x) ||
@@ -1960,7 +2107,7 @@ private spawnShootersInitial(): void {
       ) {
         const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
         const x = m.owner === 'player' ? sideDist : -sideDist;
-        m.body.position.set(x, MARBLE_RADIUS + 0.0005, 0);
+        m.body.position.set(x, MARBLE_REST_Y, 0);
       }
     }
 
@@ -2066,7 +2213,7 @@ private spawnShootersInitial(): void {
             const intensity = Math.min(0.65, speed / 1.6);
             this.particles.spawnDirt(
               marbleBody.position.x,
-              0.002,
+              PLAY_SURFACE_Y + 0.001,
               marbleBody.position.z,
               intensity,
             );
@@ -2105,7 +2252,7 @@ private spawnShootersInitial(): void {
       const intensity = Math.min(0.7, (speed - 0.45) / 1.4);
       this.particles.spawnDirt(
         body.position.x,
-        0.002,
+        PLAY_SURFACE_Y + 0.001,
         body.position.z,
         intensity,
       );
@@ -2114,17 +2261,28 @@ private spawnShootersInitial(): void {
     }
   }
 
-    private updateMarker(dt: number): void {
+  private updateMarker(dt: number): void {
     if (!this.markerGroup.visible) return;
     this.markerLife -= dt;
-    const pulse = 1 + Math.sin(performance.now() * 0.008) * 0.08;
+    if (this.markerHintBoost > 0) this.markerHintBoost -= dt;
+    const boost = this.markerHintBoost > 0;
+    const t = performance.now();
+    const amp = boost ? 0.28 : 0.1;
+    const freq = boost ? 0.014 : 0.008;
+    const pulse = 1 + Math.sin(t * freq) * amp;
     this.markerRing.scale.setScalar(pulse);
-    this.markerArrow.position.y = 0.095 + Math.sin(performance.now() * 0.01) * 0.01;
+    const ringMat = this.markerRing.material as THREE.MeshBasicMaterial;
+    const beamMat = this.markerBeam.material as THREE.MeshBasicMaterial;
+    ringMat.opacity = boost ? 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 0.012)) : 0.9;
+    beamMat.opacity = boost ? 0.75 : 0.55;
+    this.markerArrow.position.y =
+      0.115 + Math.sin(t * (boost ? 0.014 : 0.01)) * (boost ? 0.018 : 0.01);
     // Keep tip pointing DOWN at the marble; spin around vertical only
     this.markerArrow.rotation.x = Math.PI;
-    this.markerArrow.rotation.y += dt * 2.5;
+    this.markerArrow.rotation.y += dt * (boost ? 4.2 : 2.5);
     if (this.markerLife <= 0) {
       this.markerGroup.visible = false;
+      this.markerHintBoost = 0;
     } else {
       const shooter = this.getActiveShooter();
       if (shooter && (this.phase === 'playing' || this.phase === 'ai_thinking')) {
@@ -2308,6 +2466,7 @@ private spawnShootersInitial(): void {
       this.updateScoreAndWin();
     }
 
+    this.updatePlayerIdleHint(dt);
     this.updateMarker(dt);
     this.updateCamEase(dt);
     this.syncMeshes();

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BOUNDARY_RADIUS, CIRCLE_RADIUS } from './constants';
+import { BOUNDARY_RADIUS, CIRCLE_RADIUS, PLAY_SURFACE_Y } from './constants';
 import { makeStreetLamp, type StreetLamp } from './dayNight';
 
 export type ParkBuild = {
@@ -83,7 +83,7 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
     dirtMat,
   );
   dirtPad.rotation.x = -Math.PI / 2;
-  dirtPad.position.y = 0.004;
+  dirtPad.position.y = PLAY_SURFACE_Y;
   dirtPad.renderOrder = 1;
   dirtPad.receiveShadow = true;
   root.add(dirtPad);
@@ -103,7 +103,7 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
     }),
   );
   soilRing.rotation.x = -Math.PI / 2;
-  soilRing.position.y = 0.0045;
+  soilRing.position.y = PLAY_SURFACE_Y + 0.0005;
   soilRing.renderOrder = 2;
   root.add(soilRing);
 
