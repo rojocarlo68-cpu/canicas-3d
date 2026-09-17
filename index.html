@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>Canicas 3D</title>
-    <script type="module" crossorigin src="/canicas-3d/assets/index-PMSilRtd.js"></script>
-    <link rel="stylesheet" crossorigin href="/canicas-3d/assets/index-D5HXcHqf.css">
+    <script type="module" crossorigin src="/canicas-3d/assets/index-49GtMROQ.js"></script>
+    <link rel="stylesheet" crossorigin href="/canicas-3d/assets/index-Dnalvd3g.css">
   </head>
   <body>
     <div id="game-root">
@@ -15,7 +15,6 @@
 
       <div id="hud">
         <div id="top-bar">
-          <button id="btn-drop" type="button">Soltar canicas</button>
           <div id="score-panel">
             <span class="score-side player" id="score-player-side">
               <span class="score-name">Jugador</span>
@@ -32,24 +31,24 @@
             <span id="turn-label" class="turn-player">Turno: Jugador</span>
             <span id="level-label">Nivel 1</span>
           </div>
-          <button id="btn-replay" type="button" disabled title="Repetición de los últimos ~10 s">Repetición</button>
+        </div>
+
+        <div id="ui-actions" aria-label="Acciones">
+          <button id="btn-drop" class="ui-img-btn" type="button" title="Soltar canicas" aria-label="Soltar canicas">
+            <img src="ui/btn-drop.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-replay" class="ui-img-btn" type="button" disabled title="Repetición" aria-label="Repetición">
+            <img src="ui/btn-replay.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-hud-restart" class="ui-img-btn" type="button" title="Reiniciar nivel" aria-label="Reiniciar nivel">
+            <img src="ui/btn-restart.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-pause" class="ui-img-btn" type="button" title="Pausa" aria-label="Pausa">
+            <img src="ui/btn-pause.png" alt="" draggable="false" />
+          </button>
         </div>
 
         <p id="instructions">Orbitar · Zoom · En tu turno: arrastra sobre tu canica para disparar</p>
-
-        <div id="control-mode-badge" aria-live="polite">
-          <span id="control-mode-label">Modo: Flick</span>
-          <span id="control-mode-toggle" class="control-toggle">
-            <a id="link-flick" href="?control=flick&amp;level=1">Flick</a>
-            <span aria-hidden="true">·</span>
-            <a id="link-push" href="?control=push&amp;level=1">Empuje</a>
-          </span>
-          <span id="level-toggle" class="control-toggle">
-            <a id="link-level-1" href="?control=flick&amp;level=1">Parque</a>
-            <span aria-hidden="true">·</span>
-            <a id="link-level-2" href="?control=flick&amp;level=2">Campamento</a>
-          </span>
-        </div>
 
         <div id="power-wrap" class="hidden" aria-hidden="true">
           <div id="power-label">Potencia</div>
@@ -57,6 +56,14 @@
             <div id="power-bar"></div>
           </div>
           <div id="power-pct"></div>
+        </div>
+      </div>
+
+      <div id="pause-overlay" class="hidden" aria-hidden="true">
+        <div id="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+          <button id="btn-pause-close" type="button" title="Continuar" aria-label="Cerrar">×</button>
+          <h2 id="pause-title">Pausa</h2>
+          <p>El juego está en pausa.</p>
         </div>
       </div>
 
