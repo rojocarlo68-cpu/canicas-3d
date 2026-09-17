@@ -215,7 +215,7 @@ export class Game {
   private readonly _slowMoCamOffset = new THREE.Vector3();
   /**
    * Celebratory knockout punch-in: ease toward the exiting marble, hold a beat,
-   * then ease back to the pre-punch turn/follow framing. Owns the camera while active.
+   * then ease back to the current turn shooter. Owns the camera while active.
    */
   private knockoutPunch: {
     active: boolean;
@@ -592,7 +592,7 @@ export class Game {
     });
     const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
     edgeRing.rotation.x = -Math.PI / 2;
-    edgeRing.position.y = PLAY_SURFACE_Y + 0.0006;
+    edgeRing.position.y = PLAY_SURFACE_Y + 0.00045;
     edgeRing.renderOrder = 3;
     this.scene.add(edgeRing);
 
@@ -612,7 +612,7 @@ export class Game {
     });
     this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
     this.circleMesh.rotation.x = -Math.PI / 2;
-    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.0009;
+    this.circleMesh.position.y = PLAY_SURFACE_Y + 0.0007;
     this.circleMesh.renderOrder = 4;
     this.scene.add(this.circleMesh);
 
@@ -626,7 +626,7 @@ export class Game {
     });
     const fill = new THREE.Mesh(fillGeo, fillMat);
     fill.rotation.x = -Math.PI / 2;
-    fill.position.y = PLAY_SURFACE_Y + 0.0004;
+    fill.position.y = PLAY_SURFACE_Y + 0.00015;
     fill.renderOrder = 2;
     this.scene.add(fill);
 
@@ -987,8 +987,8 @@ export class Game {
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
     } else {
-      // Anti-sink / flyaway only — do not lift resting marbles above contact
-      if (p.y < restY || p.y > maxY) {
+      // Anti-sink / flyaway; also pull tiny float gaps down onto contact
+      if (p.y < restY || p.y > maxY || (p.y < restY + 0.001 && m.body.velocity.length() < SETTLE_SPEED * 3)) {
         p.y = restY;
       }
       if (m.body.velocity.y < 0 && p.y <= restY + 1e-4) {
@@ -2451,11 +2451,53 @@ private spawnShootersInitial(): void {
   }
 
   /**
-   * Celebratory punch-in toward a scoring knockout marble, then ease back.
+   * Celebratory punch-in toward a scoring knockout marble, then ease back to shooter.
    * Multiple near-simultaneous exits retarget the most recent without stacking
    * long interruptions. Skips while aiming so multitouch orbit stays free.
    */
+  /** Billiards-style framing behind a shooter (same as turn-start camera). */
+  private shooterCamFraming(shooter: MarbleEntity): {
+    pos: THREE.Vector3;
+    target: THREE.Vector3;
+  } | null {
+    const px = shooter.body.position.x;
+    const py = shooter.body.position.y;
+    const pz = shooter.body.position.z;
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) return null;
+
+    const portrait = window.innerHeight > window.innerWidth;
+    let radial = Math.hypot(px, pz);
+    let dirX: number;
+    let dirZ: number;
+    if (radial < 1e-4) {
+      dirX = Math.sin(this.defaultCamAzimuth);
+      dirZ = Math.cos(this.defaultCamAzimuth);
+    } else {
+      dirX = px / radial;
+      dirZ = pz / radial;
+    }
+    const lookY = Number.isFinite(py) ? Math.max(MARBLE_RADIUS, py) : MARBLE_RADIUS;
+    const back = portrait ? 0.26 : 0.34;
+    const up = portrait ? 0.13 : 0.16;
+    return {
+      pos: new THREE.Vector3(px + dirX * back, up, pz + dirZ * back),
+      target: new THREE.Vector3(px, lookY, pz),
+    };
+  }
+
+  /** Point knockout punch return framing at the current turn shooter. */
+  private retargetPunchHomeToShooter(kp: { homePos: THREE.Vector3; homeTarget: THREE.Vector3 }): void {
+    const shooter =
+      this.getActiveShooter() ?? this.playerMarble ?? this.aiMarble;
+    if (!shooter) return;
+    const frame = this.shooterCamFraming(shooter);
+    if (!frame) return;
+    kp.homePos.copy(frame.pos);
+    kp.homeTarget.copy(frame.target);
+  }
+
   private startKnockoutCamPunch(follow: MarbleEntity): void {
+
     if (this.phase === 'replay') return;
     // Don't steal the view mid-aim / multitouch orbit gesture
     if (this.aiming) return;
@@ -2493,7 +2535,7 @@ private spawnShootersInitial(): void {
       if (kp.phase === 'out') {
         kp.phase = 'hold';
         kp.t = 0;
-        kp.holdDur = Math.min(0.28, KNOCKOUT_PUNCH_HOLD);
+        kp.holdDur = Math.min(0.95, KNOCKOUT_PUNCH_HOLD);
         kp.fromPos.copy(this.camera.position);
         kp.fromTarget.copy(this.controls.target);
       } else if (kp.phase === 'hold') {
@@ -2613,8 +2655,12 @@ private spawnShootersInitial(): void {
         kp.t = 0;
         kp.fromPos.copy(this.camera.position);
         kp.fromTarget.copy(this.controls.target);
+        // Ease back onto the current turn's shooter (player during aftermath; AI when theirs)
+        this.retargetPunchHomeToShooter(kp);
       }
     } else {
+      // Keep return framing on the live shooter so we never strand on the knockout
+      this.retargetPunchHomeToShooter(kp);
       const e = smooth(kp.t / Math.max(1e-6, kp.outDur));
       this.camera.position.lerpVectors(kp.fromPos, kp.homePos, e);
       this.controls.target.lerpVectors(kp.fromTarget, kp.homeTarget, e);

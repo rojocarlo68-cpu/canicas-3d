@@ -2,8 +2,8 @@
 export const MARBLE_RADIUS = 0.008; // 1.6 cm diameter
 /** Top of the dirt play pad (visual). Physics ground + marble rest align here. */
 export const PLAY_SURFACE_Y = 0.004;
-/** Center Y of a marble resting flush on the play surface (contact, no gap). */
-export const MARBLE_REST_Y = PLAY_SURFACE_Y + MARBLE_RADIUS;
+/** Center Y flush on dirt: surface + radius, tiny negative bias closes visual gap. */
+export const MARBLE_REST_Y = PLAY_SURFACE_Y + MARBLE_RADIUS - 0.00035;
 /** Glass-marble mass ≈ density 2500 kg/m³ × (4/3)πr³ */
 export const MARBLE_MASS = 0.0055;
 /** Fat-finger pick radius vs visual marble radius (screen or world) */
@@ -39,12 +39,12 @@ export const SLOWMO_SCALE = 0.22;
 export const SLOWMO_DURATION = 1.15; // real-time seconds
 export const SLOWMO_IMPACT_THRESHOLD = 0.55;
 
-/** Knockout camera punch-in: ease in → hold → ease back (total ~0.9–1.1s) */
+/** Knockout camera punch-in: ease in → hold → ease back to shooter (~2s) */
 export const KNOCKOUT_PUNCH_IN = 0.22;
-export const KNOCKOUT_PUNCH_HOLD = 0.38;
-export const KNOCKOUT_PUNCH_OUT = 0.42;
+export const KNOCKOUT_PUNCH_HOLD = 1.38; // +1.0s focus on exited marble
+export const KNOCKOUT_PUNCH_OUT = 0.48;
 /** Scale current cam→marble distance for the punch framing (closer = smaller) */
-export const KNOCKOUT_PUNCH_ZOOM = 0.58;
+export const KNOCKOUT_PUNCH_ZOOM = 0.38;
 
 /** Shot power: impulse magnitude range */
 export const SHOT_MIN = 0.0012;
