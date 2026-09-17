@@ -73,12 +73,12 @@ export function applyDayNight(elapsedSec: number, t: DayNightTargets): void {
   t.hemiLight.intensity = THREE.MathUtils.lerp(0.18, 0.55, dayAmount)
     + sunsetGlow * 0.12;
 
-  // Fog / sky feel
-  const fogDay = new THREE.Color(0xb5d6a8);
+  // Fog / sky feel — lighter density so sky + horizon mountains/buildings stay visible
+  const fogDay = new THREE.Color(0xb8d4ef);
   const fogSunset = new THREE.Color(0xc98b5a);
   const fogNight = new THREE.Color(0x0c1220);
   t.fog.color.copy(fogDay).lerp(fogSunset, sunsetGlow * 0.7).lerp(fogNight, nightAmount);
-  t.fog.density = THREE.MathUtils.lerp(0.014, 0.022, nightAmount);
+  t.fog.density = THREE.MathUtils.lerp(0.009, 0.016, nightAmount);
 
   // Sky atmosphere params
   skyU['turbidity'].value = THREE.MathUtils.lerp(2.5, 8, sunsetGlow) + nightAmount * 1.5;

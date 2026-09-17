@@ -9,7 +9,8 @@ export type ParkBuild = {
 
 /**
  * Realistic-ish park around the play patch: grass, dirt circle, trees,
- * paths, benches, fence, faroles, distant foliage. Mobile-friendly geometry.
+ * paths, benches, fence, faroles, distant foliage, horizon mountains/buildings.
+ * Mobile-friendly geometry.
  * Invisible physics wall stays outside this scenery (BOUNDARY_RADIUS).
  */
 export function buildPark(scene: THREE.Scene): ParkBuild {
@@ -20,14 +21,17 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
   const playR = CIRCLE_RADIUS;
   const innerClear = BOUNDARY_RADIUS + 0.35;
 
-  // --- Grass lawn (large ring outside dirt patch) ---
+  // Dirt pad outer radius — grass must not cover this disk
+  const dirtOuter = playR * 1.65;
+
+  // --- Grass lawn as a RING (hole under dirt = no grass/dirt z-fight) ---
   const grassMat = new THREE.MeshStandardMaterial({
     color: '#4a7a3a',
     roughness: 0.95,
     metalness: 0,
   });
   const lawn = new THREE.Mesh(
-    new THREE.CircleGeometry(28, 64),
+    new THREE.RingGeometry(dirtOuter * 0.98, 28, 64),
     grassMat,
   );
   lawn.rotation.x = -Math.PI / 2;
@@ -35,56 +39,72 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
   lawn.receiveShadow = true;
   root.add(lawn);
 
-  // Slightly darker grass patches (instanced flat discs)
+  // Slightly darker grass patches (instanced flat discs) — keep outside dirt
   const patchGeo = new THREE.CircleGeometry(0.9, 10);
   const patchMat = new THREE.MeshStandardMaterial({
     color: '#3d6b32',
     roughness: 1,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const patches = new THREE.InstancedMesh(patchGeo, patchMat, 36);
   const dummy = new THREE.Object3D();
-  for (let i = 0; i < 36; i++) {
+  let patchCount = 0;
+  for (let i = 0; i < 48 && patchCount < 36; i++) {
     const a = (i / 36) * Math.PI * 2 + (i % 5) * 0.17;
     const r = 4 + (i % 7) * 2.4 + (i % 3) * 0.5;
+    const s = 0.6 + (i % 4) * 0.35;
+    // Skip any patch whose footprint would overlap the dirt disk
+    if (r - s * 0.9 < dirtOuter + 0.15) continue;
     dummy.position.set(Math.cos(a) * r, 0.0015, Math.sin(a) * r);
     dummy.rotation.x = -Math.PI / 2;
     dummy.rotation.z = (i * 0.7) % Math.PI;
-    const s = 0.6 + (i % 4) * 0.35;
     dummy.scale.set(s, s, 1);
     dummy.updateMatrix();
-    patches.setMatrixAt(i, dummy.matrix);
+    patches.setMatrixAt(patchCount++, dummy.matrix);
   }
+  patches.count = patchCount;
   patches.instanceMatrix.needsUpdate = true;
   patches.receiveShadow = true;
   root.add(patches);
 
-  // --- Dirt / sand play patch under the circle ---
+  // --- Dirt / sand play patch: solid disk raised above grass/ground ---
   const dirtMat = new THREE.MeshStandardMaterial({
     color: '#8b6239',
     roughness: 0.98,
     metalness: 0,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -2,
   });
   const dirtPad = new THREE.Mesh(
-    new THREE.CircleGeometry(playR * 1.55, 48),
+    new THREE.CircleGeometry(dirtOuter, 64),
     dirtMat,
   );
   dirtPad.rotation.x = -Math.PI / 2;
-  dirtPad.position.y = 0.002;
+  dirtPad.position.y = 0.004;
+  dirtPad.renderOrder = 1;
   dirtPad.receiveShadow = true;
   root.add(dirtPad);
 
-  // Soft edge blend ring (darker soil)
+  // Soft edge blend ring (darker soil) just outside the dirt disk
   const soilRing = new THREE.Mesh(
-    new THREE.RingGeometry(playR * 1.45, playR * 2.1, 48),
+    new THREE.RingGeometry(dirtOuter * 0.92, dirtOuter * 1.35, 64),
     new THREE.MeshStandardMaterial({
       color: '#6e4a2a',
       roughness: 1,
       transparent: true,
       opacity: 0.55,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     }),
   );
   soilRing.rotation.x = -Math.PI / 2;
-  soilRing.position.y = 0.0022;
+  soilRing.position.y = 0.0045;
+  soilRing.renderOrder = 2;
   root.add(soilRing);
 
   // --- Winding gravel paths ---
@@ -179,6 +199,9 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
     hill.position.set(Math.cos(a) * dist, 0.2, Math.sin(a) * dist);
     root.add(hill);
   }
+
+  // --- Horizon mountains + city silhouette (mobile-friendly low poly) ---
+  addHorizonScenery(root);
 
   // --- Benches ---
   const woodMat = new THREE.MeshStandardMaterial({ color: '#6b4e32', roughness: 0.85 });
@@ -307,6 +330,95 @@ export function buildPark(scene: THREE.Scene): ParkBuild {
 
   scene.add(root);
   return { root, lamps };
+}
+
+
+/** Far backdrop: mountains + simple building blocks. Cheap geometry for mobile. */
+function addHorizonScenery(root: THREE.Group): void {
+  const mtnMats = [
+    new THREE.MeshStandardMaterial({ color: '#5a6e7a', roughness: 1, flatShading: true }),
+    new THREE.MeshStandardMaterial({ color: '#4a5c68', roughness: 1, flatShading: true }),
+    new THREE.MeshStandardMaterial({ color: '#6b7d6a', roughness: 1, flatShading: true }),
+  ];
+  // Layered mountain cones/spheres around the horizon
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + 0.08;
+    const dist = 48 + (i % 4) * 6;
+    const h = 8 + (i % 5) * 2.4;
+    const w = 7 + (i % 3) * 3;
+    const mtn = new THREE.Mesh(
+      new THREE.ConeGeometry(w * 0.55, h, 5),
+      mtnMats[i % mtnMats.length]!,
+    );
+    mtn.position.set(Math.cos(a) * dist, h * 0.42, Math.sin(a) * dist);
+    root.add(mtn);
+    // Soft foothill blob
+    const foot = new THREE.Mesh(
+      new THREE.SphereGeometry(w * 0.7, 6, 4),
+      mtnMats[(i + 1) % mtnMats.length]!,
+    );
+    foot.scale.y = 0.35;
+    foot.position.set(Math.cos(a) * (dist - 2), 1.2, Math.sin(a) * (dist - 2));
+    root.add(foot);
+  }
+
+  // City / town building silhouettes on a few arcs (not a full ring — feels more natural)
+  const bldgColors = [0x8a8f9a, 0x7a8490, 0x9a9088, 0x6e7884, 0xa09890];
+  const clusters = [
+    { a0: 0.35, span: 1.1, dist: 42 },
+    { a0: 2.4, span: 0.9, dist: 46 },
+    { a0: 4.2, span: 1.25, dist: 44 },
+  ];
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+  for (const c of clusters) {
+    const n = 10 + Math.floor(c.span * 6);
+    for (let i = 0; i < n; i++) {
+      const t = i / Math.max(1, n - 1);
+      const a = c.a0 + t * c.span + ((i % 3) - 1) * 0.04;
+      const dist = c.dist + (i % 4) * 1.6 + (i % 2) * 0.8;
+      const bw = 1.1 + (i % 4) * 0.55;
+      const bd = 1.0 + (i % 3) * 0.4;
+      const bh = 2.2 + (i % 6) * 1.35 + (i % 2) * 0.8;
+      const mat = new THREE.MeshStandardMaterial({
+        color: bldgColors[i % bldgColors.length]!,
+        roughness: 0.92,
+        metalness: 0.05,
+        flatShading: true,
+      });
+      const b = new THREE.Mesh(boxGeo, mat);
+      b.scale.set(bw, bh, bd);
+      b.position.set(Math.cos(a) * dist, bh * 0.5, Math.sin(a) * dist);
+      b.rotation.y = a + Math.PI / 2;
+      root.add(b);
+      // Occasional taller tower
+      if (i % 5 === 0) {
+        const tower = new THREE.Mesh(boxGeo, mat);
+        const th = bh * 1.55;
+        tower.scale.set(bw * 0.55, th, bd * 0.55);
+        tower.position.set(
+          Math.cos(a) * (dist + 0.3),
+          th * 0.5,
+          Math.sin(a) * (dist + 0.3),
+        );
+        tower.rotation.y = a;
+        root.add(tower);
+      }
+    }
+  }
+
+  // Soft skyline haze band (helps mountains/buildings read against sky)
+  const haze = new THREE.Mesh(
+    new THREE.CylinderGeometry(70, 70, 6, 32, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: '#c5d8ef',
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.BackSide,
+      depthWrite: false,
+    }),
+  );
+  haze.position.y = 3;
+  root.add(haze);
 }
 
 function makeBench(

@@ -317,13 +317,13 @@ export class Game {
     this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0xb5d6a8, 0.014);
+    this.scene.fog = new THREE.FogExp2(0xb8d4ef, 0.009);
 
     this.camera = new THREE.PerspectiveCamera(
       45,
       window.innerWidth / window.innerHeight,
       0.01,
-      200,
+      400,
     );
 
     this.controls = new OrbitControls(this.camera, this.canvas);
@@ -500,7 +500,7 @@ export class Game {
     skyUniforms['sunPosition'].value.copy(this.sunDir);
     this.sunLight.position.copy(this.sunDir).multiplyScalar(3);
 
-    // Endless dirt ground
+    // Base grass ground — keep center flat so displaced quads never poke through dirt
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
     const groundMat3 = new THREE.MeshStandardMaterial({
       color: '#5a7a42',
@@ -508,12 +508,20 @@ export class Game {
       metalness: 0.0,
     });
     const pos = groundGeo.attributes.position;
+    const flatR = CIRCLE_RADIUS * 2.2; // covers dirt pad + chalk ring
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
+      const r = Math.hypot(x, y);
+      if (r < flatR) {
+        pos.setZ(i, -0.002); // slightly below dirt / chalk
+        continue;
+      }
+      const fade = Math.min(1, (r - flatR) / (flatR * 0.5));
       const n =
-        Math.sin(x * 12) * Math.cos(y * 10) * 0.002 +
-        Math.sin(x * 3.1 + y * 2.7) * 0.004;
+        (Math.sin(x * 12) * Math.cos(y * 10) * 0.002 +
+          Math.sin(x * 3.1 + y * 2.7) * 0.004) *
+        fade;
       pos.setZ(i, n);
     }
     groundGeo.computeVertexNormals();
@@ -531,33 +539,55 @@ export class Game {
     groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
     this.world.addBody(groundBody);
 
-    // Play circle ring
+    // Dark under-edge so the scoring limit reads against dirt and grass
+    const edgeGeo = new THREE.RingGeometry(
+      CIRCLE_RADIUS - 0.012,
+      CIRCLE_RADIUS + 0.012,
+      96,
+    );
+    const edgeMat = new THREE.MeshBasicMaterial({
+      color: '#1a120c',
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const edgeRing = new THREE.Mesh(edgeGeo, edgeMat);
+    edgeRing.rotation.x = -Math.PI / 2;
+    edgeRing.position.y = 0.0055;
+    edgeRing.renderOrder = 3;
+    this.scene.add(edgeRing);
+
+    // High-contrast chalk scoring ring at CIRCLE_RADIUS (gameplay radius unchanged)
     const ringGeo = new THREE.RingGeometry(
-      CIRCLE_RADIUS - 0.003,
-      CIRCLE_RADIUS + 0.003,
-      64,
+      CIRCLE_RADIUS - 0.007,
+      CIRCLE_RADIUS + 0.007,
+      96,
     );
     const ringMat = new THREE.MeshBasicMaterial({
-      color: '#f5e6c8',
+      color: '#fff8e7',
       side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.92,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     });
     this.circleMesh = new THREE.Mesh(ringGeo, ringMat);
     this.circleMesh.rotation.x = -Math.PI / 2;
-    this.circleMesh.position.y = 0.0012;
+    this.circleMesh.position.y = 0.006;
+    this.circleMesh.renderOrder = 4;
     this.scene.add(this.circleMesh);
 
-    const fillGeo = new THREE.CircleGeometry(CIRCLE_RADIUS, 64);
+    const fillGeo = new THREE.CircleGeometry(CIRCLE_RADIUS - 0.008, 64);
     const fillMat = new THREE.MeshBasicMaterial({
       color: '#5c3d1e',
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.22,
       side: THREE.DoubleSide,
+      depthWrite: false,
     });
     const fill = new THREE.Mesh(fillGeo, fillMat);
     fill.rotation.x = -Math.PI / 2;
-    fill.position.y = 0.0008;
+    fill.position.y = 0.0052;
+    fill.renderOrder = 2;
     this.scene.add(fill);
 
     // Drop hopper
