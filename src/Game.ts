@@ -21,7 +21,6 @@ import {
   OUT_MARGIN,
   SETTLE_MAX_MS,
   SETTLE_SPEED,
-  POWER_DRAG_PX,
   DESPAWN_DIST,
   START_LEVEL,
   REPLAY_FPS,
@@ -35,11 +34,19 @@ import {
   createFieldDesigns,
   createMarbleEntity,
   createPlayerDesign,
-  drawPreviewMarble,
   getMarbleCannonMaterial,
   type MarbleEntity,
 } from './marbles';
 import { planAIShot, impulseFromPower } from './ai';
+import {
+  resolveControlMode,
+  controlModeLabel,
+  controlModeHint,
+  powerFromFlick,
+  powerFromPush,
+  isGestureStrongEnough,
+  type ControlMode,
+} from './controlMode';
 import {
   ReplayBuffer,
   makeEmptyFrame,
@@ -105,9 +112,27 @@ export class Game {
   private turn: Side = 'player';
   private level = START_LEVEL;
 
-  private charging = false;
-  private chargePointerY = 0;
-  private power = 0;
+  /** Player shoot control: flick (aim line) or push (finger shove). */
+  private controlMode: ControlMode = resolveControlMode();
+
+  private aiming = false;
+  private aimPointerId: number | null = null;
+  private aimStartClientX = 0;
+  private aimStartClientY = 0;
+  private aimDirX = 0;
+  private aimDirZ = -1;
+  private aimPower = 0;
+  private aimSamples: { t: number; x: number; y: number }[] = [];
+  private canPlayerShoot = false;
+
+  private aimLineGroup: THREE.Group | null = null;
+  private aimShaft: THREE.Mesh | null = null;
+  private aimHead: THREE.Mesh | null = null;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private readonly _ndc = new THREE.Vector2();
+  private readonly _groundHit = new THREE.Vector3();
+  private readonly _tmpV = new THREE.Vector3();
 
   private groundMat!: CANNON.Material;
   private boundaryMat!: CANNON.Material;
@@ -178,7 +203,6 @@ export class Game {
 
   private els: {
     btnDrop: HTMLButtonElement;
-    btnShoot: HTMLButtonElement;
     btnRestart: HTMLButtonElement;
     btnReplay: HTMLButtonElement;
     btnEndReplay: HTMLButtonElement;
@@ -198,7 +222,9 @@ export class Game {
     endScore: HTMLElement;
     settleBanner: HTMLElement;
     instructions: HTMLElement;
-    playerPreview: HTMLCanvasElement;
+    controlModeLabel: HTMLElement;
+    linkFlick: HTMLAnchorElement;
+    linkPush: HTMLAnchorElement;
     locationBanner: HTMLElement;
     replayBanner: HTMLElement;
     replayControls: HTMLElement;
@@ -228,7 +254,6 @@ export class Game {
     this.canvas = canvas;
     this.els = {
       btnDrop: document.getElementById('btn-drop') as HTMLButtonElement,
-      btnShoot: document.getElementById('btn-shoot') as HTMLButtonElement,
       btnRestart: document.getElementById('btn-restart') as HTMLButtonElement,
       btnReplay: document.getElementById('btn-replay') as HTMLButtonElement,
       btnEndReplay: document.getElementById('btn-end-replay') as HTMLButtonElement,
@@ -248,7 +273,9 @@ export class Game {
       endScore: document.getElementById('end-score')!,
       settleBanner: document.getElementById('settle-banner')!,
       instructions: document.getElementById('instructions')!,
-      playerPreview: document.getElementById('player-preview') as HTMLCanvasElement,
+      controlModeLabel: document.getElementById('control-mode-label')!,
+      linkFlick: document.getElementById('link-flick') as HTMLAnchorElement,
+      linkPush: document.getElementById('link-push') as HTMLAnchorElement,
       locationBanner: document.getElementById('location-banner')!,
       replayBanner: document.getElementById('replay-banner')!,
       replayControls: document.getElementById('replay-controls')!,
@@ -264,9 +291,9 @@ export class Game {
       gameRoot: document.getElementById('game-root')!,
     };
 
-    drawPreviewMarble(this.els.playerPreview, this.playerDesign);
     this.rollOpponentName();
     this.updateScoreHUD();
+    this.applyControlModeUI();
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -352,13 +379,14 @@ export class Game {
     this.bindUI();
     this.fitCameraToArena(true);
 
-    this.boundPointerDown = (e) => this.onShootPointerDown(e);
-    this.boundPointerUp = (e) => this.onShootPointerUp(e);
-    this.boundPointerMove = (e) => this.onShootPointerMove(e);
-    this.boundPointerCancel = (e) => this.onShootPointerCancel(e);
+    this.boundPointerDown = (e) => this.onAimPointerDown(e);
+    this.boundPointerUp = (e) => this.onAimPointerUp(e);
+    this.boundPointerMove = (e) => this.onAimPointerMove(e);
+    this.boundPointerCancel = (e) => this.onAimPointerCancel(e);
     this.boundOrient = () => this.onResize();
 
-    this.els.btnShoot.addEventListener('pointerdown', this.boundPointerDown);
+    this.buildAimLine();
+    this.canvas.addEventListener('pointerdown', this.boundPointerDown);
     window.addEventListener('pointerup', this.boundPointerUp);
     window.addEventListener('pointermove', this.boundPointerMove);
     window.addEventListener('pointercancel', this.boundPointerCancel);
@@ -381,6 +409,10 @@ export class Game {
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
+    this.canvas.removeEventListener('pointerdown', this.boundPointerDown);
+    window.removeEventListener('pointerup', this.boundPointerUp);
+    window.removeEventListener('pointermove', this.boundPointerMove);
+    window.removeEventListener('pointercancel', this.boundPointerCancel);
     window.removeEventListener('resize', this.boundOrient);
     window.removeEventListener('orientationchange', this.boundOrient);
   }
@@ -651,9 +683,8 @@ export class Game {
   private setPhase(phase: GamePhase): void {
     this.phase = phase;
     this.els.btnDrop.disabled = phase !== 'ready';
-    const canShoot =
-      phase === 'playing' && this.turn === 'player' && !this.charging;
-    this.els.btnShoot.disabled = !canShoot;
+    this.canPlayerShoot =
+      phase === 'playing' && this.turn === 'player' && !this.aiming;
     this.els.settleBanner.classList.toggle(
       'hidden',
       phase !== 'settling' && phase !== 'ai_thinking',
@@ -670,16 +701,15 @@ export class Game {
       this.els.replayControls.classList.add('hidden');
     }
 
+    const modeHint = controlModeHint(this.controlMode);
     if (phase === 'ready') {
       this.els.instructions.textContent =
-        `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Potencia = deslizar arriba/abajo al mantener.`;
+        `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Modo ${controlModeLabel(this.controlMode)}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent = 'Espera 5 segundos: las canicas de campo se congelan donde queden.';
     } else if (phase === 'playing') {
       this.els.instructions.textContent =
-        this.turn === 'player'
-          ? 'Tu turno: mantén tu canica, desliza ARRIBA/ABAJO para potencia, horizontal para apuntar; suelta para disparar.'
-          : `Turno de ${this.opponentName}…`;
+        this.turn === 'player' ? modeHint : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
       this.els.instructions.textContent =
         this.turn === 'ai'
@@ -692,6 +722,17 @@ export class Game {
     }
 
     this.updateTurnHUD();
+  }
+
+  private applyControlModeUI(): void {
+    const label = controlModeLabel(this.controlMode);
+    this.els.controlModeLabel.textContent = `Modo: ${label}`;
+    this.els.linkFlick.classList.toggle('active', this.controlMode === 'flick');
+    this.els.linkPush.classList.toggle('active', this.controlMode === 'push');
+    // Keep shareable relative links under the Pages base path
+    const base = import.meta.env.BASE_URL || '/canicas-3d/';
+    this.els.linkFlick.href = `${base}?control=flick`;
+    this.els.linkPush.href = `${base}?control=push`;
   }
 
   private updateTurnHUD(): void {
@@ -941,12 +982,13 @@ private spawnShootersInitial(): void {
 
     if (side === 'player') {
       this.setPhase('playing');
-      this.els.btnShoot.disabled = false;
+      this.canPlayerShoot = true;
       this.els.locationBanner.textContent = 'Aquí está tu canica';
       this.els.locationBanner.classList.remove('hidden', 'banner-ai');
       this.els.locationBanner.classList.add('banner-player');
     } else {
-      this.els.btnShoot.disabled = true;
+      this.canPlayerShoot = false;
+      this.cancelAimGesture(false);
       this.els.locationBanner.textContent = `Aquí está la canica de ${this.opponentName}`;
       this.els.locationBanner.classList.remove('hidden', 'banner-player');
       this.els.locationBanner.classList.add('banner-ai');
@@ -1080,110 +1122,268 @@ private spawnShootersInitial(): void {
     };
   }
 
-  private syncPowerMeter(): void {
-    const pct = Math.round(this.power * 100);
-    this.els.powerBar.style.width = `${pct}%`;
-    this.els.powerPct.textContent = `${pct}%`;
+
+  private buildAimLine(): void {
+    const group = new THREE.Group();
+    group.visible = false;
+    group.renderOrder = 5;
+
+    const shaftGeo = new THREE.CylinderGeometry(0.0012, 0.0012, 1, 8);
+    shaftGeo.translate(0, 0.5, 0);
+    const shaftMat = new THREE.MeshBasicMaterial({
+      color: 0xffe08a,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      depthTest: false,
+    });
+    const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+    shaft.rotation.x = Math.PI / 2;
+
+    const headGeo = new THREE.ConeGeometry(0.0045, 0.014, 12);
+    headGeo.translate(0, 0.007, 0);
+    const headMat = new THREE.MeshBasicMaterial({
+      color: 0xfff3c4,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      depthTest: false,
+    });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.rotation.x = Math.PI / 2;
+
+    group.add(shaft);
+    group.add(head);
+    this.scene.add(group);
+    this.aimLineGroup = group;
+    this.aimShaft = shaft;
+    this.aimHead = head;
   }
 
-  private onShootPointerDown(e: PointerEvent): void {
-    if (this.phase !== 'playing' || this.turn !== 'player' || !this.playerMarble) return;
-    if (this.els.btnShoot.disabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    this.charging = true;
-    this.chargePointerY = e.clientY;
-    // Baseline so a short tap still fires weakly; drag up/down adjusts
-    this.power = 0.22;
-    this.els.btnShoot.classList.add('charging');
-    this.els.powerWrap.classList.remove('hidden');
-    this.els.powerWrap.classList.add('visible');
-    this.syncPowerMeter();
-    this.controls.enabled = false;
+  private hideAimLine(): void {
+    if (this.aimLineGroup) this.aimLineGroup.visible = false;
   }
 
-  private onShootPointerMove(e: PointerEvent): void {
-    if (!this.charging || !this.playerMarble) return;
-    // Horizontal drag → orbit camera around shooter (aim = camera forward; no extra yaw)
-    const dx = e.movementX || 0;
-    if (dx !== 0) this.orbitAimCamera(dx * 0.01);
-    // Vertical drag → power (up increases, down decreases)
-    const dy = e.movementY !== 0 ? e.movementY : e.clientY - this.chargePointerY;
-    this.chargePointerY = e.clientY;
-    this.power = Math.max(0, Math.min(1, this.power - dy / POWER_DRAG_PX));
-    this.syncPowerMeter();
+  private updateAimLineVisual(): void {
+    if (!this.aimLineGroup || !this.aimShaft || !this.aimHead || !this.playerMarble) {
+      return;
+    }
+    // Push mode: no aim line (or extremely minimal — we hide).
+    if (this.controlMode === 'push') {
+      this.aimLineGroup.visible = false;
+      return;
+    }
+    const len = Math.hypot(this.aimDirX, this.aimDirZ);
+    if (len < 1e-6 || this.aimPower < 0.02) {
+      this.aimLineGroup.visible = false;
+      return;
+    }
+    const dx = this.aimDirX / len;
+    const dz = this.aimDirZ / len;
+    const px = this.playerMarble.body.position.x;
+    const pz = this.playerMarble.body.position.z;
+    const py = Math.max(MARBLE_RADIUS * 1.2, this.playerMarble.body.position.y);
+
+    // Visual length scales with power (readable but not huge)
+    const worldLen = MARBLE_RADIUS * (4 + this.aimPower * 22);
+    this.aimLineGroup.position.set(px, py, pz);
+    this.aimLineGroup.visible = true;
+
+    // Cylinder default along +Y; we rotated X so local +Y maps to +Z before lookAt.
+    // Orient group so +Z faces shot direction on XZ plane.
+    this.aimLineGroup.rotation.set(0, Math.atan2(dx, dz), 0);
+
+    this.aimShaft.scale.set(1, worldLen, 1);
+    this.aimHead.position.set(0, 0, worldLen);
+    const glow = 0.55 + this.aimPower * 0.45;
+    (this.aimShaft.material as THREE.MeshBasicMaterial).opacity = glow;
+    (this.aimHead.material as THREE.MeshBasicMaterial).opacity = Math.min(1, glow + 0.05);
   }
 
-  private onShootPointerCancel(_e: PointerEvent): void {
-    if (!this.charging) return;
-    this.charging = false;
-    this.els.btnShoot.classList.remove('charging');
-    this.els.powerWrap.classList.add('hidden');
-    this.els.powerWrap.classList.remove('visible');
-    this.els.powerBar.style.width = '0%';
-    this.els.powerPct.textContent = '';
-    this.controls.enabled = true;
+  private clientToGround(clientX: number, clientY: number): THREE.Vector3 | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return null;
+    this._ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this._ndc, this.camera);
+    const hit = this._groundHit;
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    if (!Number.isFinite(hit.x) || !Number.isFinite(hit.z)) return null;
+    return hit;
   }
 
-  private onShootPointerUp(e: PointerEvent): void {
-    if (!this.charging) return;
-    e.preventDefault();
-    this.charging = false;
-    this.els.btnShoot.classList.remove('charging');
-    this.els.powerWrap.classList.add('hidden');
-    this.els.powerWrap.classList.remove('visible');
-    this.controls.enabled = true;
+  private projectMarbleToScreen(marble: MarbleEntity): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    this._tmpV.set(
+      marble.body.position.x,
+      Math.max(MARBLE_RADIUS, marble.body.position.y),
+      marble.body.position.z,
+    );
+    this._tmpV.project(this.camera);
+    return {
+      x: (this._tmpV.x * 0.5 + 0.5) * rect.width + rect.left,
+      y: (-this._tmpV.y * 0.5 + 0.5) * rect.height + rect.top,
+    };
+  }
 
-    const power01 = Math.max(0.05, Math.min(1, this.power));
-    this.els.powerBar.style.width = '0%';
-    this.els.powerPct.textContent = '';
+  /** Accept gesture near player marble or on the play surface during the player's turn. */
+  private isValidAimStart(clientX: number, clientY: number): boolean {
+    if (!this.playerMarble) return false;
+    const screen = this.projectMarbleToScreen(this.playerMarble);
+    const nearMarblePx = Math.hypot(clientX - screen.x, clientY - screen.y);
+    if (nearMarblePx <= 72) return true;
 
+    const g = this.clientToGround(clientX, clientY);
+    if (!g) return false;
+    const mx = this.playerMarble.body.position.x;
+    const mz = this.playerMarble.body.position.z;
+    const nearMarbleWorld = Math.hypot(g.x - mx, g.z - mz);
+    if (nearMarbleWorld <= MARBLE_RADIUS * 14) return true;
+    // Play surface (circle + small margin)
+    const fromOrigin = Math.hypot(g.x, g.z);
+    return fromOrigin <= CIRCLE_RADIUS * 1.35;
+  }
+
+  private noteAimSample(x: number, y: number): void {
+    const t = performance.now();
+    this.aimSamples.push({ t, x, y });
+    while (this.aimSamples.length > 1 && t - this.aimSamples[0]!.t > 90) {
+      this.aimSamples.shift();
+    }
+  }
+
+  private getAimSwipeSpeed(): number {
+    if (this.aimSamples.length < 2) return 0;
+    const a = this.aimSamples[0]!;
+    const b = this.aimSamples[this.aimSamples.length - 1]!;
+    const dt = Math.max(1, b.t - a.t) / 1000;
+    return Math.hypot(b.x - a.x, b.y - a.y) / dt;
+  }
+
+  private recomputeAimFromPointer(clientX: number, clientY: number): void {
     if (!this.playerMarble) return;
-    const { dirX, dirZ } = this.getCameraAimDirection(0);
-    this.startThrow('player', dirX, dirZ, power01);
+    const dragPx = Math.hypot(clientX - this.aimStartClientX, clientY - this.aimStartClientY);
+    const speed = this.getAimSwipeSpeed();
+
+    // Prefer ground-projected drag for direction (stable vs camera tilt)
+    const g0 = this.clientToGround(this.aimStartClientX, this.aimStartClientY);
+    const g1 = this.clientToGround(clientX, clientY);
+    let dx = 0;
+    let dz = 0;
+    if (g0 && g1) {
+      dx = g1.x - g0.x;
+      dz = g1.z - g0.z;
+    }
+    if (Math.hypot(dx, dz) < 1e-8) {
+      // Fallback: screen drag mapped onto camera ground-forward / right
+      this.camera.getWorldDirection(this._aimFwd);
+      this._aimFwd.y = 0;
+      if (this._aimFwd.lengthSq() < 1e-10) this._aimFwd.set(0, 0, -1);
+      this._aimFwd.normalize();
+      const rightX = this._aimFwd.z;
+      const rightZ = -this._aimFwd.x;
+      const sx = (clientX - this.aimStartClientX) / 120;
+      const sy = (clientY - this.aimStartClientY) / 120;
+      // Screen +Y is down; dragging up should push forward (camera look)
+      dx = rightX * sx + this._aimFwd.x * -sy;
+      dz = rightZ * sx + this._aimFwd.z * -sy;
+    }
+    const len = Math.hypot(dx, dz);
+    if (len > 1e-8) {
+      this.aimDirX = dx / len;
+      this.aimDirZ = dz / len;
+    }
+
+    this.aimPower =
+      this.controlMode === 'push'
+        ? powerFromPush(dragPx, speed)
+        : powerFromFlick(dragPx, speed);
+    this.updateAimLineVisual();
   }
 
+  private cancelAimGesture(reenableControls: boolean): void {
+    this.aiming = false;
+    this.aimPointerId = null;
+    this.aimSamples = [];
+    this.aimPower = 0;
+    this.hideAimLine();
+    if (reenableControls) this.controls.enabled = true;
+  }
 
-  /**
-   * Shot direction = camera look projected onto the ground plane.
-   * With the charge gesture orbiting the camera, a “straight” release sends
-   * the marble toward whatever is visually ahead (view center / look-at).
-   */
-  private getCameraAimDirection(yawOffset = 0): { dirX: number; dirZ: number } {
+  private onAimPointerDown(e: PointerEvent): void {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    if (this.phase !== 'playing' || this.turn !== 'player' || !this.playerMarble) return;
+    if (!this.canPlayerShoot || this.aiming) return;
+    // Let multi-touch orbit/zoom go to OrbitControls
+    if (e.isPrimary === false) return;
+    if (!this.isValidAimStart(e.clientX, e.clientY)) return;
+
+    e.preventDefault();
+    // Stop OrbitControls from treating this as a rotate
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    this.aiming = true;
+    this.canPlayerShoot = false;
+    this.aimPointerId = e.pointerId;
+    this.aimStartClientX = e.clientX;
+    this.aimStartClientY = e.clientY;
+    this.aimSamples = [];
+    this.noteAimSample(e.clientX, e.clientY);
+    this.aimPower = 0.12;
+    // Default aim along camera forward until drag establishes direction
     this.camera.getWorldDirection(this._aimFwd);
     this._aimFwd.y = 0;
     if (this._aimFwd.lengthSq() < 1e-10) {
-      const p = this.playerMarble?.body.position;
-      if (p) this._aimFwd.set(-p.x, 0, -p.z);
-      else this._aimFwd.set(0, 0, -1);
+      const p = this.playerMarble.body.position;
+      this._aimFwd.set(-p.x, 0, -p.z);
     }
     this._aimFwd.normalize();
-    if (Math.abs(yawOffset) > 1e-8) {
-      const c = Math.cos(yawOffset);
-      const s = Math.sin(yawOffset);
-      const x = this._aimFwd.x * c - this._aimFwd.z * s;
-      const z = this._aimFwd.x * s + this._aimFwd.z * c;
-      this._aimFwd.set(x, 0, z).normalize();
-    }
-    return { dirX: this._aimFwd.x, dirZ: this._aimFwd.z };
+    this.aimDirX = this._aimFwd.x;
+    this.aimDirZ = this._aimFwd.z;
+    this.controls.enabled = false;
+    this.updateAimLineVisual();
   }
 
-  /** Orbit camera around the player marble (Y axis) while charging aim. */
-  private orbitAimCamera(deltaYaw: number): void {
-    const shooter = this.playerMarble;
-    if (!shooter) return;
-    const px = shooter.body.position.x;
-    const py = Math.max(MARBLE_RADIUS, shooter.body.position.y);
-    const pz = shooter.body.position.z;
-    const ox = this.camera.position.x - px;
-    const oz = this.camera.position.z - pz;
-    const c = Math.cos(deltaYaw);
-    const s = Math.sin(deltaYaw);
-    this.camera.position.x = px + ox * c - oz * s;
-    this.camera.position.z = pz + ox * s + oz * c;
-    this.controls.target.set(px, py, pz);
-    this.camera.lookAt(this.controls.target);
+  private onAimPointerMove(e: PointerEvent): void {
+    if (!this.aiming || this.aimPointerId !== e.pointerId) return;
+    this.noteAimSample(e.clientX, e.clientY);
+    this.recomputeAimFromPointer(e.clientX, e.clientY);
+  }
+
+  private onAimPointerCancel(e: PointerEvent): void {
+    if (!this.aiming) return;
+    if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
+    this.cancelAimGesture(true);
+    this.canPlayerShoot = this.phase === 'playing' && this.turn === 'player';
+  }
+
+  private onAimPointerUp(e: PointerEvent): void {
+    if (!this.aiming) return;
+    if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
+    e.preventDefault();
+
+    this.noteAimSample(e.clientX, e.clientY);
+    this.recomputeAimFromPointer(e.clientX, e.clientY);
+    const dragPx = Math.hypot(e.clientX - this.aimStartClientX, e.clientY - this.aimStartClientY);
+    const speed = this.getAimSwipeSpeed();
+    const power01 = this.aimPower;
+    const dirX = this.aimDirX;
+    const dirZ = this.aimDirZ;
+
+    this.cancelAimGesture(true);
+
+    if (!this.playerMarble || this.phase !== 'playing' || this.turn !== 'player') {
+      return;
+    }
+    if (!isGestureStrongEnough(this.controlMode, dragPx, speed)) {
+      this.canPlayerShoot = true;
+      return;
+    }
+
+    this.startThrow('player', dirX, dirZ, Math.max(0.08, Math.min(1, power01)));
   }
 
   private startThrow(
@@ -1199,7 +1399,8 @@ private spawnShootersInitial(): void {
     // Apply immediately (no hand wind-up)
     this.applyPendingImpulse();
 
-    this.els.btnShoot.disabled = true;
+    this.canPlayerShoot = false;
+    this.hideAimLine();
     this.setPhase('shot_flying');
     this.shotSettleTimer = performance.now();
     this.lastScorer = side;
@@ -1291,8 +1492,8 @@ private spawnShootersInitial(): void {
 
   private endGame(): void {
     this.setPhase('ended');
-    this.els.btnShoot.disabled = true;
-    this.charging = false;
+    this.canPlayerShoot = false;
+    this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
     this.controls.enabled = true;
     this.markerGroup.visible = false;
@@ -1325,7 +1526,7 @@ private spawnShootersInitial(): void {
     this.clearFieldMarbles();
     this.removeShooter('player');
     this.removeShooter('ai');
-    this.charging = false;
+    this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
     this.els.powerBar.style.width = '0%';
     this.controls.enabled = true;
@@ -1348,12 +1549,12 @@ private spawnShootersInitial(): void {
     // Hide end screen during replay so the scene is visible
     this.els.endScreen.classList.add('hidden');
 
-    this.charging = false;
+    this.cancelAimGesture(true);
     this.els.powerWrap.classList.add('hidden');
     // Free camera during replay — user can orbit/pinch while scrubbing
     this.controls.enabled = true;
     this.controls.enableDamping = true;
-    this.els.btnShoot.disabled = true;
+    this.canPlayerShoot = false;
     this.markerGroup.visible = false;
     this.recording = false;
     this.camEase = null;
@@ -1393,7 +1594,7 @@ private spawnShootersInitial(): void {
     // Resume turn without re-triggering AI think from scratch mid-flow
     if (this.turn === 'player') {
       this.setPhase('playing');
-      this.els.btnShoot.disabled = false;
+      this.canPlayerShoot = true;
       this.updateTurnHUD();
       if (this.playerMarble) this.easeCameraToward(this.playerMarble);
     } else {
@@ -1850,8 +2051,8 @@ private spawnShootersInitial(): void {
     this.updateMoneyHudTarget();
     this.particles?.update(dt);
 
-    if (this.charging && this.playerMarble) {
-      this.syncPowerMeter();
+    if (this.aiming && this.playerMarble) {
+      this.updateAimLineVisual();
     }
 
     if (this.phase === 'settling') {

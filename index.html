@@ -33,22 +33,23 @@
           <button id="btn-replay" type="button" disabled title="Repetición de los últimos ~10 s">Repetición</button>
         </div>
 
-        <p id="instructions">Orbitar · Zoom · Mantén tu canica: desliza ↑↓ potencia, ↔ apunta; suelta para disparar</p>
+        <p id="instructions">Orbitar · Zoom · En tu turno: arrastra sobre tu canica para disparar</p>
 
-        <div id="power-wrap" class="hidden">
+        <div id="control-mode-badge" aria-live="polite">
+          <span id="control-mode-label">Modo: Flick</span>
+          <span id="control-mode-toggle" class="control-toggle">
+            <a id="link-flick" href="?control=flick">Flick</a>
+            <span aria-hidden="true">·</span>
+            <a id="link-push" href="?control=push">Empuje</a>
+          </span>
+        </div>
+
+        <div id="power-wrap" class="hidden" aria-hidden="true">
           <div id="power-label">Potencia</div>
           <div id="power-bar-bg">
             <div id="power-bar"></div>
           </div>
           <div id="power-pct"></div>
-        </div>
-
-        <div id="player-marble-ui">
-          <div id="player-marble-hint">↑↓ Potencia · suelta = tiro</div>
-          <button id="btn-shoot" type="button" disabled aria-label="Disparar canica">
-            <canvas id="player-preview" width="128" height="128"></canvas>
-            <span id="shoot-label">Tu canica</span>
-          </button>
         </div>
       </div>
 

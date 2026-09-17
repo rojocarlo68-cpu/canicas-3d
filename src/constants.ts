@@ -30,9 +30,6 @@ export const SLOWMO_IMPACT_THRESHOLD = 0.55;
 /** Shot power: impulse magnitude range */
 export const SHOT_MIN = 0.0012;
 export const SHOT_MAX = 0.0095;
-/** Vertical drag distance (px) from 0→1 power while holding shoot */
-export const POWER_DRAG_PX = 160;
-
 /** Out-of-circle when center is beyond circle + small margin */
 export const OUT_MARGIN = MARBLE_RADIUS * 0.25;
 
