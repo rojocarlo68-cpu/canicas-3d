@@ -51,10 +51,10 @@ import {
 import {
   resolveSceneLevel,
   sceneLevelLabel,
-  buildGameHref,
   type SceneLevel,
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
+import { playMarbleClack, unlockMarbleAudio } from './marbleSounds';
 import {
   createAIDesign,
   createFieldDesigns,
@@ -66,7 +66,6 @@ import {
 import { planAIShot, impulseFromPower } from './ai';
 import {
   resolveControlMode,
-  controlModeLabel,
   controlModeHint,
   powerFromFlick,
   powerFromPush,
@@ -137,6 +136,7 @@ export class Game {
   private lastScorer: Side | null = null;
 
   private phase: GamePhase = 'ready';
+  private paused = false;
   private settleStart = 0;
   private turn: Side = 'player';
   private level = START_LEVEL;
@@ -312,9 +312,10 @@ export class Game {
     endScore: HTMLElement;
     settleBanner: HTMLElement;
     instructions: HTMLElement;
-    controlModeLabel: HTMLElement;
-    linkFlick: HTMLAnchorElement;
-    linkPush: HTMLAnchorElement;
+    btnHudRestart: HTMLButtonElement;
+    btnPause: HTMLButtonElement;
+    btnPauseClose: HTMLButtonElement;
+    pauseOverlay: HTMLElement;
     locationBanner: HTMLElement;
     replayBanner: HTMLElement;
     replayControls: HTMLElement;
@@ -328,8 +329,6 @@ export class Game {
     moneyToast: HTMLElement;
     punchOverlay: HTMLElement;
     gameRoot: HTMLElement;
-    linkLevel1: HTMLAnchorElement | null;
-    linkLevel2: HTMLAnchorElement | null;
   };
 
   private playerDesign = createPlayerDesign();
@@ -365,9 +364,10 @@ export class Game {
       endScore: document.getElementById('end-score')!,
       settleBanner: document.getElementById('settle-banner')!,
       instructions: document.getElementById('instructions')!,
-      controlModeLabel: document.getElementById('control-mode-label')!,
-      linkFlick: document.getElementById('link-flick') as HTMLAnchorElement,
-      linkPush: document.getElementById('link-push') as HTMLAnchorElement,
+      btnHudRestart: document.getElementById('btn-hud-restart') as HTMLButtonElement,
+      btnPause: document.getElementById('btn-pause') as HTMLButtonElement,
+      btnPauseClose: document.getElementById('btn-pause-close') as HTMLButtonElement,
+      pauseOverlay: document.getElementById('pause-overlay')!,
       locationBanner: document.getElementById('location-banner')!,
       replayBanner: document.getElementById('replay-banner')!,
       replayControls: document.getElementById('replay-controls')!,
@@ -381,8 +381,6 @@ export class Game {
       moneyToast: document.getElementById('money-toast')!,
       punchOverlay: document.getElementById('punch-overlay')!,
       gameRoot: document.getElementById('game-root')!,
-      linkLevel1: document.getElementById('link-level-1') as HTMLAnchorElement | null,
-      linkLevel2: document.getElementById('link-level-2') as HTMLAnchorElement | null,
     };
 
     this.rollOpponentName();
@@ -719,6 +717,15 @@ export class Game {
       for (const b of this.desertCamp.bumpBodies) {
         this.world.addBody(b);
       }
+      // Stone props: grippy, modest bounce (like rock)
+      this.world.addContactMaterial(
+        new CANNON.ContactMaterial(this.desertCamp.stoneMat, getMarbleCannonMaterial(), {
+          friction: 0.72,
+          restitution: 0.32,
+          contactEquationStiffness: 1e7,
+          contactEquationRelaxation: 3,
+        }),
+      );
       this.streetLamps = [];
       this.parkLife = null;
       // Start at night; full day cycle still 30 minutes
@@ -814,11 +821,40 @@ export class Game {
 
   }
 
+  private setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.els.pauseOverlay.classList.toggle('hidden', !paused);
+    this.els.pauseOverlay.setAttribute('aria-hidden', paused ? 'false' : 'true');
+    this.controls.enabled = !paused && this.phase !== 'ended';
+    if (paused) {
+      this.cancelAimGesture(true);
+      this.els.powerWrap.classList.add('hidden');
+    }
+  }
+
   private bindUI(): void {
     this.els.btnDrop.addEventListener('click', () => this.dropMarbles());
     this.els.btnRestart.addEventListener('click', () => this.restart());
     this.els.btnReplay.addEventListener('click', () => this.startReplay());
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
+
+    this.els.btnHudRestart.addEventListener('click', () => {
+      unlockMarbleAudio();
+      this.setPaused(false);
+      this.restart();
+    });
+    this.els.btnPause.addEventListener('click', () => {
+      unlockMarbleAudio();
+      this.setPaused(true);
+    });
+    this.els.btnPauseClose.addEventListener('click', () => this.setPaused(false));
+    this.els.pauseOverlay.addEventListener('click', (e) => {
+      if (e.target === this.els.pauseOverlay) this.setPaused(false);
+    });
+    // Unlock audio on first interaction with any action button
+    for (const b of [this.els.btnDrop, this.els.btnReplay, this.els.btnPause, this.els.btnHudRestart]) {
+      b.addEventListener('pointerdown', () => unlockMarbleAudio(), { once: true });
+    }
 
     this.els.replayBtnPlay.addEventListener('click', () => this.toggleReplayPlay());
     this.els.replayBtnBack.addEventListener('click', () => this.nudgeReplay(-Math.round(REPLAY_FPS * 0.5)));
@@ -879,7 +915,7 @@ export class Game {
     const modeHint = controlModeHint(this.controlMode);
     if (phase === 'ready') {
       this.els.instructions.textContent =
-        `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Modo ${controlModeLabel(this.controlMode)}.`;
+        `Pulsa el botón de soltar (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent = 'Las canicas caen y se acomodan…';
     } else if (phase === 'playing') {
@@ -900,22 +936,7 @@ export class Game {
   }
 
   private applyControlModeUI(): void {
-    const label = controlModeLabel(this.controlMode);
-    this.els.controlModeLabel.textContent = `Modo: ${label}`;
-    this.els.linkFlick.classList.toggle('active', this.controlMode === 'flick');
-    this.els.linkPush.classList.toggle('active', this.controlMode === 'push');
-    // Keep shareable relative links under the Pages base path
-    const base = import.meta.env.BASE_URL || '/canicas-3d/';
-    this.els.linkFlick.href = buildGameHref('flick', this.sceneLevel, base);
-    this.els.linkPush.href = buildGameHref('push', this.sceneLevel, base);
-    if (this.els.linkLevel1) {
-      this.els.linkLevel1.href = buildGameHref(this.controlMode, 1, base);
-      this.els.linkLevel1.classList.toggle('active', this.sceneLevel === 1);
-    }
-    if (this.els.linkLevel2) {
-      this.els.linkLevel2.href = buildGameHref(this.controlMode, 2, base);
-      this.els.linkLevel2.classList.toggle('active', this.sceneLevel === 2);
-    }
+    // Control / level toggles removed from HUD — URL query only (?control=&level=).
   }
 
   private updateTurnHUD(): void {
@@ -2347,6 +2368,7 @@ private spawnShootersInitial(): void {
         const pz = bi.position.z - nz * MARBLE_RADIUS;
         const intensity = Math.min(2.2, impact / 0.6);
         this.particles.spawnSparks(px, py, pz, intensity);
+        playMarbleClack(impact);
         this.sparkCooldownUntil = now + 55;
         // Cámara lenta on heavy collisions — follow the faster marble
         if (impact >= SLOWMO_IMPACT_THRESHOLD && this.phase === 'shot_flying') {
@@ -2938,6 +2960,11 @@ private spawnShootersInitial(): void {
   }
 
   private update(): void {
+    if (this.paused) {
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.liveTime += dt;
     this.dayNightTime += dt;

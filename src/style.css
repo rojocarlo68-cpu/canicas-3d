@@ -50,46 +50,135 @@ body {
   justify-content: center;
   gap: 8px 12px;
   padding: max(10px, env(safe-area-inset-top)) 12px 10px;
+  padding-right: max(88px, calc(env(safe-area-inset-right) + 76px));
   background: linear-gradient(to bottom, rgba(20, 12, 4, 0.82), transparent);
 }
 
-#btn-drop,
-#btn-replay {
+/* Premium circular image action cluster — top-right, clear of play circle */
+#ui-actions {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   pointer-events: auto;
+  z-index: 16;
+}
+
+.ui-img-btn {
   appearance: none;
   border: none;
-  border-radius: 999px;
-  padding: 10px 18px;
-  font-size: clamp(13px, 3.2vw, 16px);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: #1a1008;
-  background: linear-gradient(180deg, #f5d76e, #c9a227);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  width: clamp(52px, 12vw, 64px);
+  height: clamp(52px, 12vw, 64px);
+  border-radius: 50%;
   cursor: pointer;
-  transition: transform 0.12s ease, filter 0.12s ease, opacity 0.2s;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.1s ease, opacity 0.1s ease, filter 0.15s ease;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.55));
 }
 
-#btn-replay {
-  background: linear-gradient(180deg, #90caf9, #42a5f5);
-  color: #0d2137;
+.ui-img-btn img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
-#btn-drop:hover:not(:disabled),
-#btn-replay:hover:not(:disabled) {
-  filter: brightness(1.08);
+.ui-img-btn:hover:not(:disabled) {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.6)) brightness(1.06);
   transform: translateY(-1px);
 }
 
-#btn-drop:active:not(:disabled),
-#btn-replay:active:not(:disabled) {
-  transform: translateY(1px);
+.ui-img-btn:active:not(:disabled) {
+  transform: scale(0.94);
+  opacity: 0.82;
 }
 
-#btn-drop:disabled,
-#btn-replay:disabled {
-  opacity: 0.4;
+.ui-img-btn:disabled {
+  opacity: 0.38;
   cursor: default;
+  filter: grayscale(0.25) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+
+#btn-drop.ui-img-btn {
+  width: clamp(60px, 14vw, 72px);
+  height: clamp(60px, 14vw, 72px);
+}
+
+/* Pause overlay */
+#pause-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 5, 2, 0.72);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+  padding: 20px;
+}
+
+#pause-overlay.hidden {
+  display: none;
+}
+
+#pause-card {
+  position: relative;
+  max-width: 320px;
+  width: 100%;
+  padding: 28px 24px 22px;
+  border-radius: 20px;
+  background: linear-gradient(160deg, #3a2818, #1c120a);
+  border: 1px solid rgba(255, 224, 138, 0.35);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+  text-align: center;
+  color: #f5e6c8;
+}
+
+#pause-card h2 {
+  font-size: clamp(22px, 5vw, 28px);
+  color: #ffe08a;
+  margin-bottom: 8px;
+}
+
+#pause-card p {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+#btn-pause-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffe08a;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+
+#btn-pause-close:active {
+  transform: scale(0.92);
+  opacity: 0.85;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 #score-panel {
@@ -168,7 +257,7 @@ body {
 #instructions {
   position: absolute;
   top: auto;
-  bottom: max(118px, calc(env(safe-area-inset-bottom) + 108px));
+  bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px));
   left: 12px;
   right: 12px;
   text-align: center;
@@ -178,53 +267,11 @@ body {
   line-height: 1.35;
 }
 
-/* Active control mode badge + tiny toggle links */
-#control-mode-badge {
-  position: absolute;
-  left: max(10px, env(safe-area-inset-left));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  pointer-events: auto;
-  padding: 8px 12px;
-  border-radius: 12px;
-  background: rgba(20, 12, 4, 0.72);
-  border: 1px solid rgba(255, 224, 138, 0.28);
-  backdrop-filter: blur(4px);
-  z-index: 12;
-}
-
-#control-mode-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #ffe08a;
-  letter-spacing: 0.03em;
-  text-shadow: 0 1px 2px #000;
-}
-
-#control-mode-toggle {
-  font-size: 11px;
-  color: rgba(245, 230, 200, 0.75);
-}
-
-#control-mode-toggle a {
-  color: rgba(144, 202, 249, 0.95);
-  text-decoration: none;
-  font-weight: 600;
-}
-
-#control-mode-toggle a:hover,
-#control-mode-toggle a.active {
-  color: #ffe08a;
-  text-decoration: underline;
-}
-
 /* Large mobile-friendly power meter (AI charge only) */
 #power-wrap {
   position: absolute;
   left: 50%;
-  bottom: max(130px, calc(env(safe-area-inset-bottom) + 120px));
+  bottom: max(36px, calc(env(safe-area-inset-bottom) + 28px));
   transform: translateX(-50%);
   width: min(320px, 86vw);
   pointer-events: none;
@@ -590,20 +637,38 @@ body {
 }
 
 
-#level-toggle {
-  font-size: 11px;
-  color: rgba(245, 230, 200, 0.75);
-  margin-top: 2px;
+
+
+@media (max-width: 420px) {
+  #ui-actions {
+    gap: 8px;
+  }
+  .ui-img-btn {
+    width: 50px;
+    height: 50px;
+  }
+  #btn-drop.ui-img-btn {
+    width: 58px;
+    height: 58px;
+  }
+  #top-bar {
+    padding-right: max(72px, calc(env(safe-area-inset-right) + 60px));
+  }
 }
 
-#level-toggle a {
-  color: rgba(144, 202, 249, 0.95);
-  text-decoration: none;
-  font-weight: 600;
-}
-
-#level-toggle a:hover,
-#level-toggle a.active {
-  color: #ffe08a;
-  text-decoration: underline;
+@media (orientation: landscape) and (max-height: 420px) {
+  #ui-actions {
+    flex-direction: row;
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+    gap: 8px;
+  }
+  .ui-img-btn {
+    width: 46px;
+    height: 46px;
+  }
+  #btn-drop.ui-img-btn {
+    width: 52px;
+    height: 52px;
+  }
 }

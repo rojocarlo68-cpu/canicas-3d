@@ -8,8 +8,10 @@ export type DesertCampBuild = {
   fireLight: THREE.PointLight;
   /** Call each frame for flame flicker / particles. */
   update: (dt: number, nightAmount: number) => void;
-  /** Extra static physics bodies (bumps / rocks) — caller adds to world. */
+  /** Extra static physics bodies (bumps / rocks / stones) — caller adds to world. */
   bumpBodies: CANNON.Body[];
+  /** Cannon material for stone props (friction/restitution like rock). */
+  stoneMat: CANNON.Material;
   /** Star field mesh (opacity driven by night). */
   stars: THREE.Points;
 };
@@ -25,6 +27,9 @@ export function buildDesertCamp(
   const root = new THREE.Group();
   root.name = 'desertCamp';
   const bumpBodies: CANNON.Body[] = [];
+  /** Stone-like contact: grippy, modest bounce. */
+  const stoneMat = new CANNON.Material('stone');
+  void groundMat; // play pad uses world ground plane
   const playR = CIRCLE_RADIUS;
   const sandOuter = playR * 1.85;
   const innerClear = BOUNDARY_RADIUS + 0.2;
@@ -138,18 +143,21 @@ export function buildDesertCamp(
     mesh.receiveShadow = true;
     root.add(mesh);
 
-    // Half-buried sphere so only a subtle mound affects rolling
+    // Solid mound: sphere sits high enough that marbles deflect (not ghost)
+    const sr = Math.max(b.r * 1.15, b.h * 2.2 + 0.01);
     const body = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
-      material: groundMat,
-      shape: new CANNON.Sphere(b.r * 1.05),
+      material: stoneMat,
+      shape: new CANNON.Sphere(sr),
     });
-    body.position.set(b.x, PLAY_SURFACE_Y - b.r * 0.72 + b.h, b.z);
+    // Top of collider ≈ visual rock crest above play surface
+    const topY = PLAY_SURFACE_Y + Math.max(b.h * 1.6, sr * 0.55);
+    body.position.set(b.x, topY - sr, b.z);
     bumpBodies.push(body);
   }
 
-  // Scattered mid-distance rocks
+  // Scattered mid-distance rocks (+ static colliders so marbles bounce)
   const dummy = new THREE.Object3D();
   const scatGeo = new THREE.DodecahedronGeometry(0.12, 0);
   const scat = new THREE.InstancedMesh(scatGeo, rockMat, 28);
@@ -158,12 +166,24 @@ export function buildDesertCamp(
     const a = (i / 28) * Math.PI * 2 + (i % 5) * 0.13;
     const r = innerClear + 0.8 + (i % 6) * 1.1;
     if (r < sandOuter + 0.3) continue;
-    dummy.position.set(Math.cos(a) * r, 0.04, Math.sin(a) * r);
-    dummy.rotation.set(i * 0.3, i * 0.5, i * 0.2);
+    const px = Math.cos(a) * r;
+    const pz = Math.sin(a) * r;
     const s = 0.45 + (i % 4) * 0.28;
+    dummy.position.set(px, 0.04, pz);
+    dummy.rotation.set(i * 0.3, i * 0.5, i * 0.2);
     dummy.scale.set(s, s * 0.55, s * 1.1);
     dummy.updateMatrix();
     scat.setMatrixAt(si++, dummy.matrix);
+
+    const rockR = 0.12 * s * 0.85;
+    const body = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: stoneMat,
+      shape: new CANNON.Sphere(rockR),
+    });
+    body.position.set(px, PLAY_SURFACE_Y + rockR * 0.35, pz);
+    bumpBodies.push(body);
   }
   scat.count = si;
   scat.instanceMatrix.needsUpdate = true;
@@ -174,11 +194,22 @@ export function buildDesertCamp(
   addDesertMountains(root);
 
   // --- Campfire beside the circle ---
-  const fire = buildCampfire(playR * 1.55, playR * 0.55);
+  const fire = buildCampfire(
+    playR * 1.55,
+    playR * 0.55,
+    bumpBodies,
+    stoneMat,
+  );
   root.add(fire.group);
 
-  // Seating: logs + stones around the fire
-  addCampSeating(root, fire.group.position.x, fire.group.position.z);
+  // Seating: logs + stones around the fire (solid)
+  addCampSeating(
+    root,
+    fire.group.position.x,
+    fire.group.position.z,
+    bumpBodies,
+    stoneMat,
+  );
 
   // Sparse dry scrub / bushes (not park trees)
   const scrubMat = new THREE.MeshStandardMaterial({
@@ -218,6 +249,7 @@ export function buildDesertCamp(
     fireLight: fire.light,
     update,
     bumpBodies,
+    stoneMat,
     stars,
   };
 }
@@ -333,7 +365,12 @@ type CampfireRuntime = {
   update: (dt: number, t: number) => void;
 };
 
-function buildCampfire(x: number, z: number): CampfireRuntime {
+function buildCampfire(
+  x: number,
+  z: number,
+  bumpBodies: CANNON.Body[],
+  stonePhysMat: CANNON.Material,
+): CampfireRuntime {
   const group = new THREE.Group();
   group.position.set(x, 0, z);
 
@@ -360,6 +397,21 @@ function buildCampfire(x: number, z: number): CampfireRuntime {
     stone.rotation.set(i * 0.3, i * 0.5, 0);
     stone.castShadow = true;
     group.add(stone);
+
+    // Solid stone-ring collider (flames stay non-solid)
+    const stoneR = 0.055 + (i % 3) * 0.012;
+    const body = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: stonePhysMat,
+      shape: new CANNON.Sphere(stoneR * 0.95),
+    });
+    body.position.set(
+      x + Math.cos(a) * ringR,
+      PLAY_SURFACE_Y + stoneR * 0.45,
+      z + Math.sin(a) * ringR,
+    );
+    bumpBodies.push(body);
   }
 
   // Charred logs under flames
@@ -380,6 +432,22 @@ function buildCampfire(x: number, z: number): CampfireRuntime {
       Math.sin((i / 3) * Math.PI * 2) * 0.04,
     );
     group.add(log);
+
+    // Log collider (cylinder approximated as box along log axis)
+    const logBody = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: stonePhysMat,
+      shape: new CANNON.Box(new CANNON.Vec3(0.16, 0.028, 0.028)),
+    });
+    const ang = (i / 3) * Math.PI + 0.2;
+    logBody.position.set(
+      x + Math.cos((i / 3) * Math.PI * 2) * 0.04,
+      PLAY_SURFACE_Y + 0.03,
+      z + Math.sin((i / 3) * Math.PI * 2) * 0.04,
+    );
+    logBody.quaternion.setFromEuler(0, ang, 0);
+    bumpBodies.push(logBody);
   }
 
   // Flame meshes (emissive stacked cones / planes)
@@ -512,7 +580,13 @@ function buildCampfire(x: number, z: number): CampfireRuntime {
   return { group, light, update };
 }
 
-function addCampSeating(root: THREE.Group, fx: number, fz: number): void {
+function addCampSeating(
+  root: THREE.Group,
+  fx: number,
+  fz: number,
+  bumpBodies: CANNON.Body[],
+  stonePhysMat: CANNON.Material,
+): void {
   const logMat = new THREE.MeshStandardMaterial({
     color: '#5c3d28',
     roughness: 0.9,
@@ -543,8 +617,21 @@ function addCampSeating(root: THREE.Group, fx: number, fz: number): void {
     log.receiveShadow = true;
     root.add(log);
 
+    // Log collider
+    const logBody = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: stonePhysMat,
+      shape: new CANNON.Box(new CANNON.Vec3(0.275, 0.07, 0.07)),
+    });
+    logBody.position.set(lx, PLAY_SURFACE_Y + 0.07, lz);
+    logBody.quaternion.setFromEuler(0, s.ang + Math.PI / 2, 0);
+    bumpBodies.push(logBody);
+
     // Stones as alternate seating
     if (i % 2 === 1) {
+      const sx = fx + Math.cos(s.ang + 0.35) * (s.dist + 0.15);
+      const sz = fz + Math.sin(s.ang + 0.35) * (s.dist + 0.15);
       const stone = new THREE.Mesh(
         new THREE.DodecahedronGeometry(0.1, 0),
         new THREE.MeshStandardMaterial({
@@ -553,14 +640,19 @@ function addCampSeating(root: THREE.Group, fx: number, fz: number): void {
           flatShading: true,
         }),
       );
-      stone.position.set(
-        fx + Math.cos(s.ang + 0.35) * (s.dist + 0.15),
-        0.06,
-        fz + Math.sin(s.ang + 0.35) * (s.dist + 0.15),
-      );
+      stone.position.set(sx, 0.06, sz);
       stone.scale.set(1.2, 0.7, 1);
       stone.castShadow = true;
       root.add(stone);
+
+      const stoneBody = new CANNON.Body({
+        mass: 0,
+        type: CANNON.Body.STATIC,
+        material: stonePhysMat,
+        shape: new CANNON.Sphere(0.1),
+      });
+      stoneBody.position.set(sx, PLAY_SURFACE_Y + 0.07, sz);
+      bumpBodies.push(stoneBody);
     }
   }
 }

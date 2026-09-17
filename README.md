@@ -14,7 +14,12 @@ Ejemplos:
 - https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=1
 - https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=2
 
-También hay enlaces **Parque · Campamento** en la esquina de controles.
+## HUD / física (2026-09-17)
+
+- Botones de imagen premium: Soltar, Repetición, Reiniciar, Pausa (`public/ui/`).
+- Eliminado el badge Flick/Empuje y enlaces Parque/Campamento (usa `?control=` y `?level=`).
+- Colliders sólidos en rocas, anillo de piedras y asientos del campamento (L2); llamas no sólidas.
+- Sonidos de choque canica–canica (WebAudio procedural, ~3 variantes).
 
 ## Fixes (2026-09-17)
 
@@ -60,7 +65,7 @@ npm run preview
 
 ## Cómo jugar
 
-1. Pulsa **Soltar canicas** (caen desde ~10 cm).
+1. Pulsa el botón de **soltar canicas** (icono) (caen desde ~10 cm).
 2. Turnos alternos **Jugador ↔ IA**. Cada uno tiene su propia canica tiradora que **permanece donde se detiene**.
 3. **Jugador:** mantén el botón de tu canica (abajo derecha). Mientras mantienes:
    - Desliza **arriba** → más **Potencia**
