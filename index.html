@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Canicas 3D</title>
+  </head>
+  <body>
+    <div id="game-root">
+      <canvas id="game-canvas"></canvas>
+
+      <div id="hud">
+        <div id="top-bar">
+          <button id="btn-drop" type="button">Soltar canicas</button>
+          <div id="score-panel">
+            <span id="score-label">Canicas fuera:</span>
+            <span id="score-value">0</span>
+            <span id="sep">/</span>
+            <span id="score-total">10</span>
+          </div>
+        </div>
+
+        <p id="instructions">Arrastra para orbitar · Pellizca/rueda para zoom · Mantén el botón de la canica para cargar y suelta para disparar</p>
+
+        <div id="power-wrap" class="hidden">
+          <div id="power-label">Potencia</div>
+          <div id="power-bar-bg">
+            <div id="power-bar"></div>
+          </div>
+        </div>
+
+        <div id="player-marble-ui">
+          <div id="player-marble-hint">Mantén para cargar</div>
+          <button id="btn-shoot" type="button" disabled aria-label="Disparar canica">
+            <canvas id="player-preview" width="128" height="128"></canvas>
+            <span id="shoot-label">Tu canica</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="end-screen" class="hidden">
+        <div id="end-card">
+          <h1 id="end-title">¡Victoria!</h1>
+          <p id="end-message"></p>
+          <p id="end-score"></p>
+          <button id="btn-restart" type="button">Jugar de nuevo</button>
+        </div>
+      </div>
+
+      <div id="settle-banner" class="hidden">Esperando a que se detengan las canicas…</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
