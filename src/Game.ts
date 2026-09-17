@@ -125,7 +125,7 @@ export class Game {
   private aimDirX = 0;
   private aimDirZ = -1;
   private aimPower = 0;
-  private aimSamples: { t: number; x: number; y: number }[] = [];
+  private aimSamples: { t: number; x: number; y: number; gx?: number; gz?: number }[] = [];
   private canPlayerShoot = false;
 
   private aimLineGroup: THREE.Group | null = null;
@@ -201,6 +201,7 @@ export class Game {
   private slowMoFollow: MarbleEntity | null = null;
   private readonly _slowMoCamOffset = new THREE.Vector3();
   private readonly _aimFwd = new THREE.Vector3();
+  private readonly _aimRight = new THREE.Vector3();
 
   // Replay transport
   private replayPaused = false;
@@ -392,10 +393,12 @@ export class Game {
     this.boundOrient = () => this.onResize();
 
     this.buildAimLine();
+    // Capture phase so aim pointer moves/ups are handled before OrbitControls
+    // (which listens on document) — critical for multi-touch aim + orbit.
     this.canvas.addEventListener('pointerdown', this.boundPointerDown, { capture: true });
-    window.addEventListener('pointerup', this.boundPointerUp);
-    window.addEventListener('pointermove', this.boundPointerMove);
-    window.addEventListener('pointercancel', this.boundPointerCancel);
+    window.addEventListener('pointerup', this.boundPointerUp, { capture: true });
+    window.addEventListener('pointermove', this.boundPointerMove, { capture: true });
+    window.addEventListener('pointercancel', this.boundPointerCancel, { capture: true });
     window.addEventListener('resize', this.boundOrient);
     window.addEventListener('orientationchange', this.boundOrient);
 
@@ -416,9 +419,9 @@ export class Game {
     this.controls.dispose();
     this.renderer.dispose();
     this.canvas.removeEventListener('pointerdown', this.boundPointerDown, { capture: true } as EventListenerOptions);
-    window.removeEventListener('pointerup', this.boundPointerUp);
-    window.removeEventListener('pointermove', this.boundPointerMove);
-    window.removeEventListener('pointercancel', this.boundPointerCancel);
+    window.removeEventListener('pointerup', this.boundPointerUp, { capture: true } as EventListenerOptions);
+    window.removeEventListener('pointermove', this.boundPointerMove, { capture: true } as EventListenerOptions);
+    window.removeEventListener('pointercancel', this.boundPointerCancel, { capture: true } as EventListenerOptions);
     window.removeEventListener('resize', this.boundOrient);
     window.removeEventListener('orientationchange', this.boundOrient);
   }
@@ -1195,8 +1198,8 @@ private spawnShootersInitial(): void {
     this.aimLineGroup.position.set(px, py, pz);
     this.aimLineGroup.visible = true;
 
-    // Cylinder default along +Y; we rotated X so local +Y maps to +Z before lookAt.
-    // Orient group so +Z faces shot direction on XZ plane.
+    // Shaft/head point along group +Z. Yaw from the SAME normalized aimDirX/Z
+    // fed into applyImpulse — single source of truth (no extra camera yaw).
     this.aimLineGroup.rotation.set(0, Math.atan2(dx, dz), 0);
 
     this.aimShaft.scale.set(1, worldLen, 1);
@@ -1283,32 +1286,133 @@ private spawnShootersInitial(): void {
 
   private noteAimSample(x: number, y: number): void {
     const t = performance.now();
-    this.aimSamples.push({ t, x, y });
-    while (this.aimSamples.length > 1 && t - this.aimSamples[0]!.t > 90) {
+    // Bake ground hits at sample time so a second-finger orbit cannot
+    // re-unproject old screen samples with a moved camera.
+    const g = this.clientToGround(x, y);
+    this.aimSamples.push({
+      t,
+      x,
+      y,
+      gx: g ? g.x : undefined,
+      gz: g ? g.z : undefined,
+    });
+    while (this.aimSamples.length > 1 && t - this.aimSamples[0]!.t > 120) {
       this.aimSamples.shift();
     }
   }
 
   private getAimSwipeSpeed(): number {
     if (this.aimSamples.length < 2) return 0;
+    // Peak screen speed over recent segments (fast flicks register)
+    let peak = 0;
+    for (let i = 1; i < this.aimSamples.length; i++) {
+      const a = this.aimSamples[i - 1]!;
+      const b = this.aimSamples[i]!;
+      const dt = Math.max(1, b.t - a.t) / 1000;
+      const sp = Math.hypot(b.x - a.x, b.y - a.y) / dt;
+      if (sp > peak) peak = sp;
+    }
     const a = this.aimSamples[0]!;
     const b = this.aimSamples[this.aimSamples.length - 1]!;
-    const dt = Math.max(1, b.t - a.t) / 1000;
-    return Math.hypot(b.x - a.x, b.y - a.y) / dt;
+    const dtAll = Math.max(1, b.t - a.t) / 1000;
+    const avg = Math.hypot(b.x - a.x, b.y - a.y) / dtAll;
+    return Math.max(peak, avg);
   }
 
-  /** Finger velocity on the ground plane (m/s) from recent aim samples. */
+  /**
+   * Finger velocity on the ground plane (m/s) from recent baked samples.
+   * Uses peak segment speed so a quick swipe isn't washed out by a long hold.
+   */
   private getAimWorldSwipeVelocity(): { vx: number; vz: number; speed: number } {
     if (this.aimSamples.length < 2) return { vx: 0, vz: 0, speed: 0 };
-    const a = this.aimSamples[0]!;
-    const b = this.aimSamples[this.aimSamples.length - 1]!;
-    const g0 = this.clientToGround(a.x, a.y);
-    const g1 = this.clientToGround(b.x, b.y);
-    if (!g0 || !g1) return { vx: 0, vz: 0, speed: 0 };
-    const dt = Math.max(0.016, (b.t - a.t) / 1000);
-    const vx = (g1.x - g0.x) / dt;
-    const vz = (g1.z - g0.z) / dt;
-    return { vx, vz, speed: Math.hypot(vx, vz) };
+
+    let bestVx = 0;
+    let bestVz = 0;
+    let bestSpeed = 0;
+    let sumVx = 0;
+    let sumVz = 0;
+    let sumW = 0;
+
+    for (let i = 1; i < this.aimSamples.length; i++) {
+      const a = this.aimSamples[i - 1]!;
+      const b = this.aimSamples[i]!;
+      if (
+        a.gx === undefined ||
+        a.gz === undefined ||
+        b.gx === undefined ||
+        b.gz === undefined
+      ) {
+        continue;
+      }
+      const dt = Math.max(0.008, (b.t - a.t) / 1000);
+      // Prefer the freshest ~70 ms of motion for the weighted average
+      const age = Math.max(0, this.aimSamples[this.aimSamples.length - 1]!.t - b.t);
+      if (age > 70) continue;
+      const vx = (b.gx - a.gx) / dt;
+      const vz = (b.gz - a.gz) / dt;
+      const speed = Math.hypot(vx, vz);
+      const w = dt * (1 + (70 - age) / 70);
+      sumVx += vx * w;
+      sumVz += vz * w;
+      sumW += w;
+      if (speed > bestSpeed) {
+        bestSpeed = speed;
+        bestVx = vx;
+        bestVz = vz;
+      }
+    }
+
+    if (sumW > 1e-8) {
+      const avgVx = sumVx / sumW;
+      const avgVz = sumVz / sumW;
+      const avgSpeed = Math.hypot(avgVx, avgVz);
+      // Blend peak (responsive) with recent average (stable)
+      if (bestSpeed > avgSpeed * 1.15) {
+        return { vx: bestVx, vz: bestVz, speed: bestSpeed };
+      }
+      return { vx: avgVx, vz: avgVz, speed: avgSpeed };
+    }
+
+    if (bestSpeed > 1e-8) return { vx: bestVx, vz: bestVz, speed: bestSpeed };
+    return { vx: 0, vz: 0, speed: 0 };
+  }
+
+  /**
+   * Single source of truth for flick aim: ground-plane direction from the
+   * marble center to the finger's ground hit (same vector for guide + impulse).
+   */
+  private computeAimDirFromPointer(
+    clientX: number,
+    clientY: number,
+  ): { dx: number; dz: number } {
+    const marble = this.playerMarble;
+    if (!marble) return { dx: this.aimDirX, dz: this.aimDirZ };
+
+    const mx = marble.body.position.x;
+    const mz = marble.body.position.z;
+    const g = this.clientToGround(clientX, clientY);
+    let dx = 0;
+    let dz = 0;
+    if (g) {
+      dx = g.x - mx;
+      dz = g.z - mz;
+    }
+    // Fallback: screen drag mapped onto camera ground-forward / right
+    if (Math.hypot(dx, dz) < 1e-6) {
+      this.camera.getWorldDirection(this._aimFwd);
+      this._aimFwd.y = 0;
+      if (this._aimFwd.lengthSq() < 1e-10) this._aimFwd.set(0, 0, -1);
+      this._aimFwd.normalize();
+      this._aimRight.set(this._aimFwd.z, 0, -this._aimFwd.x);
+      const sx = (clientX - this.aimStartClientX) / 120;
+      const sy = (clientY - this.aimStartClientY) / 120;
+      // Screen +Y is down; dragging up = camera forward
+      dx = this._aimRight.x * sx + this._aimFwd.x * -sy;
+      dz = this._aimRight.z * sx + this._aimFwd.z * -sy;
+    }
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-8) return { dx: this.aimDirX, dz: this.aimDirZ };
+    return { dx: dx / len, dz: dz / len };
   }
 
   private recomputeAimFromPointer(clientX: number, clientY: number): void {
@@ -1317,34 +1421,9 @@ private spawnShootersInitial(): void {
     const speed = this.getAimSwipeSpeed();
     const world = this.getAimWorldSwipeVelocity();
 
-    // Prefer ground-projected drag for direction (stable vs camera tilt)
-    const g0 = this.clientToGround(this.aimStartClientX, this.aimStartClientY);
-    const g1 = this.clientToGround(clientX, clientY);
-    let dx = 0;
-    let dz = 0;
-    if (g0 && g1) {
-      dx = g1.x - g0.x;
-      dz = g1.z - g0.z;
-    }
-    if (Math.hypot(dx, dz) < 1e-8) {
-      // Fallback: screen drag mapped onto camera ground-forward / right
-      this.camera.getWorldDirection(this._aimFwd);
-      this._aimFwd.y = 0;
-      if (this._aimFwd.lengthSq() < 1e-10) this._aimFwd.set(0, 0, -1);
-      this._aimFwd.normalize();
-      const rightX = this._aimFwd.z;
-      const rightZ = -this._aimFwd.x;
-      const sx = (clientX - this.aimStartClientX) / 120;
-      const sy = (clientY - this.aimStartClientY) / 120;
-      // Screen +Y is down; dragging up should push forward (camera look)
-      dx = rightX * sx + this._aimFwd.x * -sy;
-      dz = rightZ * sx + this._aimFwd.z * -sy;
-    }
-    const len = Math.hypot(dx, dz);
-    if (len > 1e-8) {
-      this.aimDirX = dx / len;
-      this.aimDirZ = dz / len;
-    }
+    const dir = this.computeAimDirFromPointer(clientX, clientY);
+    this.aimDirX = dir.dx;
+    this.aimDirZ = dir.dz;
 
     this.aimPower =
       this.controlMode === 'push'
@@ -1353,25 +1432,39 @@ private spawnShootersInitial(): void {
     this.updateAimLineVisual();
   }
 
-  private cancelAimGesture(reenableControls: boolean): void {
+  private cancelAimGesture(_reenableControls: boolean): void {
+    const pid = this.aimPointerId;
     this.aiming = false;
     this.aimPointerId = null;
     this.aimSamples = [];
     this.aimPower = 0;
     this.hideAimLine();
-    if (reenableControls) this.controls.enabled = true;
+    if (pid !== null) {
+      try {
+        this.canvas.releasePointerCapture(pid);
+      } catch {
+        /* ignore */
+      }
+    }
+    // Keep OrbitControls enabled during aim so a second finger can orbit;
+    // never leave them disabled after cancel (unless a camera ease owns them).
+    if (!this.camEase?.active) this.controls.enabled = true;
   }
 
   private onAimPointerDown(e: PointerEvent): void {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     if (this.phase !== 'playing' || this.turn !== 'player' || !this.playerMarble) return;
-    if (!this.canPlayerShoot || this.aiming) return;
-    // Let multi-touch orbit/zoom go to OrbitControls
-    if (e.isPrimary === false) return;
-    // Miss → do nothing; OrbitControls owns the drag (no aim/push from empty space)
+
+    // Already aiming with another pointer → ignore this down for shoot;
+    // do NOT stopPropagation so OrbitControls can orbit/pan with it.
+    if (this.aiming) return;
+    if (!this.canPlayerShoot) return;
+
+    // Miss → OrbitControls owns the drag (empty-space single finger = camera)
     if (!this.picksPlayerMarble(e.clientX, e.clientY)) return;
 
-    // Claim this pointer so OrbitControls never starts a rotate
+    // Claim ONLY this pointerId so OrbitControls never starts a rotate on it.
+    // Leave controls.enabled = true: a second non-marble finger can still orbit.
     e.preventDefault();
     e.stopImmediatePropagation();
     try {
@@ -1397,12 +1490,13 @@ private spawnShootersInitial(): void {
     this._aimFwd.normalize();
     this.aimDirX = this._aimFwd.x;
     this.aimDirZ = this._aimFwd.z;
-    this.controls.enabled = false;
     this.hideAimLine();
   }
 
   private onAimPointerMove(e: PointerEvent): void {
     if (!this.aiming || this.aimPointerId !== e.pointerId) return;
+    // Keep OrbitControls from seeing the aim pointer's moves
+    e.stopImmediatePropagation();
     this.noteAimSample(e.clientX, e.clientY);
     this.recomputeAimFromPointer(e.clientX, e.clientY);
   }
@@ -1418,6 +1512,7 @@ private spawnShootersInitial(): void {
     if (!this.aiming) return;
     if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
     e.preventDefault();
+    e.stopImmediatePropagation();
 
     this.noteAimSample(e.clientX, e.clientY);
     this.recomputeAimFromPointer(e.clientX, e.clientY);
@@ -1425,6 +1520,7 @@ private spawnShootersInitial(): void {
     const speed = this.getAimSwipeSpeed();
     const world = this.getAimWorldSwipeVelocity();
     const power01 = this.aimPower;
+    // Capture the SAME aimDir the guide was drawn with
     const dirX = this.aimDirX;
     const dirZ = this.aimDirZ;
     const mode = this.controlMode;
@@ -1527,13 +1623,14 @@ private spawnShootersInitial(): void {
     // Marble–marble collisions then transfer momentum along the contact normal
     // via cannon-es (no custom velocity overrides).
     const impulseMag = impulseFromPower(pending.power01);
+    // relativePoint is offset from COM — must be zero or shot veers (was body.position).
     body.applyImpulse(
       new CANNON.Vec3(
         pending.dirX * impulseMag,
         impulseMag * 0.08,
         pending.dirZ * impulseMag,
       ),
-      body.position,
+      new CANNON.Vec3(0, 0, 0),
     );
   }
 

@@ -12,6 +12,9 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 5. **Scoring:** only knockouts during a player/opponent shot count; marbles that leave during the initial drop do not score. Scoring set = still in circle after the freeze.
 6. **Aim:** impulse uses camera forward projected on the ground (orbit aim while charging), so a centered/straight shot goes toward what you see ahead.
 7. **Controles flick/push:** el tiro solo empieza al tocar la canica del jugador (radio visual × ~1.4). Arrastrar en vacío = órbita/zoom. Empuje usa velocidad del dedo en el plano del suelo + spin de rodadura.
+8. **Multi-touch flick:** dedo en canica = apuntar; segundo dedo fuera = órbita (OrbitControls sigue activo; solo se captura el pointerId de mira).
+9. **Calibración de mira:** dirección del impulso = vector suelo canica→dedo (misma que la línea); `applyImpulse` en el COM (antes `body.position` torcía el tiro).
+10. **Empuje más ágil:** `PUSH_VELOCITY_GAIN` 1.45, `PUSH_MAX_SPEED` 2.25 m/s; velocidad por muestras recientes en plano suelo (pico + promedio).
 
 ## Stack
 

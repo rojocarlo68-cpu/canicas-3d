@@ -36,7 +36,7 @@ export function controlModeHint(mode: ControlMode): string {
   if (mode === 'push') {
     return 'Tu turno: toca TU canica y desliza el dedo para empujarla (fuera de la canica = solo cámara).';
   }
-  return 'Tu turno: mantén pulsada TU canica, arrastra para apuntar (línea) y suelta para disparar. Arrastrar fuera = solo cámara.';
+  return 'Tu turno: mantén pulsada TU canica para apuntar (línea); suelta para disparar. Con el dedo de mira abajo, otro dedo fuera = órbita cámara.';
 }
 
 /** Map flick drag length + swipe speed → power 0..1 (addictive but controllable). */
@@ -56,10 +56,10 @@ export function powerFromPush(
   speedPxPerSec: number,
   worldSpeedMs = 0,
 ): number {
-  const fromWorld = Math.min(1, Math.max(0, (worldSpeedMs - 0.08) / 1.1));
-  const fromSpeed = Math.min(1, Math.max(0, (speedPxPerSec - 60) / 1600));
-  const fromDist = Math.min(1, Math.max(0, (dragPx - 12) / 180));
-  const raw = fromWorld * 0.7 + fromSpeed * 0.2 + fromDist * 0.18;
+  const fromWorld = Math.min(1, Math.max(0, (worldSpeedMs - 0.1) / 1.8));
+  const fromSpeed = Math.min(1, Math.max(0, (speedPxPerSec - 60) / 1400));
+  const fromDist = Math.min(1, Math.max(0, (dragPx - 12) / 160));
+  const raw = fromWorld * 0.75 + fromSpeed * 0.2 + fromDist * 0.15;
   return Math.max(0.1, Math.min(1, raw));
 }
 
