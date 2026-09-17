@@ -1,14 +1,21 @@
 import * as THREE from 'three';
 import { BOUNDARY_RADIUS, CIRCLE_RADIUS } from './constants';
+import { makeStreetLamp, type StreetLamp } from './dayNight';
+
+export type ParkBuild = {
+  root: THREE.Group;
+  lamps: StreetLamp[];
+};
 
 /**
  * Realistic-ish park around the play patch: grass, dirt circle, trees,
- * paths, benches, fence, distant foliage. Mobile-friendly geometry.
+ * paths, benches, fence, faroles, distant foliage. Mobile-friendly geometry.
  * Invisible physics wall stays outside this scenery (BOUNDARY_RADIUS).
  */
-export function buildPark(scene: THREE.Scene): THREE.Group {
+export function buildPark(scene: THREE.Scene): ParkBuild {
   const root = new THREE.Group();
   root.name = 'park';
+  const lamps: StreetLamp[] = [];
 
   const playR = CIRCLE_RADIUS;
   const innerClear = BOUNDARY_RADIUS + 0.35;
@@ -275,8 +282,31 @@ export function buildPark(scene: THREE.Scene): THREE.Group {
   apron.position.y = 0.0005;
   root.add(apron);
 
+  // --- Street lamps / faroles (lights toggled by day/night) ---
+  const lampR = innerClear + 0.35;
+  const lampSlots = 6;
+  for (let i = 0; i < lampSlots; i++) {
+    const a = (i / lampSlots) * Math.PI * 2 + 0.2;
+    const lamp = makeStreetLamp(
+      Math.cos(a) * lampR,
+      Math.sin(a) * lampR,
+      a + Math.PI / 2,
+    );
+    root.add(lamp.group);
+    lamps.push(lamp);
+  }
+  // Two path lamps a bit farther out
+  const extra = [
+    makeStreetLamp(6.5, 0.2, Math.PI / 2),
+    makeStreetLamp(-6.2, -0.5, -Math.PI / 2),
+  ];
+  for (const lamp of extra) {
+    root.add(lamp.group);
+    lamps.push(lamp);
+  }
+
   scene.add(root);
-  return root;
+  return { root, lamps };
 }
 
 function makeBench(
@@ -319,6 +349,6 @@ function addPath(
 }
 
 /** @deprecated use buildPark — kept name alias during migration */
-export function buildStadium(scene: THREE.Scene): THREE.Group {
+export function buildStadium(scene: THREE.Scene): ParkBuild {
   return buildPark(scene);
 }

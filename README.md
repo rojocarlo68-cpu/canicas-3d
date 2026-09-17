@@ -58,13 +58,14 @@ npm run preview
 
 - Modo **vs IA** con puntuación Jugador / IA y niveles.
 - Potencia por **arrastre vertical** (no por tiempo de pulsación).
-- Cámara centrada en vertical y horizontal (compensa HUD y controles).
+- Cámara de turno: canica activa en el **centro geométrico** de la pantalla, cámara detrás mirando al círculo (apunte tipo billar).
+- Ciclo **día/noche** continuo (un día completo = **30 minutos** reales) con faroles que se encienden de noche.
+- Vida ambiental del parque: pájaros y siluetas lejanas paseando.
+- Billetes 2D texturizados al sacar canicas (+$2), polvo sutil, chispas.
+- Parque (no estadio), barrera invisible, repetición libre, UI en español.
 - Cielo (Sky) + suelo muy amplio (sin “isla” flotante).
 - Medidor de potencia grande y claro en móvil.
-- Indicador de ubicación de la canica activa.
 - Buffer de repetición (~10 s).
-- Círculo de juego ampliado (2×) sin manos 3D (tiro por mantén/arrastra/suelta).
-- Cámara estable en el cambio de turno IA → jugador.
 
 ## Limitaciones
 

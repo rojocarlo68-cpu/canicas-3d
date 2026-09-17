@@ -47,6 +47,12 @@ import {
 import { pickOpponentName } from './names';
 import { ParticleFX } from './particles';
 import { buildPark } from './park';
+import { ParkLife } from './parkLife';
+import {
+  DAY_CYCLE_SECONDS,
+  applyDayNight,
+  type StreetLamp,
+} from './dayNight';
 
 type GamePhase =
   | 'ready'
@@ -73,6 +79,13 @@ export class Game {
   private containerMesh!: THREE.Group;
   private sky!: Sky;
   private sunLight!: THREE.DirectionalLight;
+  private hemiLight!: THREE.HemisphereLight;
+  private playFillLight!: THREE.PointLight;
+  private streetLamps: StreetLamp[] = [];
+  private parkLife!: ParkLife;
+  private sunDir = new THREE.Vector3();
+  /** Elapsed seconds for the 30-min day/night cycle (independent of match reset). */
+  private dayNightTime = 0;
 
   private fieldMarbles: MarbleEntity[] = [];
   private playerMarble: MarbleEntity | null = null;
@@ -391,22 +404,28 @@ export class Game {
   }
 
   private buildEnvironment(): void {
-    const hemi = new THREE.HemisphereLight(0xb8d8ff, 0x6b5030, 0.55);
-    this.scene.add(hemi);
+    this.hemiLight = new THREE.HemisphereLight(0xb8d8ff, 0x6b5030, 0.55);
+    this.scene.add(this.hemiLight);
 
     this.sunLight = new THREE.DirectionalLight(0xfff2d6, 1.4);
     this.sunLight.position.set(0.6, 1.2, 0.4);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.mapSize.set(1024, 1024);
     this.sunLight.shadow.camera.near = 0.05;
-    this.sunLight.shadow.camera.far = 8;
-    const s = 2.2;
+    this.sunLight.shadow.camera.far = 12;
+    const s = 3.5;
     this.sunLight.shadow.camera.left = -s;
     this.sunLight.shadow.camera.right = s;
     this.sunLight.shadow.camera.top = s;
     this.sunLight.shadow.camera.bottom = -s;
     this.sunLight.shadow.bias = -0.0002;
     this.scene.add(this.sunLight);
+
+    // Soft fill over the play circle (boosted at night for readability)
+    this.playFillLight = new THREE.PointLight(0xfff5e0, 0.2, 2.5, 1.5);
+    this.playFillLight.position.set(0, 1.2, 0);
+    this.playFillLight.castShadow = false;
+    this.scene.add(this.playFillLight);
 
     // Sky
     this.sky = new Sky();
@@ -417,12 +436,13 @@ export class Game {
     skyUniforms['rayleigh'].value = 2.2;
     skyUniforms['mieCoefficient'].value = 0.004;
     skyUniforms['mieDirectionalG'].value = 0.85;
-    const sun = new THREE.Vector3();
-    const phi = THREE.MathUtils.degToRad(82);
-    const theta = THREE.MathUtils.degToRad(160);
-    sun.setFromSphericalCoords(1, phi, theta);
-    skyUniforms['sunPosition'].value.copy(sun);
-    this.sunLight.position.copy(sun).multiplyScalar(2);
+    this.sunDir.setFromSphericalCoords(
+      1,
+      THREE.MathUtils.degToRad(82),
+      THREE.MathUtils.degToRad(160),
+    );
+    skyUniforms['sunPosition'].value.copy(this.sunDir);
+    this.sunLight.position.copy(this.sunDir).multiplyScalar(3);
 
     // Endless dirt ground
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
@@ -508,11 +528,34 @@ export class Game {
 
     this.buildInvisibleBoundary();
 
-    // Park scenery (grass, trees, paths, benches — no stadium)
-    buildPark(this.scene);
+    // Park scenery (grass, trees, paths, benches, faroles — no stadium)
+    const park = buildPark(this.scene);
+    this.streetLamps = park.lamps;
 
-    // Impact sparks + dirt dust FX
+    // Ambient park life (birds + distant walkers)
+    this.parkLife = new ParkLife(this.scene);
+
+    // Impact sparks + dirt dust + money bill FX
     this.particles = new ParticleFX(this.scene);
+
+    // Seed day/night from current elapsed (morning-ish start offset)
+    this.dayNightTime = DAY_CYCLE_SECONDS * 0.18; // late morning
+    this.syncDayNight();
+  }
+
+  private syncDayNight(): void {
+    const fog = this.scene.fog;
+    if (!(fog instanceof THREE.FogExp2)) return;
+    applyDayNight(this.dayNightTime, {
+      sky: this.sky,
+      sunLight: this.sunLight,
+      hemiLight: this.hemiLight,
+      fog,
+      renderer: this.renderer,
+      lamps: this.streetLamps,
+      playFill: this.playFillLight,
+      sunDir: this.sunDir,
+    });
   }
 
   /**
@@ -897,8 +940,9 @@ export class Game {
   /**
    * Cinematic turn-start framing for player AND opponent:
    * - Camera sits BEHIND the active marble (outside the circle radially)
-   * - Looks toward the marble / arena so the marble is near screen center
-   * - Zoom tight enough for mobile (marble clearly visible, arena ahead)
+   * - lookAt is the marble mesh center → projects to true viewport center
+   * - View direction continues through the marble toward the play circle
+   *   (billiards-style aiming via camera)
    * Disables OrbitControls while easing (same prior pattern).
    */
   private easeCameraToward(shooter: MarbleEntity): void {
@@ -912,8 +956,9 @@ export class Game {
     }
 
     const portrait = window.innerHeight > window.innerWidth;
+    const aspect = window.innerWidth / Math.max(1, window.innerHeight);
 
-    // Radial outward from play-circle origin through the marble
+    // Radial outward from play-circle origin through the marble (= "behind")
     let radial = Math.hypot(px, pz);
     let dirX: number;
     let dirZ: number;
@@ -926,26 +971,24 @@ export class Game {
       dirZ = pz / radial;
     }
 
-    // Look mostly at the marble (center of screen), slight pull toward arena
-    const look = new THREE.Vector3(
-      px * 0.82,
-      Math.max(MARBLE_RADIUS * 1.2, py * 0.5),
-      pz * 0.82,
-    );
+    // Exact marble center — geometric screen center (no HUD look bias)
+    const lookY = Number.isFinite(py) ? Math.max(MARBLE_RADIUS, py) : MARBLE_RADIUS;
+    const look = new THREE.Vector3(px, lookY, pz);
 
-    // Behind marble: further outside along radial, modest height, tiny side bias
-    // Distances tuned so a ~1.6 cm marble reads clearly on phones
-    const back = portrait ? 0.30 : 0.38;
-    const side = portrait ? 0.035 : 0.05;
-    const up = portrait ? 0.16 : 0.20;
+    // Behind marble along radial; height chosen so lookAt keeps marble centered
+    // (no lateral bias — that was offsetting the marble on screen)
+    const back = portrait ? 0.26 : 0.34;
+    const up = portrait ? 0.13 : 0.16;
     const toPos = new THREE.Vector3(
-      px + dirX * back + dirZ * side,
+      px + dirX * back,
       up,
-      pz + dirZ * back - dirX * side,
+      pz + dirZ * back,
     );
 
-    // Slightly tighter FOV on turn frame for mobile readability
-    this.camera.fov = portrait ? 48 : 40;
+    // FOV: slightly wider on tall phones so arena ahead stays in frame
+    // while the marble still projects near dead-center
+    this.camera.fov = portrait ? (aspect < 0.55 ? 52 : 46) : 40;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
 
     if (
@@ -1577,6 +1620,9 @@ export class Game {
   private update(): void {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.liveTime += dt;
+    this.dayNightTime += dt;
+    this.syncDayNight();
+    this.parkLife?.update(dt);
 
     if (this.phase === 'replay') {
       this.updateMoneyHudTarget();

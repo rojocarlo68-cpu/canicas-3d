@@ -24,19 +24,113 @@ type MoneyParticle = {
   phase: number;
   /** 0 = fly/arc in world, 1 = home toward HUD world target */
   stage: 0 | 1;
+  /** Angular velocity for paper tumble (rad/s) */
+  spin: THREE.Vector3;
+  /** Current euler tumble */
+  rot: THREE.Euler;
+  scale: number;
 };
 
 const SPARK_MAX = 96;
 const DIRT_MAX = 48;
-const MONEY_MAX = 64;
+const MONEY_MAX = 48;
+
+/** Procedural 2D dollar-bill texture (green paper, border, $). */
+function makeBillTexture(): THREE.CanvasTexture {
+  const w = 128;
+  const h = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  // Paper base
+  const grad = ctx.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, '#3d8f55');
+  grad.addColorStop(0.45, '#4caf6a');
+  grad.addColorStop(1, '#2e7a45');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Soft paper noise stripes
+  ctx.globalAlpha = 0.12;
+  for (let i = 0; i < 18; i++) {
+    ctx.strokeStyle = i % 2 === 0 ? '#1b5e30' : '#a5d6a7';
+    ctx.beginPath();
+    ctx.moveTo(0, 4 + i * 3.4);
+    ctx.lineTo(w, 2 + i * 3.4);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Outer border
+  ctx.strokeStyle = '#1b4332';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(3, 3, w - 6, h - 6);
+  // Inner ornate border
+  ctx.strokeStyle = '#81c784';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(8, 8, w - 16, h - 16);
+
+  // Corner flourishes
+  ctx.fillStyle = '#c8e6c9';
+  const corners: [number, number][] = [
+    [14, 14],
+    [w - 14, 14],
+    [14, h - 14],
+    [w - 14, h - 14],
+  ];
+  for (const [cx, cy] of corners) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Center oval
+  ctx.strokeStyle = '#2e7d32';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(w / 2, h / 2, 22, 16, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Big $
+  ctx.fillStyle = '#e8f5e9';
+  ctx.strokeStyle = '#1b5e20';
+  ctx.lineWidth = 2;
+  ctx.font = 'bold 36px Georgia, "Times New Roman", serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeText('$', w / 2, h / 2 + 1);
+  ctx.fillText('$', w / 2, h / 2 + 1);
+
+  // Small denomination marks
+  ctx.fillStyle = '#a5d6a7';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.fillText('2', 22, h / 2 + 4);
+  ctx.fillText('2', w - 22, h / 2 + 4);
+
+  // Seal-ish circle left
+  ctx.strokeStyle = '#66bb6a';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(36, h / 2, 9, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 /**
- * Lightweight CPU particles: impact sparks, subtle dirt dust, money bills.
+ * Lightweight CPU particles: impact sparks, subtle dirt dust,
+ * and textured 2D paper-bill quads that flutter toward the saldo HUD.
  */
 export class ParticleFX {
   readonly sparkPoints: THREE.Points;
   readonly dirtPoints: THREE.Points;
-  readonly moneyPoints: THREE.Points;
+  readonly moneyMesh: THREE.InstancedMesh;
 
   private sparks: SparkParticle[] = [];
   private dirt: DirtParticle[] = [];
@@ -46,19 +140,17 @@ export class ParticleFX {
   private sparkCol: Float32Array;
   private dirtPos: Float32Array;
   private dirtCol: Float32Array;
-  private moneyPos: Float32Array;
-  private moneyCol: Float32Array;
 
   private hudTarget = new THREE.Vector3(0, 0.12, 0);
   private tmp = new THREE.Vector3();
+  private dummy = new THREE.Object3D();
+  private billTex: THREE.CanvasTexture;
 
   constructor(scene: THREE.Scene) {
     this.sparkPos = new Float32Array(SPARK_MAX * 3);
     this.sparkCol = new Float32Array(SPARK_MAX * 3);
     this.dirtPos = new Float32Array(DIRT_MAX * 3);
     this.dirtCol = new Float32Array(DIRT_MAX * 3);
-    this.moneyPos = new Float32Array(MONEY_MAX * 3);
-    this.moneyCol = new Float32Array(MONEY_MAX * 3);
 
     const sparkGeo = new THREE.BufferGeometry();
     sparkGeo.setAttribute('position', new THREE.BufferAttribute(this.sparkPos, 3));
@@ -93,21 +185,29 @@ export class ParticleFX {
     this.dirtPoints.frustumCulled = false;
     scene.add(this.dirtPoints);
 
-    const moneyGeo = new THREE.BufferGeometry();
-    moneyGeo.setAttribute('position', new THREE.BufferAttribute(this.moneyPos, 3));
-    moneyGeo.setAttribute('color', new THREE.BufferAttribute(this.moneyCol, 3));
-    moneyGeo.setDrawRange(0, 0);
-    const moneyMat = new THREE.PointsMaterial({
-      size: 0.016,
-      vertexColors: true,
+    // Paper bill quads (aspect ~2:1 like a banknote)
+    this.billTex = makeBillTexture();
+    const billGeo = new THREE.PlaneGeometry(0.028, 0.013);
+    const billMat = new THREE.MeshBasicMaterial({
+      map: this.billTex,
       transparent: true,
-      opacity: 0.95,
+      side: THREE.DoubleSide,
       depthWrite: false,
-      sizeAttenuation: true,
+      opacity: 1,
     });
-    this.moneyPoints = new THREE.Points(moneyGeo, moneyMat);
-    this.moneyPoints.frustumCulled = false;
-    scene.add(this.moneyPoints);
+    this.moneyMesh = new THREE.InstancedMesh(billGeo, billMat, MONEY_MAX);
+    this.moneyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.moneyMesh.frustumCulled = false;
+    this.moneyMesh.count = 0;
+    // Hide unused instances below ground
+    this.dummy.position.set(0, -10, 0);
+    this.dummy.scale.setScalar(0.001);
+    this.dummy.updateMatrix();
+    for (let i = 0; i < MONEY_MAX; i++) {
+      this.moneyMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this.moneyMesh.instanceMatrix.needsUpdate = true;
+    scene.add(this.moneyMesh);
   }
 
   /** World-space point corresponding to the player score/saldo HUD. */
@@ -170,11 +270,11 @@ export class ParticleFX {
   }
 
   /**
-   * Burst of small bill/money particles that arc then fly toward the HUD target.
+   * Burst of paper-bill quads that arc then flutter toward the HUD target.
    * @param mild weaker burst for opponent knockouts
    */
   spawnMoney(x: number, y: number, z: number, mild = false): void {
-    const n = mild ? 4 : 10;
+    const n = mild ? 4 : 9;
     for (let i = 0; i < n; i++) {
       if (this.money.length >= MONEY_MAX) this.money.shift();
       const theta = Math.random() * Math.PI * 2;
@@ -190,10 +290,21 @@ export class ParticleFX {
           (mild ? 0.18 : 0.32) + Math.random() * 0.22,
           Math.sin(theta) * burst * (0.4 + Math.random()),
         ),
-        life: mild ? 0.7 + Math.random() * 0.3 : 1.05 + Math.random() * 0.35,
+        life: mild ? 0.75 + Math.random() * 0.3 : 1.1 + Math.random() * 0.35,
         maxLife: 1.2,
         phase: Math.random() * Math.PI * 2,
         stage: 0,
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 8,
+          (Math.random() - 0.5) * 10,
+          (Math.random() - 0.5) * 6,
+        ),
+        rot: new THREE.Euler(
+          Math.random() * Math.PI,
+          Math.random() * Math.PI,
+          Math.random() * Math.PI,
+        ),
+        scale: mild ? 0.75 + Math.random() * 0.2 : 0.9 + Math.random() * 0.35,
       });
       const p = this.money[this.money.length - 1]!;
       p.maxLife = p.life;
@@ -275,7 +386,6 @@ export class ParticleFX {
       this.dirtPos[i * 3 + 1] = p.pos.y;
       this.dirtPos[i * 3 + 2] = p.pos.z;
       const shade = 0.28 + (p.size * 40) % 0.1;
-      // Very low brightness so dust is barely perceptible
       const fade = t * 0.45;
       this.dirtCol[i * 3] = (0.48 + shade) * fade;
       this.dirtCol[i * 3 + 1] = (0.28 + shade * 0.5) * fade;
@@ -290,7 +400,7 @@ export class ParticleFX {
       this.dirt.length > 0 ? 0.22 : 0;
     (this.dirtPoints.material as THREE.PointsMaterial).size = 0.004;
 
-    // Money bills — burst up, then home toward HUD
+    // Money bills — burst, tumble/flutter, then home toward HUD
     for (let i = this.money.length - 1; i >= 0; i--) {
       const p = this.money[i]!;
       p.life -= dt;
@@ -302,53 +412,60 @@ export class ParticleFX {
       if (p.stage === 0 && age > 0.28) {
         p.stage = 1;
       }
+      // Paper tumble
+      p.rot.x += p.spin.x * dt;
+      p.rot.y += p.spin.y * dt;
+      p.rot.z += p.spin.z * dt;
+      // Flutter damping over time
+      p.spin.multiplyScalar(0.985);
+
       if (p.stage === 0) {
         p.vel.y -= 2.8 * dt;
         p.pos.addScaledVector(p.vel, dt);
         p.vel.x *= 0.96;
         p.vel.z *= 0.96;
-        p.pos.x += Math.sin(p.phase + age * 10) * 0.002;
+        p.pos.x += Math.sin(p.phase + age * 10) * 0.0025;
+        p.pos.z += Math.cos(p.phase + age * 8) * 0.002;
       } else {
         this.tmp.copy(this.hudTarget).sub(p.pos);
         const dist = this.tmp.length();
-        if (dist < 0.02) {
+        if (dist < 0.025) {
           this.money.splice(i, 1);
           continue;
         }
         this.tmp.normalize();
-        const speed = 0.55 + age * 1.1;
+        const speed = 0.55 + age * 1.15;
         p.pos.addScaledVector(this.tmp, speed * dt);
-        p.pos.y += Math.sin(p.phase + age * 14) * 0.0015;
+        // Soft flutter while homing
+        p.pos.y += Math.sin(p.phase + age * 14) * 0.002;
+        p.pos.x += Math.cos(p.phase + age * 11) * 0.0012;
       }
     }
+
+    // Sync instanced bill matrices
+    const n = this.money.length;
+    this.moneyMesh.count = n;
     for (let i = 0; i < MONEY_MAX; i++) {
       const p = this.money[i];
       if (!p) {
-        this.moneyPos[i * 3] = 0;
-        this.moneyPos[i * 3 + 1] = -10;
-        this.moneyPos[i * 3 + 2] = 0;
-        this.moneyCol[i * 3] = 0;
-        this.moneyCol[i * 3 + 1] = 0;
-        this.moneyCol[i * 3 + 2] = 0;
+        this.dummy.position.set(0, -10, 0);
+        this.dummy.scale.setScalar(0.001);
+        this.dummy.rotation.set(0, 0, 0);
+        this.dummy.updateMatrix();
+        this.moneyMesh.setMatrixAt(i, this.dummy.matrix);
         continue;
       }
       const t = p.life / p.maxLife;
-      this.moneyPos[i * 3] = p.pos.x;
-      this.moneyPos[i * 3 + 1] = p.pos.y;
-      this.moneyPos[i * 3 + 2] = p.pos.z;
-      // Green bill tones with slight gold highlight
-      this.moneyCol[i * 3] = (0.25 + 0.35 * t) * (0.7 + 0.3 * t);
-      this.moneyCol[i * 3 + 1] = (0.72 + 0.2 * t) * (0.75 + 0.25 * t);
-      this.moneyCol[i * 3 + 2] = (0.22 + 0.15 * t) * t;
+      const fadeScale = p.scale * (0.85 + 0.15 * t);
+      this.dummy.position.copy(p.pos);
+      this.dummy.rotation.copy(p.rot);
+      this.dummy.scale.set(fadeScale, fadeScale, fadeScale);
+      this.dummy.updateMatrix();
+      this.moneyMesh.setMatrixAt(i, this.dummy.matrix);
     }
-    (this.moneyPoints.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate =
-      true;
-    (this.moneyPoints.geometry.getAttribute('color') as THREE.BufferAttribute).needsUpdate =
-      true;
-    this.moneyPoints.geometry.setDrawRange(0, this.money.length);
-    (this.moneyPoints.material as THREE.PointsMaterial).size =
-      this.money.length > 0 ? 0.018 : 0.01;
-    void this.tmp;
+    this.moneyMesh.instanceMatrix.needsUpdate = true;
+    const mat = this.moneyMesh.material as THREE.MeshBasicMaterial;
+    mat.opacity = n > 0 ? 0.95 : 0;
   }
 
   clear(): void {
@@ -357,6 +474,6 @@ export class ParticleFX {
     this.money.length = 0;
     this.sparkPoints.geometry.setDrawRange(0, 0);
     this.dirtPoints.geometry.setDrawRange(0, 0);
-    this.moneyPoints.geometry.setDrawRange(0, 0);
+    this.moneyMesh.count = 0;
   }
 }
