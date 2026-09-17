@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { BOUNDARY_RADIUS } from './constants';
 
 type Bird = {
   mesh: THREE.Group;
@@ -18,28 +17,19 @@ type Bird = {
   wait: number;
 };
 
-type Walker = {
-  mesh: THREE.Group;
-  path: THREE.CatmullRomCurve3;
-  t: number;
-  speed: number;
-  bobPhase: number;
-};
 
 /**
- * Subtle far-away park ambient life: birds and silhouette walkers.
+ * Subtle far-away park ambient life: birds.
  * Low detail, never competing with the play circle.
  */
 export class ParkLife {
   readonly root = new THREE.Group();
   private birds: Bird[] = [];
-  private walkers: Walker[] = [];
   private birdSpawnTimer = 2;
 
   constructor(scene: THREE.Scene) {
     this.root.name = 'parkLife';
     scene.add(this.root);
-    this.seedWalkers();
     // A couple of circling birds always present
     for (let i = 0; i < 3; i++) {
       this.spawnCirclingBird(6 + i * 3.5, 4.5 + i * 0.8);
@@ -116,73 +106,7 @@ export class ParkLife {
     });
   }
 
-  private makePersonMesh(): THREE.Group {
-    const g = new THREE.Group();
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x151515,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-    });
-    // Head
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.07, 5, 4), mat);
-    head.position.y = 0.92;
-    // Torso
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.4, 5), mat);
-    torso.position.y = 0.65;
-    // Legs as one thin block (silhouette)
-    const legs = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.38, 0.08), mat);
-    legs.position.y = 0.22;
-    g.add(head, torso, legs);
-    g.scale.setScalar(0.85);
-    return g;
-  }
 
-  private seedWalkers(): void {
-    const playClear = BOUNDARY_RADIUS + 0.8;
-    const paths: THREE.Vector3[][] = [
-      [
-        new THREE.Vector3(playClear + 0.5, 0, -2),
-        new THREE.Vector3(4.5, 0, -0.5),
-        new THREE.Vector3(7.0, 0, 1.2),
-        new THREE.Vector3(9.5, 0, -0.8),
-        new THREE.Vector3(12, 0, 0.5),
-      ],
-      [
-        new THREE.Vector3(-(playClear + 0.4), 0, 1.5),
-        new THREE.Vector3(-4.0, 0, 0.2),
-        new THREE.Vector3(-6.5, 0, -1.0),
-        new THREE.Vector3(-9.0, 0, 0.8),
-        new THREE.Vector3(-12, 0, -0.3),
-      ],
-      [
-        new THREE.Vector3(-1.5, 0, playClear + 0.6),
-        new THREE.Vector3(0.5, 0, 5.0),
-        new THREE.Vector3(-0.8, 0, 7.5),
-        new THREE.Vector3(1.2, 0, 10.5),
-      ],
-      [
-        new THREE.Vector3(2.0, 0, -(playClear + 0.5)),
-        new THREE.Vector3(-0.5, 0, -5.5),
-        new THREE.Vector3(1.0, 0, -8.5),
-        new THREE.Vector3(-1.5, 0, -12),
-      ],
-    ];
-
-    for (let i = 0; i < paths.length; i++) {
-      const pts = paths[i]!;
-      const curve = new THREE.CatmullRomCurve3(pts, false);
-      const mesh = this.makePersonMesh();
-      this.root.add(mesh);
-      this.walkers.push({
-        mesh,
-        path: curve,
-        t: Math.random(),
-        speed: 0.025 + Math.random() * 0.02,
-        bobPhase: Math.random() * Math.PI * 2,
-      });
-    }
-  }
 
   update(dt: number): void {
     this.birdSpawnTimer -= dt;
@@ -231,17 +155,5 @@ export class ParkLife {
       }
     }
 
-    for (const w of this.walkers) {
-      w.t += w.speed * dt;
-      if (w.t > 1) w.t -= 1;
-      const pos = w.path.getPointAt(w.t);
-      const next = w.path.getPointAt(Math.min(0.999, w.t + 0.01));
-      w.bobPhase += dt * 5;
-      const bob = Math.abs(Math.sin(w.bobPhase)) * 0.02;
-      w.mesh.position.set(pos.x, bob, pos.z);
-      const dx = next.x - pos.x;
-      const dz = next.z - pos.z;
-      w.mesh.rotation.y = Math.atan2(dx, dz);
-    }
   }
 }

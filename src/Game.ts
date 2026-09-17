@@ -11,6 +11,7 @@ import {
   BOUNDARY_WALL_THICKNESS,
   CIRCLE_RADIUS,
   DROP_HEIGHT,
+  DROP_FREEZE_MS,
   FIELD_MARBLE_COUNT,
   GRAVITY,
   GROUND_FRICTION,
@@ -20,12 +21,14 @@ import {
   OUT_MARGIN,
   SETTLE_MAX_MS,
   SETTLE_SPEED,
-  SETTLE_WAIT_MS,
   POWER_DRAG_PX,
   DESPAWN_DIST,
   START_LEVEL,
   REPLAY_FPS,
   MONEY_PER_KNOCKOUT,
+  SLOWMO_SCALE,
+  SLOWMO_DURATION,
+  SLOWMO_IMPACT_THRESHOLD,
 } from './constants';
 import {
   createAIDesign,
@@ -99,7 +102,6 @@ export class Game {
 
   private phase: GamePhase = 'ready';
   private settleStart = 0;
-  private settleStableSince = 0;
   private turn: Side = 'player';
   private level = START_LEVEL;
 
@@ -157,6 +159,18 @@ export class Game {
 
   /** Running player balance ($2 per knockout). */
   private playerMoney = 0;
+
+  /** Field marbles still inside the circle after the post-drop freeze (scoring set). */
+  private scoringMarbles = new Set<MarbleEntity>();
+  /** Only award score for knockouts during a player/AI shot. */
+  private scoringEnabled = false;
+
+  /** Physics time scale (1 = normal, <1 = cámara lenta). */
+  private timeScale = 1;
+  private slowMoTimer = 0;
+  private slowMoFollow: MarbleEntity | null = null;
+  private readonly _slowMoCamOffset = new THREE.Vector3();
+  private readonly _aimFwd = new THREE.Vector3();
 
   // Replay transport
   private replayPaused = false;
@@ -399,7 +413,9 @@ export class Game {
     const arrowGeo = new THREE.ConeGeometry(0.008, 0.018, 10);
     const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffc107 });
     this.markerArrow = new THREE.Mesh(arrowGeo, arrowMat);
-    this.markerArrow.position.y = 0.09;
+    // Cone default tip is +Y; flip so it points DOWN toward the marble
+    this.markerArrow.rotation.x = Math.PI;
+    this.markerArrow.position.y = 0.095;
     this.markerGroup.add(this.markerArrow);
   }
 
@@ -532,7 +548,7 @@ export class Game {
     const park = buildPark(this.scene);
     this.streetLamps = park.lamps;
 
-    // Ambient park life (birds + distant walkers)
+    // Ambient park life (birds only — walkers removed)
     this.parkLife = new ParkLife(this.scene);
 
     // Impact sparks + dirt dust + money bill FX
@@ -646,7 +662,7 @@ export class Game {
     if (phase === 'ai_thinking') {
       this.els.settleBanner.textContent = `Turno de ${this.opponentName}…`;
     } else if (phase === 'settling') {
-      this.els.settleBanner.textContent = 'Esperando a que se detengan las canicas…';
+      this.els.settleBanner.textContent = 'Canicas cayendo… se congelan a los 5 s';
     }
 
     this.els.replayBanner.classList.toggle('hidden', phase !== 'replay');
@@ -659,7 +675,7 @@ export class Game {
       this.els.instructions.textContent =
         `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Potencia = deslizar arriba/abajo al mantener.`;
     } else if (phase === 'settling') {
-      this.els.instructions.textContent = 'Espera a que las canicas se detengan…';
+      this.els.instructions.textContent = 'Espera 5 segundos: las canicas de campo se congelan donde queden.';
     } else if (phase === 'playing') {
       this.els.instructions.textContent =
         this.turn === 'player'
@@ -709,10 +725,13 @@ export class Game {
     this.fieldMarbles = [];
     this.playerKnocked.clear();
     this.aiKnocked.clear();
+    this.scoringMarbles.clear();
+    this.scoringEnabled = false;
     this.playerScore = 0;
     this.aiScore = 0;
     this.playerMoney = 0;
     this.lastScorer = null;
+    this.exitSlowMo(false);
     this.particles?.clear();
     this.updateScoreHUD();
   }
@@ -773,7 +792,6 @@ export class Game {
     }
 
     this.settleStart = performance.now();
-    this.settleStableSince = 0;
     this.setPhase('settling');
   }
 
@@ -790,42 +808,83 @@ export class Game {
     return true;
   }
 
-  private beginPlaying(): void {
-    this.containFieldMarblesInCircle();
+    private beginPlaying(): void {
+    this.freezeFieldAfterDrop();
     this.spawnShootersInitial();
     this.turn = 'player';
+    this.scoringEnabled = false;
     this.setPhase('playing');
     this.beginTurn('player');
   }
 
-  private containFieldMarblesInCircle(): void {
-    const limit = CIRCLE_RADIUS - MARBLE_RADIUS * 1.5;
-    let i = 0;
+  /**
+   * Fully stop every field marble wherever it is after the drop wait.
+   * Build the scoring set from marbles still inside the circle; early exits
+   * do NOT award points and are left outside (not teleported back in).
+   */
+  private freezeFieldAfterDrop(): void {
+    this.scoringMarbles.clear();
+    this.scoringEnabled = false;
+    this.playerKnocked.clear();
+    this.aiKnocked.clear();
+    this.playerScore = 0;
+    this.aiScore = 0;
+    this.lastScorer = null;
+    this.updateScoreHUD();
+
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      const dx = m.body.position.x;
-      const dz = m.body.position.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist > limit || m.body.position.y < 0) {
-        const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2 + 0.2;
-        const r = Math.min(
-          limit * 0.75,
-          CIRCLE_RADIUS * (0.18 + (i % 4) * 0.12),
-        );
-        m.body.position.set(
-          Math.cos(angle) * r,
-          MARBLE_RADIUS + 0.0005,
-          Math.sin(angle) * r,
-        );
+      this.snapMarblePhysics(m, true);
+      const dist = Math.hypot(m.body.position.x, m.body.position.z);
+      const out = dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05;
+      if (out) {
+        // Left during drop/settle — no score, keep visible but inert
         m.body.velocity.setZero();
         m.body.angularVelocity.setZero();
-        m.body.wakeUp();
+        m.body.sleep();
+      } else {
+        this.scoringMarbles.add(m);
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.sleep();
       }
-      i++;
+      this.syncOneMesh(m);
     }
   }
 
-  private spawnShootersInitial(): void {
+  /** Snap body Y onto the ground plane, clear bad velocities / penetration. */
+  private snapMarblePhysics(m: MarbleEntity, hardStop: boolean): void {
+    const p = m.body.position;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+      p.set(0, MARBLE_RADIUS + 0.0005, 0);
+    }
+    // Sit on ground: radius above terrain (y=0 plane)
+    if (p.y < MARBLE_RADIUS || p.y > MARBLE_RADIUS * 4) {
+      p.y = MARBLE_RADIUS + 0.0005;
+    }
+    if (hardStop) {
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+    } else {
+      // Kill downward penetration velocity that leaves mesh half-buried
+      if (m.body.velocity.y < 0) m.body.velocity.y = 0;
+      if (p.y < MARBLE_RADIUS + 0.0002) p.y = MARBLE_RADIUS + 0.0005;
+    }
+    m.body.wakeUp();
+    if (hardStop) m.body.sleep();
+  }
+
+  private syncOneMesh(m: MarbleEntity): void {
+    m.mesh.position.set(m.body.position.x, m.body.position.y, m.body.position.z);
+    m.mesh.quaternion.set(
+      m.body.quaternion.x,
+      m.body.quaternion.y,
+      m.body.quaternion.z,
+      m.body.quaternion.w,
+    );
+  }
+
+private spawnShootersInitial(): void {
     this.removeShooter('player');
     this.removeShooter('ai');
     const dist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
@@ -875,6 +934,10 @@ export class Game {
     shooter.body.velocity.setZero();
     shooter.body.angularVelocity.setZero();
     shooter.body.type = CANNON.Body.KINEMATIC;
+    this.scoringEnabled = false;
+    this.aimYaw = 0;
+    this.snapMarblePhysics(shooter, true);
+    this.syncOneMesh(shooter);
 
     this.showLocationMarker(shooter, side);
     this.easeCameraToward(shooter);
@@ -1045,10 +1108,11 @@ export class Game {
 
   private onShootPointerMove(e: PointerEvent): void {
     if (!this.charging || !this.playerMarble) return;
-    // Horizontal drag → aim
+    // Horizontal drag → yaw offset AND orbit camera around shooter so aim matches view
     const dx = e.movementX || 0;
     this.aimYaw += dx * 0.01;
     this.aimYaw = Math.max(-1.1, Math.min(1.1, this.aimYaw));
+    if (dx !== 0) this.orbitAimCamera(dx * 0.01);
     // Vertical drag → power (up increases, down decreases)
     const dy = e.movementY !== 0 ? e.movementY : e.clientY - this.chargePointerY;
     this.chargePointerY = e.clientY;
@@ -1081,14 +1145,50 @@ export class Game {
     this.els.powerPct.textContent = '';
 
     if (!this.playerMarble) return;
-    const px = this.playerMarble.body.position.x;
-    const pz = this.playerMarble.body.position.z;
-    const base = Math.atan2(-pz, -px || -1e-6);
-    const yaw = base + this.aimYaw;
-    const dirX = Math.cos(yaw);
-    const dirZ = Math.sin(yaw);
-
+    const { dirX, dirZ } = this.getCameraAimDirection(this.aimYaw);
     this.startThrow('player', dirX, dirZ, power01);
+  }
+
+
+  /**
+   * Shot direction = camera look projected onto the ground plane, then yawed
+   * by aimYaw. When aimYaw is 0 (“straight”), impulse goes toward what is
+   * visually ahead (camera forward through the look-at / view center).
+   */
+  private getCameraAimDirection(yawOffset = 0): { dirX: number; dirZ: number } {
+    this.camera.getWorldDirection(this._aimFwd);
+    this._aimFwd.y = 0;
+    if (this._aimFwd.lengthSq() < 1e-10) {
+      const p = this.playerMarble?.body.position;
+      if (p) this._aimFwd.set(-p.x, 0, -p.z);
+      else this._aimFwd.set(0, 0, -1);
+    }
+    this._aimFwd.normalize();
+    if (Math.abs(yawOffset) > 1e-8) {
+      const c = Math.cos(yawOffset);
+      const s = Math.sin(yawOffset);
+      const x = this._aimFwd.x * c - this._aimFwd.z * s;
+      const z = this._aimFwd.x * s + this._aimFwd.z * c;
+      this._aimFwd.set(x, 0, z).normalize();
+    }
+    return { dirX: this._aimFwd.x, dirZ: this._aimFwd.z };
+  }
+
+  /** Orbit camera around the player marble (Y axis) while charging aim. */
+  private orbitAimCamera(deltaYaw: number): void {
+    const shooter = this.playerMarble;
+    if (!shooter) return;
+    const px = shooter.body.position.x;
+    const py = Math.max(MARBLE_RADIUS, shooter.body.position.y);
+    const pz = shooter.body.position.z;
+    const ox = this.camera.position.x - px;
+    const oz = this.camera.position.z - pz;
+    const c = Math.cos(deltaYaw);
+    const s = Math.sin(deltaYaw);
+    this.camera.position.x = px + ox * c - oz * s;
+    this.camera.position.z = pz + ox * s + oz * c;
+    this.controls.target.set(px, py, pz);
+    this.camera.lookAt(this.controls.target);
   }
 
   private startThrow(
@@ -1108,6 +1208,7 @@ export class Game {
     this.setPhase('shot_flying');
     this.shotSettleTimer = performance.now();
     this.lastScorer = side;
+    this.scoringEnabled = true;
   }
 
   private applyPendingImpulse(): void {
@@ -1136,61 +1237,62 @@ export class Game {
   }
 
   private updateScoreAndWin(): boolean {
-    if (
-      this.phase !== 'playing' &&
-      this.phase !== 'shot_flying' &&
-      this.phase !== 'ai_thinking'
-    ) {
+    // Score only while a shot is in flight (human or opponent). Never during drop/settle.
+    if (this.phase !== 'shot_flying' || !this.scoringEnabled) {
       return false;
     }
 
-    let inside = 0;
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      const dx = m.body.position.x;
-      const dz = m.body.position.z;
-      const dist = Math.hypot(dx, dz);
+      const dist = Math.hypot(m.body.position.x, m.body.position.z);
       const out = dist > CIRCLE_RADIUS + OUT_MARGIN;
       const fallen = m.body.position.y < -0.05;
 
-      if (out || fallen) {
-        if (!this.playerKnocked.has(m) && !this.aiKnocked.has(m)) {
-          const scorer = this.lastScorer ?? this.turn;
-          const kx = m.body.position.x;
-          const ky = Math.max(MARBLE_RADIUS * 2, m.body.position.y);
-          const kz = m.body.position.z;
-          if (scorer === 'player') {
-            this.playerKnocked.add(m);
-            this.playerScore = this.playerKnocked.size;
-            this.playerMoney += MONEY_PER_KNOCKOUT;
-            this.celebratePlayerKnockout(kx, ky, kz);
-          } else {
-            this.aiKnocked.add(m);
-            this.aiScore = this.aiKnocked.size;
-            // Milder money puff for opponent (no saldo / no punch)
-            this.particles?.spawnMoney(kx, ky, kz, true);
-          }
-          this.updateScoreHUD();
+      if (!(out || fallen)) continue;
+
+      const eligible =
+        this.scoringMarbles.has(m) &&
+        !this.playerKnocked.has(m) &&
+        !this.aiKnocked.has(m);
+
+      if (eligible) {
+        const scorer = this.lastScorer ?? this.turn;
+        const kx = m.body.position.x;
+        const ky = Math.max(MARBLE_RADIUS * 2, m.body.position.y);
+        const kz = m.body.position.z;
+        if (scorer === 'player') {
+          this.playerKnocked.add(m);
+          this.playerScore = this.playerKnocked.size;
+          this.playerMoney += MONEY_PER_KNOCKOUT;
+          this.celebratePlayerKnockout(kx, ky, kz);
+        } else {
+          this.aiKnocked.add(m);
+          this.aiScore = this.aiKnocked.size;
+          this.particles?.spawnMoney(kx, ky, kz, true);
         }
-        if (fallen || dist > DESPAWN_DIST) {
-          m.active = false;
-          m.mesh.visible = false;
-          m.body.velocity.setZero();
-          m.body.angularVelocity.setZero();
-          m.body.position.y = -1;
-          m.body.type = CANNON.Body.STATIC;
-        }
-      } else {
-        inside++;
+        this.scoringMarbles.delete(m);
+        this.updateScoreHUD();
+        this.enterSlowMo(m);
+      }
+
+      if (fallen || dist > DESPAWN_DIST) {
+        m.active = false;
+        m.mesh.visible = false;
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.position.y = -1;
+        m.body.type = CANNON.Body.STATIC;
       }
     }
 
-    if (inside === 0 && this.fieldMarbles.length > 0) {
+    // End when no scoring-set marbles remain in play (all knocked or none ever eligible)
+    if (this.scoringMarbles.size === 0 && this.fieldMarbles.length > 0) {
       this.endGame();
       return true;
     }
     return false;
   }
+
 
   private endGame(): void {
     this.setPhase('ended');
@@ -1410,12 +1512,17 @@ export class Game {
     // Ensure pending impulse applied
     if (this.throwPendingImpulse) this.applyPendingImpulse();
 
+    this.exitSlowMo(true);
+    this.scoringEnabled = false;
+
     // Keep shooters where they stopped (dynamic → freeze for next turn)
     for (const m of [this.playerMarble, this.aiMarble]) {
       if (!m) continue;
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
       m.body.type = CANNON.Body.KINEMATIC;
+      this.snapMarblePhysics(m, true);
+      this.syncOneMesh(m);
       if (m.body.position.y < MARBLE_RADIUS) {
         m.body.position.y = MARBLE_RADIUS + 0.0005;
       }
@@ -1456,6 +1563,16 @@ export class Game {
     this.aiPlan = null;
     this.startThrow('ai', plan.dirX, plan.dirZ, plan.power01);
     void dt;
+  }
+
+
+  private entityFromBody(body: CANNON.Body): MarbleEntity | null {
+    if (this.playerMarble && this.playerMarble.body === body) return this.playerMarble;
+    if (this.aiMarble && this.aiMarble.body === body) return this.aiMarble;
+    for (const m of this.fieldMarbles) {
+      if (m.body === body) return m;
+    }
+    return null;
   }
 
   private isMarbleBody(body: CANNON.Body): boolean {
@@ -1500,6 +1617,15 @@ export class Game {
         const intensity = Math.min(2.2, impact / 0.6);
         this.particles.spawnSparks(px, py, pz, intensity);
         this.sparkCooldownUntil = now + 55;
+        // Cámara lenta on heavy collisions — follow the faster marble
+        if (impact >= SLOWMO_IMPACT_THRESHOLD && this.phase === 'shot_flying') {
+          const bodyA = bi;
+          const bodyB = bj;
+          const followBody =
+            bodyA.velocity.length() >= bodyB.velocity.length() ? bodyA : bodyB;
+          const followEnt = this.entityFromBody(followBody);
+          if (followEnt) this.enterSlowMo(followEnt);
+        }
       }
 
       // Ground contact: one marble, other roughly static plane (mass 0)
@@ -1565,7 +1691,9 @@ export class Game {
     this.markerLife -= dt;
     const pulse = 1 + Math.sin(performance.now() * 0.008) * 0.08;
     this.markerRing.scale.setScalar(pulse);
-    this.markerArrow.position.y = 0.085 + Math.sin(performance.now() * 0.01) * 0.01;
+    this.markerArrow.position.y = 0.095 + Math.sin(performance.now() * 0.01) * 0.01;
+    // Keep tip pointing DOWN at the marble; spin around vertical only
+    this.markerArrow.rotation.x = Math.PI;
     this.markerArrow.rotation.y += dt * 2.5;
     if (this.markerLife <= 0) {
       this.markerGroup.visible = false;
@@ -1617,6 +1745,72 @@ export class Game {
     }
   }
 
+
+  private enterSlowMo(follow: MarbleEntity): void {
+    if (this.phase === 'replay') return;
+    // Capture camera offset relative to follow target so we can keep framing it
+    const fp = follow.body.position;
+    this._slowMoCamOffset.set(
+      this.camera.position.x - fp.x,
+      this.camera.position.y - fp.y,
+      this.camera.position.z - fp.z,
+    );
+    // Prefer a readable chase offset if current offset is tiny/odd
+    if (this._slowMoCamOffset.length() < 0.08) {
+      this._slowMoCamOffset.set(0.12, 0.14, 0.18);
+    }
+    this.slowMoFollow = follow;
+    this.slowMoTimer = SLOWMO_DURATION;
+    this.timeScale = SLOWMO_SCALE;
+    this.camEase = null;
+    this.controls.enabled = false;
+  }
+
+  private exitSlowMo(resync = true): void {
+    const was = this.timeScale < 0.999;
+    this.timeScale = 1;
+    this.slowMoTimer = 0;
+    this.slowMoFollow = null;
+    if (!was && !resync) return;
+    if (resync) {
+      // Fix half-buried / desynced transforms after time-scale change
+      for (const m of this.fieldMarbles) {
+        if (!m.active) continue;
+        this.snapMarblePhysics(m, false);
+        this.syncOneMesh(m);
+      }
+      for (const m of [this.playerMarble, this.aiMarble]) {
+        if (!m) continue;
+        this.snapMarblePhysics(m, false);
+        this.syncOneMesh(m);
+      }
+    }
+    if (this.phase === 'playing' || this.phase === 'ai_thinking' || this.phase === 'shot_flying') {
+      this.controls.enabled = true;
+      this.controls.enableDamping = true;
+    }
+  }
+
+  private updateSlowMo(realDt: number): void {
+    if (this.slowMoTimer <= 0) return;
+    this.slowMoTimer -= realDt;
+    const follow = this.slowMoFollow;
+    if (follow && follow.active) {
+      const fp = follow.body.position;
+      // Continuously follow + look at the relevant marble for the whole slow-mo window
+      this.camera.position.set(
+        fp.x + this._slowMoCamOffset.x,
+        Math.max(0.08, fp.y + this._slowMoCamOffset.y),
+        fp.z + this._slowMoCamOffset.z,
+      );
+      this.controls.target.set(fp.x, Math.max(MARBLE_RADIUS, fp.y), fp.z);
+      this.camera.lookAt(this.controls.target);
+    }
+    if (this.slowMoTimer <= 0) {
+      this.exitSlowMo(true);
+    }
+  }
+
   private update(): void {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.liveTime += dt;
@@ -1652,7 +1846,10 @@ export class Game {
       return;
     }
 
-    this.world.step(1 / 60, dt, 4);
+    // Scale physics dt during cámara lenta (visual dt stays real-time for camera follow)
+    const physDt = dt * this.timeScale;
+    this.world.step(1 / 60, physDt, 4);
+    this.updateSlowMo(dt);
     this.processImpactFX();
     this.processDirtRollFX(dt);
     this.updateMoneyHudTarget();
@@ -1664,15 +1861,8 @@ export class Game {
 
     if (this.phase === 'settling') {
       const now = performance.now();
-      if (this.allRelevantSettled()) {
-        if (!this.settleStableSince) this.settleStableSince = now;
-        if (now - this.settleStableSince >= SETTLE_WAIT_MS) {
-          this.beginPlaying();
-        }
-      } else {
-        this.settleStableSince = 0;
-      }
-      if (now - this.settleStart >= SETTLE_MAX_MS) {
+      // Always wait DROP_FREEZE_MS after drop, then hard-stop field marbles in place.
+      if (now - this.settleStart >= DROP_FREEZE_MS) {
         this.beginPlaying();
       }
     }

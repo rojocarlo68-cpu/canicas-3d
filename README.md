@@ -2,6 +2,16 @@
 
 Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara táctil y repetición.
 
+
+## Fixes (2026-09-17)
+
+1. **Cámara lenta:** follows the relevant marble for the whole slow-mo window; on exit, meshes snap to bodies and Y is corrected so marbles are not half-buried.
+2. **Indicator arrow:** points **down** at the marble.
+3. **Park life:** removed fake person silhouettes (birds kept).
+4. **Drop freeze:** 5 s after drop, all field marbles fully stop in place.
+5. **Scoring:** only knockouts during a player/opponent shot count; marbles that leave during the initial drop do not score. Scoring set = still in circle after the freeze.
+6. **Aim:** impulse uses camera forward projected on the ground (orbit aim while charging), so a centered/straight shot goes toward what you see ahead.
+
 ## Stack
 
 - [Vite](https://vitejs.dev/) + TypeScript

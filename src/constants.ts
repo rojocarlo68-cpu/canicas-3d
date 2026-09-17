@@ -19,6 +19,14 @@ export const SETTLE_SPEED = 0.015;
 export const SETTLE_WAIT_MS = 900;
 export const SETTLE_MAX_MS = 6000;
 
+/** After drop: wait this long, then fully freeze field marbles in place */
+export const DROP_FREEZE_MS = 5000;
+
+/** Slow-mo time scale during dramatic marble impacts / knockouts */
+export const SLOWMO_SCALE = 0.22;
+export const SLOWMO_DURATION = 1.15; // real-time seconds
+export const SLOWMO_IMPACT_THRESHOLD = 0.55;
+
 /** Shot power: impulse magnitude range */
 export const SHOT_MIN = 0.0012;
 export const SHOT_MAX = 0.0095;
