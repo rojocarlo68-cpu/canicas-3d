@@ -11,6 +11,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 4. **Drop freeze:** 5 s after drop, all field marbles fully stop in place.
 5. **Scoring:** only knockouts during a player/opponent shot count; marbles that leave during the initial drop do not score. Scoring set = still in circle after the freeze.
 6. **Aim:** impulse uses camera forward projected on the ground (orbit aim while charging), so a centered/straight shot goes toward what you see ahead.
+7. **Controles flick/push:** el tiro solo empieza al tocar la canica del jugador (radio visual × ~1.4). Arrastrar en vacío = órbita/zoom. Empuje usa velocidad del dedo en el plano del suelo + spin de rodadura.
 
 ## Stack
 

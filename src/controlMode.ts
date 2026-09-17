@@ -34,9 +34,9 @@ export function controlModeLabel(mode: ControlMode): string {
 
 export function controlModeHint(mode: ControlMode): string {
   if (mode === 'push') {
-    return 'Tu turno: toca cerca de tu canica y empújala con el dedo (más rápido = más fuerza).';
+    return 'Tu turno: toca TU canica y desliza el dedo para empujarla (fuera de la canica = solo cámara).';
   }
-  return 'Tu turno: toca cerca de tu canica o el círculo, arrastra para apuntar (línea) y suelta para disparar.';
+  return 'Tu turno: mantén pulsada TU canica, arrastra para apuntar (línea) y suelta para disparar. Arrastrar fuera = solo cámara.';
 }
 
 /** Map flick drag length + swipe speed → power 0..1 (addictive but controllable). */
@@ -47,11 +47,19 @@ export function powerFromFlick(dragPx: number, speedPxPerSec: number): number {
   return Math.max(0.08, Math.min(1, raw));
 }
 
-/** Map push primarily by swipe velocity (physical shove feel). */
-export function powerFromPush(dragPx: number, speedPxPerSec: number): number {
+/**
+ * Map push primarily by world-space finger speed along the ground (m/s),
+ * with a light assist from screen drag length.
+ */
+export function powerFromPush(
+  dragPx: number,
+  speedPxPerSec: number,
+  worldSpeedMs = 0,
+): number {
+  const fromWorld = Math.min(1, Math.max(0, (worldSpeedMs - 0.08) / 1.1));
   const fromSpeed = Math.min(1, Math.max(0, (speedPxPerSec - 60) / 1600));
   const fromDist = Math.min(1, Math.max(0, (dragPx - 12) / 180));
-  const raw = fromSpeed * 0.78 + fromDist * 0.28;
+  const raw = fromWorld * 0.7 + fromSpeed * 0.2 + fromDist * 0.18;
   return Math.max(0.1, Math.min(1, raw));
 }
 
@@ -60,9 +68,10 @@ export function isGestureStrongEnough(
   mode: ControlMode,
   dragPx: number,
   speedPxPerSec: number,
+  worldSpeedMs = 0,
 ): boolean {
   if (mode === 'push') {
-    return dragPx >= 14 || speedPxPerSec >= 120;
+    return dragPx >= 14 || speedPxPerSec >= 120 || worldSpeedMs >= 0.12;
   }
   return dragPx >= 22 || speedPxPerSec >= 180;
 }

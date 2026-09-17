@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import {
   MARBLE_RADIUS,
+  MARBLE_MASS,
   MARBLE_FRICTION,
   MARBLE_RESTITUTION,
   MARBLE_LINEAR_DAMPING,
@@ -321,7 +322,7 @@ export function createMarbleEntity(
 
   const shape = new CANNON.Sphere(MARBLE_RADIUS);
   const body = new CANNON.Body({
-    mass: 0.0055,
+    mass: MARBLE_MASS,
     shape,
     position: position.clone(),
     material: marbleMaterial,

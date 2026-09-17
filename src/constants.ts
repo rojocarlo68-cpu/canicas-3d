@@ -1,5 +1,13 @@
 /** Scale: 1 Three/Cannon unit = 1 meter */
 export const MARBLE_RADIUS = 0.008; // 1.6 cm diameter
+/** Glass-marble mass ≈ density 2500 kg/m³ × (4/3)πr³ */
+export const MARBLE_MASS = 0.0055;
+/** Fat-finger pick radius vs visual marble radius (screen or world) */
+export const MARBLE_PICK_TOLERANCE = 1.4;
+/** Push mode: max exit speed along ground (m/s) — heavy, not floaty */
+export const PUSH_MAX_SPEED = 1.25;
+/** Fraction of finger world-speed transferred to the marble */
+export const PUSH_VELOCITY_GAIN = 0.72;
 export const DROP_HEIGHT = 0.1; // 10 cm above ground
 /** Play circle on ground (2× original 0.16) */
 export const CIRCLE_RADIUS = 0.32;

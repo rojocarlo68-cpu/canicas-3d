@@ -28,6 +28,9 @@ import {
   SLOWMO_SCALE,
   SLOWMO_DURATION,
   SLOWMO_IMPACT_THRESHOLD,
+  MARBLE_PICK_TOLERANCE,
+  PUSH_MAX_SPEED,
+  PUSH_VELOCITY_GAIN,
 } from './constants';
 import {
   createAIDesign,
@@ -142,6 +145,9 @@ export class Game {
     dirX: number;
     dirZ: number;
     power01: number;
+    /** Push: world-space finger velocity on ground (m/s). When set, overrides power impulse. */
+    pushVx?: number;
+    pushVz?: number;
   } | null = null;
 
   private markerGroup: THREE.Group;
@@ -386,7 +392,7 @@ export class Game {
     this.boundOrient = () => this.onResize();
 
     this.buildAimLine();
-    this.canvas.addEventListener('pointerdown', this.boundPointerDown);
+    this.canvas.addEventListener('pointerdown', this.boundPointerDown, { capture: true });
     window.addEventListener('pointerup', this.boundPointerUp);
     window.addEventListener('pointermove', this.boundPointerMove);
     window.addEventListener('pointercancel', this.boundPointerCancel);
@@ -409,7 +415,7 @@ export class Game {
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
-    this.canvas.removeEventListener('pointerdown', this.boundPointerDown);
+    this.canvas.removeEventListener('pointerdown', this.boundPointerDown, { capture: true } as EventListenerOptions);
     window.removeEventListener('pointerup', this.boundPointerUp);
     window.removeEventListener('pointermove', this.boundPointerMove);
     window.removeEventListener('pointercancel', this.boundPointerCancel);
@@ -1226,22 +1232,53 @@ private spawnShootersInitial(): void {
     };
   }
 
-  /** Accept gesture near player marble or on the play surface during the player's turn. */
-  private isValidAimStart(clientX: number, clientY: number): boolean {
+  /**
+   * True only when the pointer hits the player marble (visual radius × pick tolerance).
+   * Empty space / ground never starts a shoot gesture — OrbitControls keeps those drags.
+   */
+  private picksPlayerMarble(clientX: number, clientY: number): boolean {
     if (!this.playerMarble) return false;
-    const screen = this.projectMarbleToScreen(this.playerMarble);
-    const nearMarblePx = Math.hypot(clientX - screen.x, clientY - screen.y);
-    if (nearMarblePx <= 72) return true;
+    const marble = this.playerMarble;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return false;
 
+    // Screen pick: project marble center + a point one radius out → visual px radius
+    const screen = this.projectMarbleToScreen(marble);
+    this._tmpV.set(
+      marble.body.position.x + MARBLE_RADIUS,
+      Math.max(MARBLE_RADIUS, marble.body.position.y),
+      marble.body.position.z,
+    );
+    this._tmpV.project(this.camera);
+    const edgeX = (this._tmpV.x * 0.5 + 0.5) * rect.width + rect.left;
+    const edgeY = (-this._tmpV.y * 0.5 + 0.5) * rect.height + rect.top;
+    const visualR = Math.max(10, Math.hypot(edgeX - screen.x, edgeY - screen.y));
+    const touchR = visualR * MARBLE_PICK_TOLERANCE;
+    if (Math.hypot(clientX - screen.x, clientY - screen.y) <= touchR) return true;
+
+    // World pick: ray vs expanded sphere (same tolerance)
+    this._ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this._ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this._ndc, this.camera);
+    const cx = marble.body.position.x;
+    const cy = marble.body.position.y;
+    const cz = marble.body.position.z;
+    const ray = this.raycaster.ray;
+    const ocx = cx - ray.origin.x;
+    const ocy = cy - ray.origin.y;
+    const ocz = cz - ray.origin.z;
+    const t = ocx * ray.direction.x + ocy * ray.direction.y + ocz * ray.direction.z;
+    const closestT = Math.max(0, t);
+    const qx = ray.origin.x + ray.direction.x * closestT - cx;
+    const qy = ray.origin.y + ray.direction.y * closestT - cy;
+    const qz = ray.origin.z + ray.direction.z * closestT - cz;
+    const pickR = MARBLE_RADIUS * MARBLE_PICK_TOLERANCE;
+    if (qx * qx + qy * qy + qz * qz <= pickR * pickR) return true;
+
+    // Ground footprint under the marble (finger slightly off the top of a small sphere)
     const g = this.clientToGround(clientX, clientY);
-    if (!g) return false;
-    const mx = this.playerMarble.body.position.x;
-    const mz = this.playerMarble.body.position.z;
-    const nearMarbleWorld = Math.hypot(g.x - mx, g.z - mz);
-    if (nearMarbleWorld <= MARBLE_RADIUS * 14) return true;
-    // Play surface (circle + small margin)
-    const fromOrigin = Math.hypot(g.x, g.z);
-    return fromOrigin <= CIRCLE_RADIUS * 1.35;
+    if (g && Math.hypot(g.x - cx, g.z - cz) <= pickR) return true;
+    return false;
   }
 
   private noteAimSample(x: number, y: number): void {
@@ -1260,10 +1297,25 @@ private spawnShootersInitial(): void {
     return Math.hypot(b.x - a.x, b.y - a.y) / dt;
   }
 
+  /** Finger velocity on the ground plane (m/s) from recent aim samples. */
+  private getAimWorldSwipeVelocity(): { vx: number; vz: number; speed: number } {
+    if (this.aimSamples.length < 2) return { vx: 0, vz: 0, speed: 0 };
+    const a = this.aimSamples[0]!;
+    const b = this.aimSamples[this.aimSamples.length - 1]!;
+    const g0 = this.clientToGround(a.x, a.y);
+    const g1 = this.clientToGround(b.x, b.y);
+    if (!g0 || !g1) return { vx: 0, vz: 0, speed: 0 };
+    const dt = Math.max(0.016, (b.t - a.t) / 1000);
+    const vx = (g1.x - g0.x) / dt;
+    const vz = (g1.z - g0.z) / dt;
+    return { vx, vz, speed: Math.hypot(vx, vz) };
+  }
+
   private recomputeAimFromPointer(clientX: number, clientY: number): void {
     if (!this.playerMarble) return;
     const dragPx = Math.hypot(clientX - this.aimStartClientX, clientY - this.aimStartClientY);
     const speed = this.getAimSwipeSpeed();
+    const world = this.getAimWorldSwipeVelocity();
 
     // Prefer ground-projected drag for direction (stable vs camera tilt)
     const g0 = this.clientToGround(this.aimStartClientX, this.aimStartClientY);
@@ -1296,7 +1348,7 @@ private spawnShootersInitial(): void {
 
     this.aimPower =
       this.controlMode === 'push'
-        ? powerFromPush(dragPx, speed)
+        ? powerFromPush(dragPx, speed, world.speed)
         : powerFromFlick(dragPx, speed);
     this.updateAimLineVisual();
   }
@@ -1316,10 +1368,12 @@ private spawnShootersInitial(): void {
     if (!this.canPlayerShoot || this.aiming) return;
     // Let multi-touch orbit/zoom go to OrbitControls
     if (e.isPrimary === false) return;
-    if (!this.isValidAimStart(e.clientX, e.clientY)) return;
+    // Miss → do nothing; OrbitControls owns the drag (no aim/push from empty space)
+    if (!this.picksPlayerMarble(e.clientX, e.clientY)) return;
 
+    // Claim this pointer so OrbitControls never starts a rotate
     e.preventDefault();
-    // Stop OrbitControls from treating this as a rotate
+    e.stopImmediatePropagation();
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {
@@ -1332,7 +1386,7 @@ private spawnShootersInitial(): void {
     this.aimStartClientY = e.clientY;
     this.aimSamples = [];
     this.noteAimSample(e.clientX, e.clientY);
-    this.aimPower = 0.12;
+    this.aimPower = 0;
     // Default aim along camera forward until drag establishes direction
     this.camera.getWorldDirection(this._aimFwd);
     this._aimFwd.y = 0;
@@ -1344,7 +1398,7 @@ private spawnShootersInitial(): void {
     this.aimDirX = this._aimFwd.x;
     this.aimDirZ = this._aimFwd.z;
     this.controls.enabled = false;
-    this.updateAimLineVisual();
+    this.hideAimLine();
   }
 
   private onAimPointerMove(e: PointerEvent): void {
@@ -1369,21 +1423,30 @@ private spawnShootersInitial(): void {
     this.recomputeAimFromPointer(e.clientX, e.clientY);
     const dragPx = Math.hypot(e.clientX - this.aimStartClientX, e.clientY - this.aimStartClientY);
     const speed = this.getAimSwipeSpeed();
+    const world = this.getAimWorldSwipeVelocity();
     const power01 = this.aimPower;
     const dirX = this.aimDirX;
     const dirZ = this.aimDirZ;
+    const mode = this.controlMode;
 
     this.cancelAimGesture(true);
 
     if (!this.playerMarble || this.phase !== 'playing' || this.turn !== 'player') {
       return;
     }
-    if (!isGestureStrongEnough(this.controlMode, dragPx, speed)) {
+    if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
       this.canPlayerShoot = true;
       return;
     }
 
-    this.startThrow('player', dirX, dirZ, Math.max(0.08, Math.min(1, power01)));
+    if (mode === 'push') {
+      this.startThrow('player', dirX, dirZ, Math.max(0.08, Math.min(1, power01)), {
+        pushVx: world.vx,
+        pushVz: world.vz,
+      });
+    } else {
+      this.startThrow('player', dirX, dirZ, Math.max(0.08, Math.min(1, power01)));
+    }
   }
 
   private startThrow(
@@ -1391,11 +1454,19 @@ private spawnShootersInitial(): void {
     dirX: number,
     dirZ: number,
     power01: number,
+    push?: { pushVx: number; pushVz: number },
   ): void {
     const shooter = side === 'player' ? this.playerMarble : this.aiMarble;
     if (!shooter) return;
 
-    this.throwPendingImpulse = { side, dirX, dirZ, power01 };
+    this.throwPendingImpulse = {
+      side,
+      dirX,
+      dirZ,
+      power01,
+      pushVx: push?.pushVx,
+      pushVz: push?.pushVz,
+    };
     // Apply immediately (no hand wind-up)
     this.applyPendingImpulse();
 
@@ -1418,7 +1489,41 @@ private spawnShootersInitial(): void {
     const body = shooter.body;
     body.type = CANNON.Body.DYNAMIC;
     body.wakeUp();
-    // Impulse along aim direction (horizontal) — billiard-style cue strike.
+
+    // Push mode: map finger world velocity → heavy marble exit + roll spin
+    if (
+      pending.pushVx !== undefined &&
+      pending.pushVz !== undefined &&
+      Number.isFinite(pending.pushVx) &&
+      Number.isFinite(pending.pushVz)
+    ) {
+      let vx = pending.pushVx * PUSH_VELOCITY_GAIN;
+      let vz = pending.pushVz * PUSH_VELOCITY_GAIN;
+      let speed = Math.hypot(vx, vz);
+      // Fallback: if world samples were tiny, use aim dir × power-scaled speed
+      if (speed < 0.05) {
+        const fallback = 0.15 + pending.power01 * (PUSH_MAX_SPEED - 0.15);
+        vx = pending.dirX * fallback;
+        vz = pending.dirZ * fallback;
+        speed = fallback;
+      }
+      if (speed > PUSH_MAX_SPEED && speed > 1e-8) {
+        const s = PUSH_MAX_SPEED / speed;
+        vx *= s;
+        vz *= s;
+        speed = PUSH_MAX_SPEED;
+      }
+      // Slight upward so it doesn't dig into the ground; keep heavy (small hop)
+      const vy = Math.min(0.12, speed * 0.04);
+      body.velocity.set(vx, vy, vz);
+      // Rolling spin: ω ≈ v × n / r  (tangential shove → linear + angular)
+      const invR = 1 / Math.max(1e-6, MARBLE_RADIUS);
+      const spinScale = 0.85; // a bit under pure rolling so it feels like a shove
+      body.angularVelocity.set(-vz * invR * spinScale, 0, vx * invR * spinScale);
+      return;
+    }
+
+    // Flick / AI: impulse along aim direction (horizontal) — billiard-style cue strike.
     // Marble–marble collisions then transfer momentum along the contact normal
     // via cannon-es (no custom velocity overrides).
     const impulseMag = impulseFromPower(pending.power01);
