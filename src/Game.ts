@@ -43,6 +43,9 @@ import {
   type ReplayFrame,
   type Side,
 } from './replay';
+import { pickOpponentName } from './names';
+import { ParticleFX } from './particles';
+import { buildStadium } from './stadium';
 
 type GamePhase =
   | 'ready'
@@ -132,6 +135,12 @@ export class Game {
 
   private defaultCamAzimuth = Math.PI * 0.25;
 
+  /** Random rival name for this match (never shown as "IA"). */
+  private opponentName = pickOpponentName();
+  private particles!: ParticleFX;
+  private dirtCooldown = new Map<object, number>();
+  private sparkCooldownUntil = 0;
+
   private els: {
     btnDrop: HTMLButtonElement;
     btnShoot: HTMLButtonElement;
@@ -140,6 +149,7 @@ export class Game {
     btnEndReplay: HTMLButtonElement;
     scorePlayer: HTMLElement;
     scoreAI: HTMLElement;
+    scoreAIName: HTMLElement;
     turnLabel: HTMLElement;
     levelLabel: HTMLElement;
     powerWrap: HTMLElement;
@@ -176,6 +186,7 @@ export class Game {
       btnEndReplay: document.getElementById('btn-end-replay') as HTMLButtonElement,
       scorePlayer: document.getElementById('score-player')!,
       scoreAI: document.getElementById('score-ai')!,
+      scoreAIName: document.getElementById('score-ai-name')!,
       turnLabel: document.getElementById('turn-label')!,
       levelLabel: document.getElementById('level-label')!,
       powerWrap: document.getElementById('power-wrap')!,
@@ -193,6 +204,7 @@ export class Game {
     };
 
     drawPreviewMarble(this.els.playerPreview, this.playerDesign);
+    this.rollOpponentName();
     this.updateScoreHUD();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -210,7 +222,7 @@ export class Game {
     this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x9ec8e6, 0.028);
+    this.scene.fog = new THREE.FogExp2(0x9ec8e6, 0.018);
 
     this.camera = new THREE.PerspectiveCamera(
       45,
@@ -455,6 +467,12 @@ export class Game {
     this.scene.add(this.containerMesh);
 
     this.buildInvisibleBoundary();
+
+    // Stadium scenery (bleachers, crowd, mountains, buildings)
+    buildStadium(this.scene);
+
+    // Impact sparks + dirt dust FX
+    this.particles = new ParticleFX(this.scene);
   }
 
   /**
@@ -499,6 +517,11 @@ export class Game {
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
   }
 
+  private rollOpponentName(): void {
+    this.opponentName = pickOpponentName();
+    this.els.scoreAIName.textContent = this.opponentName;
+  }
+
   private setPhase(phase: GamePhase): void {
     this.phase = phase;
     this.els.btnDrop.disabled = phase !== 'ready';
@@ -510,7 +533,7 @@ export class Game {
       phase !== 'settling' && phase !== 'ai_thinking',
     );
     if (phase === 'ai_thinking') {
-      this.els.settleBanner.textContent = 'Turno de la IA…';
+      this.els.settleBanner.textContent = `Turno de ${this.opponentName}…`;
     } else if (phase === 'settling') {
       this.els.settleBanner.textContent = 'Esperando a que se detengan las canicas…';
     }
@@ -520,17 +543,19 @@ export class Game {
 
     if (phase === 'ready') {
       this.els.instructions.textContent =
-        'Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ IA. Potencia = deslizar arriba/abajo al mantener.';
+        `Pulsa «Soltar canicas» (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}. Potencia = deslizar arriba/abajo al mantener.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent = 'Espera a que las canicas se detengan…';
     } else if (phase === 'playing') {
       this.els.instructions.textContent =
         this.turn === 'player'
           ? 'Tu turno: mantén tu canica, desliza ARRIBA/ABAJO para potencia, horizontal para apuntar; suelta para disparar.'
-          : 'Turno de la IA…';
+          : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
       this.els.instructions.textContent =
-        this.turn === 'ai' ? 'La IA está tirando…' : 'Canicas en movimiento…';
+        this.turn === 'ai'
+          ? `${this.opponentName} está tirando…`
+          : 'Canicas en movimiento…';
     } else if (phase === 'replay') {
       this.els.instructions.textContent = 'Repetición de los últimos segundos…';
     } else if (phase === 'ended') {
@@ -542,7 +567,9 @@ export class Game {
 
   private updateTurnHUD(): void {
     const turnText =
-      this.turn === 'player' ? 'Turno: Jugador' : 'Turno: IA';
+      this.turn === 'player'
+        ? 'Turno: Jugador'
+        : `Turno: ${this.opponentName}`;
     this.els.turnLabel.textContent = turnText;
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
     this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
@@ -552,6 +579,7 @@ export class Game {
   private updateScoreHUD(): void {
     this.els.scorePlayer.textContent = String(this.playerScore);
     this.els.scoreAI.textContent = String(this.aiScore);
+    this.els.scoreAIName.textContent = this.opponentName;
   }
 
   private clearFieldMarbles(): void {
@@ -594,6 +622,9 @@ export class Game {
     this.replay.clear();
     this.recording = true;
     this.camEase = null;
+    this.particles?.clear();
+    this.dirtCooldown.clear();
+    this.rollOpponentName();
     this.setPhase('dropping');
 
     const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
@@ -734,12 +765,12 @@ export class Game {
     if (side === 'player') {
       this.setPhase('playing');
       this.els.btnShoot.disabled = false;
-      this.els.locationBanner.textContent = 'Tu canica está aquí';
+      this.els.locationBanner.textContent = 'Aquí está tu canica';
       this.els.locationBanner.classList.remove('hidden', 'banner-ai');
       this.els.locationBanner.classList.add('banner-player');
     } else {
       this.els.btnShoot.disabled = true;
-      this.els.locationBanner.textContent = 'Canica de la IA';
+      this.els.locationBanner.textContent = `Aquí está la canica de ${this.opponentName}`;
       this.els.locationBanner.classList.remove('hidden', 'banner-player');
       this.els.locationBanner.classList.add('banner-ai');
       this.aiPlan = planAIShot(shooter, this.fieldMarbles, this.level);
@@ -790,11 +821,15 @@ export class Game {
   }
 
   /**
-   * Frame active marble + play circle. Avoids OrbitControls fighting the lerp
-   * (root cause of blank/sky handoff after AI turns).
+   * Cinematic turn-start framing for player AND opponent:
+   * - Camera sits BEHIND the active marble (outside the circle radially)
+   * - Looks toward the marble / arena so the marble is near screen center
+   * - Zoom tight enough for mobile (marble clearly visible, arena ahead)
+   * Disables OrbitControls while easing (same prior pattern).
    */
   private easeCameraToward(shooter: MarbleEntity): void {
     const px = shooter.body.position.x;
+    const py = shooter.body.position.y;
     const pz = shooter.body.position.z;
     if (!Number.isFinite(px) || !Number.isFinite(pz)) {
       this.camEase = null;
@@ -803,9 +838,8 @@ export class Game {
     }
 
     const portrait = window.innerHeight > window.innerWidth;
-    // Blend marble ↔ origin so the circle stays in view
-    const look = new THREE.Vector3(px * 0.42, 0, pz * 0.42);
 
+    // Radial outward from play-circle origin through the marble
     let radial = Math.hypot(px, pz);
     let dirX: number;
     let dirZ: number;
@@ -818,17 +852,28 @@ export class Game {
       dirZ = pz / radial;
     }
 
-    // Camera outside the marble, slightly off-axis, height scaled to circle
-    const back = CIRCLE_RADIUS * (portrait ? 1.55 : 1.3);
-    const side = CIRCLE_RADIUS * (portrait ? 0.55 : 0.45);
-    const up = CIRCLE_RADIUS * (portrait ? 1.15 : 0.95);
-    const toPos = new THREE.Vector3(
-      look.x + dirX * back + dirZ * side,
-      up,
-      look.z + dirZ * back - dirX * side,
+    // Look mostly at the marble (center of screen), slight pull toward arena
+    const look = new THREE.Vector3(
+      px * 0.82,
+      Math.max(MARBLE_RADIUS * 1.2, py * 0.5),
+      pz * 0.82,
     );
 
-    // Guard against NaN / degenerate ease endpoints
+    // Behind marble: further outside along radial, modest height, tiny side bias
+    // Distances tuned so a ~1.6 cm marble reads clearly on phones
+    const back = portrait ? 0.30 : 0.38;
+    const side = portrait ? 0.035 : 0.05;
+    const up = portrait ? 0.16 : 0.20;
+    const toPos = new THREE.Vector3(
+      px + dirX * back + dirZ * side,
+      up,
+      pz + dirZ * back - dirX * side,
+    );
+
+    // Slightly tighter FOV on turn frame for mobile readability
+    this.camera.fov = portrait ? 48 : 40;
+    this.camera.updateProjectionMatrix();
+
     if (
       !Number.isFinite(toPos.x) ||
       !Number.isFinite(toPos.y) ||
@@ -844,12 +889,13 @@ export class Game {
       return;
     }
 
-    // Pause orbit while easing so damping/spherical state cannot yank the view
+    // Pause orbit / damping while easing so controls cannot yank the view
     this.controls.enabled = false;
+    this.controls.enableDamping = false;
     this.camEase = {
       active: true,
       t: 0,
-      dur: 0.65,
+      dur: 0.7,
       fromPos: this.camera.position.clone(),
       toPos,
       fromTarget: this.controls.target.clone(),
@@ -1033,18 +1079,19 @@ export class Game {
     if (p > a) {
       this.els.endTitle.textContent = '¡Victoria!';
       this.els.endMessage.textContent =
-        'Sacaste más canicas del círculo que la IA.';
+        `Sacaste más canicas del círculo que ${this.opponentName}.`;
       this.level += 1;
     } else if (a > p) {
       this.els.endTitle.textContent = 'Derrota';
       this.els.endMessage.textContent =
-        'La IA sacó más canicas. ¡Inténtalo de nuevo!';
+        `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
     } else {
       this.els.endTitle.textContent = 'Empate';
       this.els.endMessage.textContent =
         'Misma cantidad de canicas fuera. ¡Casi!';
     }
-    this.els.endScore.textContent = `Jugador ${p} · IA ${a}  (Nivel ${this.level})`;
+    this.els.endScore.textContent =
+      `Jugador ${p} · ${this.opponentName} ${a}  (Nivel ${this.level})`;
     this.els.endScreen.classList.remove('hidden');
     this.updateTurnHUD();
   }
@@ -1062,6 +1109,9 @@ export class Game {
     this.recording = true;
     this.camEase = null;
     this.throwPendingImpulse = null;
+    this.particles?.clear();
+    this.dirtCooldown.clear();
+    this.rollOpponentName();
     this.setPhase('ready');
   }
 
@@ -1275,7 +1325,108 @@ export class Game {
     void dt;
   }
 
-  private updateMarker(dt: number): void {
+  private isMarbleBody(body: CANNON.Body): boolean {
+    if (this.playerMarble && body === this.playerMarble.body) return true;
+    if (this.aiMarble && body === this.aiMarble.body) return true;
+    for (const m of this.fieldMarbles) {
+      if (m.active && body === m.body) return true;
+    }
+    return false;
+  }
+
+
+  /** Sparks on hard marble–marble hits; dirt on ground scrapes / hard landings. */
+  private processImpactFX(): void {
+    if (!this.particles) return;
+    if (
+      this.phase !== 'shot_flying' &&
+      this.phase !== 'settling' &&
+      this.phase !== 'dropping'
+    ) {
+      return;
+    }
+
+    const now = performance.now();
+    const contacts = this.world.contacts;
+    for (let i = 0; i < contacts.length; i++) {
+      const c = contacts[i]!;
+      const bi = c.bi;
+      const bj = c.bj;
+      const impact = Math.abs(c.getImpactVelocityAlongNormal());
+
+      const mi = this.isMarbleBody(bi);
+      const mj = this.isMarbleBody(bj);
+      if (mi && mj && impact > 0.35 && now > this.sparkCooldownUntil) {
+        // Contact point in world space
+        const nx = c.ni.x;
+        const ny = c.ni.y;
+        const nz = c.ni.z;
+        const px = bi.position.x - nx * MARBLE_RADIUS;
+        const py = bi.position.y - ny * MARBLE_RADIUS;
+        const pz = bi.position.z - nz * MARBLE_RADIUS;
+        const intensity = Math.min(2.2, impact / 0.6);
+        this.particles.spawnSparks(px, py, pz, intensity);
+        this.sparkCooldownUntil = now + 55;
+      }
+
+      // Ground contact: one marble, other roughly static plane (mass 0)
+      if (impact > 0.55 && (mi || mj)) {
+        const marbleBody = mi ? bi : bj;
+        const other = mi ? bj : bi;
+        if (other.mass === 0 && marbleBody.position.y < MARBLE_RADIUS * 3) {
+          const speed = marbleBody.velocity.length();
+          if (speed > 0.25) {
+            const intensity = Math.min(1.8, speed / 0.8);
+            this.particles.spawnDirt(
+              marbleBody.position.x,
+              0.004,
+              marbleBody.position.z,
+              intensity,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** Continuous dirt when marbles scrape/roll fast on the dirt surface. */
+  private processDirtRollFX(dt: number): void {
+    if (!this.particles) return;
+    if (this.phase !== 'shot_flying' && this.phase !== 'settling') return;
+
+    const list: MarbleEntity[] = [...this.fieldMarbles];
+    if (this.playerMarble) list.push(this.playerMarble);
+    if (this.aiMarble) list.push(this.aiMarble);
+
+    for (const m of list) {
+      if (!m.active) continue;
+      const body = m.body;
+      if (body.type === CANNON.Body.KINEMATIC) continue;
+      const y = body.position.y;
+      if (y > MARBLE_RADIUS * 2.5) continue;
+      const speed = body.velocity.length();
+      if (speed < 0.28) continue;
+
+      const key = body as unknown as object;
+      const cd = this.dirtCooldown.get(key) ?? 0;
+      const next = cd - dt;
+      if (next > 0) {
+        this.dirtCooldown.set(key, next);
+        continue;
+      }
+      const intensity = Math.min(1.6, (speed - 0.2) / 0.9);
+      this.particles.spawnDirt(
+        body.position.x,
+        0.003,
+        body.position.z,
+        intensity,
+      );
+      // Faster scrapes → more frequent puffs
+      this.dirtCooldown.set(key, Math.max(0.04, 0.14 - intensity * 0.05));
+    }
+  }
+
+    private updateMarker(dt: number): void {
     if (!this.markerGroup.visible) return;
     this.markerLife -= dt;
     const pulse = 1 + Math.sin(performance.now() * 0.008) * 0.08;
@@ -1311,6 +1462,7 @@ export class Game {
     ) {
       this.camEase.active = false;
       this.camEase = null;
+      this.controls.enableDamping = true;
       this.fitCameraToArena(true);
       this.controls.enabled = true;
       return;
@@ -1324,6 +1476,7 @@ export class Game {
       this.controls.target.copy(this.camEase.toTarget);
       this.camEase.active = false;
       this.camEase = null;
+      this.controls.enableDamping = true;
       this.controls.enabled = true;
       // Sync OrbitControls internal spherical from final pose
       this.controls.update();
@@ -1350,6 +1503,9 @@ export class Game {
     }
 
     this.world.step(1 / 60, dt, 4);
+    this.processImpactFX();
+    this.processDirtRollFX(dt);
+    this.particles?.update(dt);
 
     if (this.charging && this.playerMarble) {
       this.syncPowerMeter();

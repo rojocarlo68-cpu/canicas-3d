@@ -176,8 +176,8 @@ export function createPlayerDesign(): MarbleDesign {
 
 export function createAIDesign(): MarbleDesign {
   return {
-    id: 'ia',
-    name: 'Canica IA',
+    id: 'rival',
+    name: 'Canica rival',
     material: patternedMat(
       (ctx, s) => {
         const g = ctx.createRadialGradient(s * 0.35, s * 0.35, 4, s / 2, s / 2, s * 0.55);
@@ -187,11 +187,24 @@ export function createAIDesign(): MarbleDesign {
         g.addColorStop(1, '#0d47a1');
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, s, s);
+        // Stylized star (no "IA" label)
         ctx.fillStyle = '#fff';
-        ctx.font = `bold ${Math.floor(s * 0.28)}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('IA', s / 2, s / 2);
+        ctx.beginPath();
+        const cx = s / 2;
+        const cy = s / 2;
+        const spikes = 5;
+        const outer = s * 0.22;
+        const inner = s * 0.1;
+        for (let i = 0; i < spikes * 2; i++) {
+          const r = i % 2 === 0 ? outer : inner;
+          const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+          const x = cx + Math.cos(a) * r;
+          const y = cy + Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
       },
       { roughness: 0.18, clearcoat: 1 },
     ),
