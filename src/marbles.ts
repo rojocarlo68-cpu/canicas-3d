@@ -18,7 +18,7 @@ export type MarbleOwner = 'field' | 'player' | 'ai';
 
 function canvasTexture(
   draw: (ctx: CanvasRenderingContext2D, size: number) => void,
-  size = 128,
+  size = 256,
 ): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -27,125 +27,218 @@ function canvasTexture(
   draw(ctx, size);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
   tex.needsUpdate = true;
   return tex;
 }
 
-function solidMat(color: string, opts: Partial<THREE.MeshPhysicalMaterialParameters> = {}) {
+/** Soft radial highlight baked into map for cheap “glass” specular. */
+function addGlassSheen(ctx: CanvasRenderingContext2D, s: number): void {
+  const hl = ctx.createRadialGradient(s * 0.32, s * 0.28, s * 0.02, s * 0.35, s * 0.32, s * 0.42);
+  hl.addColorStop(0, 'rgba(255,255,255,0.55)');
+  hl.addColorStop(0.35, 'rgba(255,255,255,0.12)');
+  hl.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hl;
+  ctx.fillRect(0, 0, s, s);
+
+  // Rim darkening
+  const rim = ctx.createRadialGradient(s / 2, s / 2, s * 0.28, s / 2, s / 2, s * 0.52);
+  rim.addColorStop(0, 'rgba(0,0,0,0)');
+  rim.addColorStop(1, 'rgba(0,0,0,0.28)');
+  ctx.fillStyle = rim;
+  ctx.fillRect(0, 0, s, s);
+}
+
+function glassMat(
+  draw: (ctx: CanvasRenderingContext2D, size: number) => void,
+  opts: Partial<THREE.MeshPhysicalMaterialParameters> = {},
+): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
-    color,
-    roughness: 0.15,
-    metalness: 0.05,
+    map: canvasTexture((ctx, s) => {
+      draw(ctx, s);
+      addGlassSheen(ctx, s);
+    }),
+    roughness: 0.12,
+    metalness: 0.0,
     clearcoat: 1,
-    clearcoatRoughness: 0.1,
+    clearcoatRoughness: 0.08,
+    reflectivity: 0.55,
+    envMapIntensity: 1.0,
     ...opts,
   });
 }
 
-function patternedMat(
-  draw: (ctx: CanvasRenderingContext2D, size: number) => void,
+function solidGlass(
+  color: string,
   opts: Partial<THREE.MeshPhysicalMaterialParameters> = {},
-) {
-  return new THREE.MeshPhysicalMaterial({
-    map: canvasTexture(draw),
-    roughness: 0.2,
-    metalness: 0.05,
-    clearcoat: 1,
-    clearcoatRoughness: 0.12,
-    ...opts,
-  });
+): THREE.MeshPhysicalMaterial {
+  return glassMat((ctx, s) => {
+    const g = ctx.createRadialGradient(s * 0.35, s * 0.32, s * 0.05, s / 2, s / 2, s * 0.55);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.2, color);
+    g.addColorStop(0.75, shadeHex(color, -30));
+    g.addColorStop(1, shadeHex(color, -55));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+  }, opts);
+}
+
+function shadeHex(hex: string, amt: number): string {
+  const n = parseInt(hex.replace('#', ''), 16);
+  const r = Math.min(255, Math.max(0, (n >> 16) + amt));
+  const g = Math.min(255, Math.max(0, ((n >> 8) & 0xff) + amt));
+  const b = Math.min(255, Math.max(0, (n & 0xff) + amt));
+  return `rgb(${r},${g},${b})`;
+}
+
+/** Organic swirl veins like classic glass marbles. */
+function swirlPattern(
+  ctx: CanvasRenderingContext2D,
+  s: number,
+  base: string,
+  veins: string[],
+): void {
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, s, s);
+  for (let v = 0; v < veins.length; v++) {
+    ctx.strokeStyle = veins[v]!;
+    ctx.lineWidth = 6 + v * 3;
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    const cx = s * (0.35 + v * 0.12);
+    const cy = s * (0.4 + (v % 2) * 0.1);
+    for (let t = 0; t <= 1; t += 0.02) {
+      const a = t * Math.PI * 2.6 + v * 1.1;
+      const r = s * (0.08 + t * 0.38);
+      const x = cx + Math.cos(a) * r + Math.sin(t * 9 + v) * s * 0.03;
+      const y = cy + Math.sin(a * 0.9) * r * 0.85 + Math.cos(t * 7) * s * 0.02;
+      if (t === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // Internal translucent wash
+  const wash = ctx.createRadialGradient(s * 0.5, s * 0.5, s * 0.1, s * 0.5, s * 0.5, s * 0.5);
+  wash.addColorStop(0, 'rgba(255,255,255,0.2)');
+  wash.addColorStop(1, 'rgba(0,0,0,0.05)');
+  ctx.fillStyle = wash;
+  ctx.fillRect(0, 0, s, s);
 }
 
 export function createFieldDesigns(): MarbleDesign[] {
   return [
     {
-      id: 'azul',
+      id: 'azul-cristal',
       name: 'Azul cristal',
-      material: solidMat('#2a6fd6', { transmission: 0.35, thickness: 0.5, ior: 1.5, transparent: true, opacity: 0.92 }),
+      material: solidGlass('#1e88e5', {
+        roughness: 0.1,
+        clearcoat: 1,
+        // Cheap transmission approx — keep opacity high for mobile
+        transparent: true,
+        opacity: 0.92,
+        transmission: 0.15,
+        thickness: 0.4,
+        ior: 1.5,
+      }),
     },
     {
       id: 'ojo-gato',
       name: 'Ojo de gato',
-      material: patternedMat((ctx, s) => {
-        ctx.fillStyle = '#e8e8e8';
+      material: glassMat((ctx, s) => {
+        ctx.fillStyle = '#f5f5f5';
         ctx.fillRect(0, 0, s, s);
-        ctx.fillStyle = '#c62828';
+        const g = ctx.createRadialGradient(s / 2, s / 2, s * 0.02, s / 2, s / 2, s * 0.28);
+        g.addColorStop(0, '#fffde7');
+        g.addColorStop(0.35, '#ff8f00');
+        g.addColorStop(0.7, '#c62828');
+        g.addColorStop(1, '#4a0000');
+        ctx.fillStyle = g;
         ctx.beginPath();
-        ctx.ellipse(s / 2, s / 2, s * 0.18, s * 0.42, 0, 0, Math.PI * 2);
+        ctx.ellipse(s / 2, s / 2, s * 0.16, s * 0.4, 0.15, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#fff8';
+        // Cat-eye slit
+        ctx.fillStyle = '#1a0500';
         ctx.beginPath();
-        ctx.ellipse(s * 0.38, s * 0.35, s * 0.08, s * 0.12, -0.4, 0, Math.PI * 2);
+        ctx.ellipse(s / 2, s / 2, s * 0.035, s * 0.32, 0.15, 0, Math.PI * 2);
         ctx.fill();
       }),
     },
     {
-      id: 'verde',
-      name: 'Verde opaco',
-      material: solidMat('#2e7d32', { roughness: 0.35 }),
+      id: 'verde-bosque',
+      name: 'Verde bosque',
+      material: glassMat((ctx, s) => {
+        swirlPattern(ctx, s, '#1b5e20', ['#a5d6a7', '#66bb6a', '#004d40', '#c8e6c9']);
+      }, { roughness: 0.18 }),
     },
     {
       id: 'swirl-morado',
       name: 'Remolino morado',
-      material: patternedMat((ctx, s) => {
-        const g = ctx.createLinearGradient(0, 0, s, s);
-        g.addColorStop(0, '#4a148c');
-        g.addColorStop(0.35, '#f9a825');
-        g.addColorStop(0.65, '#7b1fa2');
-        g.addColorStop(1, '#ffd54f');
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, s, s);
-        ctx.strokeStyle = '#fff6';
-        ctx.lineWidth = 6;
-        for (let i = 0; i < 5; i++) {
-          ctx.beginPath();
-          ctx.arc(s * 0.5, s * 0.5, 10 + i * 12, i * 0.6, i * 0.6 + 2.2);
-          ctx.stroke();
-        }
+      material: glassMat((ctx, s) => {
+        swirlPattern(ctx, s, '#4a148c', ['#f9a825', '#ce93d8', '#ffd54f', '#7b1fa2']);
       }),
     },
     {
       id: 'ambar',
       name: 'Ámbar',
-      material: solidMat('#ff8f00', { transmission: 0.25, thickness: 0.4, transparent: true, opacity: 0.9 }),
+      material: solidGlass('#ff8f00', {
+        transparent: true,
+        opacity: 0.9,
+        transmission: 0.2,
+        thickness: 0.45,
+        roughness: 0.14,
+      }),
     },
     {
-      id: 'naranja',
-      name: 'Naranja sólido',
-      material: solidMat('#ef6c00', { roughness: 0.28 }),
+      id: 'naranja-swirl',
+      name: 'Naranja swirl',
+      material: glassMat((ctx, s) => {
+        swirlPattern(ctx, s, '#e65100', ['#fff3e0', '#ffcc80', '#bf360c', '#ffe0b2']);
+      }),
     },
     {
       id: 'azul-blanco',
       name: 'Azul y blanco',
-      material: patternedMat((ctx, s) => {
-        ctx.fillStyle = '#1565c0';
+      material: glassMat((ctx, s) => {
+        ctx.fillStyle = '#0d47a1';
         ctx.fillRect(0, 0, s, s);
         ctx.fillStyle = '#e3f2fd';
-        for (let i = -s; i < s * 2; i += 18) {
+        for (let i = -s; i < s * 2; i += 22) {
           ctx.beginPath();
           ctx.moveTo(i, 0);
-          ctx.quadraticCurveTo(i + 40, s / 2, i, s);
-          ctx.lineTo(i + 10, s);
-          ctx.quadraticCurveTo(i + 50, s / 2, i + 10, 0);
+          ctx.bezierCurveTo(i + 30, s * 0.35, i - 10, s * 0.65, i + 20, s);
+          ctx.lineTo(i + 14, s);
+          ctx.bezierCurveTo(i + 4, s * 0.65, i + 44, s * 0.35, i + 14, 0);
           ctx.closePath();
           ctx.fill();
         }
       }),
     },
     {
-      id: 'negra',
-      name: 'Negra',
-      material: solidMat('#1a1a1a', { roughness: 0.25, metalness: 0.2 }),
+      id: 'negra-onyx',
+      name: 'Ónix',
+      material: glassMat((ctx, s) => {
+        swirlPattern(ctx, s, '#121212', ['#616161', '#9e9e9e', '#37474f', '#eceff1']);
+      }, { roughness: 0.2, metalness: 0.15 }),
     },
     {
       id: 'amarilla',
       name: 'Amarilla',
-      material: solidMat('#fdd835', { roughness: 0.3 }),
+      material: glassMat((ctx, s) => {
+        swirlPattern(ctx, s, '#f9a825', ['#fffde7', '#ff6f00', '#ffecb3', '#f57f17']);
+      }),
     },
     {
-      id: 'rosa',
+      id: 'rosa-cristal',
       name: 'Rosa translúcida',
-      material: solidMat('#ec407a', { transmission: 0.4, thickness: 0.45, transparent: true, opacity: 0.88 }),
+      material: solidGlass('#ec407a', {
+        transparent: true,
+        opacity: 0.88,
+        transmission: 0.22,
+        thickness: 0.4,
+        roughness: 0.12,
+      }),
     },
   ];
 }
@@ -154,22 +247,17 @@ export function createPlayerDesign(): MarbleDesign {
   return {
     id: 'jugador',
     name: 'Tu canica',
-    material: patternedMat(
+    material: glassMat(
       (ctx, s) => {
-        const g = ctx.createRadialGradient(s * 0.35, s * 0.35, 4, s / 2, s / 2, s * 0.55);
-        g.addColorStop(0, '#fffde7');
-        g.addColorStop(0.35, '#ffd54f');
-        g.addColorStop(0.7, '#ff6f00');
-        g.addColorStop(1, '#bf360c');
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, s, s);
-        ctx.strokeStyle = '#5d4037';
-        ctx.lineWidth = 4;
+        swirlPattern(ctx, s, '#e65100', ['#fff8e1', '#ffd54f', '#ff6f00', '#bf360c', '#5d4037']);
+        // Signature ring
+        ctx.strokeStyle = 'rgba(93,64,55,0.65)';
+        ctx.lineWidth = 5;
         ctx.beginPath();
-        ctx.arc(s / 2, s / 2, s * 0.28, 0.2, Math.PI * 1.6);
+        ctx.arc(s / 2, s / 2, s * 0.26, 0.2, Math.PI * 1.6);
         ctx.stroke();
       },
-      { roughness: 0.18, clearcoat: 1 },
+      { roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.06 },
     ),
   };
 }
@@ -178,23 +266,17 @@ export function createAIDesign(): MarbleDesign {
   return {
     id: 'rival',
     name: 'Canica rival',
-    material: patternedMat(
+    material: glassMat(
       (ctx, s) => {
-        const g = ctx.createRadialGradient(s * 0.35, s * 0.35, 4, s / 2, s / 2, s * 0.55);
-        g.addColorStop(0, '#e3f2fd');
-        g.addColorStop(0.35, '#42a5f5');
-        g.addColorStop(0.7, '#1565c0');
-        g.addColorStop(1, '#0d47a1');
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, s, s);
-        // Stylized star (no "IA" label)
-        ctx.fillStyle = '#fff';
+        swirlPattern(ctx, s, '#0d47a1', ['#e3f2fd', '#42a5f5', '#1565c0', '#82b1ff']);
+        // Star mark
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.beginPath();
         const cx = s / 2;
         const cy = s / 2;
         const spikes = 5;
-        const outer = s * 0.22;
-        const inner = s * 0.1;
+        const outer = s * 0.18;
+        const inner = s * 0.08;
         for (let i = 0; i < spikes * 2; i++) {
           const r = i % 2 === 0 ? outer : inner;
           const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
@@ -206,7 +288,7 @@ export function createAIDesign(): MarbleDesign {
         ctx.closePath();
         ctx.fill();
       },
-      { roughness: 0.18, clearcoat: 1 },
+      { roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.06 },
     ),
   };
 }
@@ -230,7 +312,8 @@ export function createMarbleEntity(
   position: CANNON.Vec3,
   owner: MarbleOwner,
 ): MarbleEntity {
-  const geo = new THREE.SphereGeometry(MARBLE_RADIUS, 32, 24);
+  // Slightly higher tessellation for nicer specular on glass
+  const geo = new THREE.SphereGeometry(MARBLE_RADIUS, 36, 28);
   const mesh = new THREE.Mesh(geo, design.material.clone());
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -274,7 +357,7 @@ export function drawPreviewMarble(
     const g = ctx.createRadialGradient(w * 0.35, h * 0.32, 4, w / 2, h / 2, w * 0.45);
     g.addColorStop(0, '#ffffff');
     g.addColorStop(0.25, color);
-    g.addColorStop(1, shade(color, -40));
+    g.addColorStop(1, shadeHex(color, -40));
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2);
@@ -282,7 +365,7 @@ export function drawPreviewMarble(
   }
 
   const hl = ctx.createRadialGradient(w * 0.35, h * 0.3, 1, w * 0.35, h * 0.3, w * 0.2);
-  hl.addColorStop(0, 'rgba(255,255,255,0.75)');
+  hl.addColorStop(0, 'rgba(255,255,255,0.8)');
   hl.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = hl;
   ctx.beginPath();
@@ -294,12 +377,4 @@ export function drawPreviewMarble(
   ctx.beginPath();
   ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2);
   ctx.stroke();
-}
-
-function shade(hex: string, amt: number): string {
-  const n = parseInt(hex.replace('#', ''), 16);
-  const r = Math.min(255, Math.max(0, (n >> 16) + amt));
-  const g = Math.min(255, Math.max(0, ((n >> 8) & 0xff) + amt));
-  const b = Math.min(255, Math.max(0, (n & 0xff) + amt));
-  return `rgb(${r},${g},${b})`;
 }

@@ -451,3 +451,159 @@ body {
     padding-bottom: 14px;
   }
 }
+
+/* --- Saldo / money --- */
+.score-money {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.85em;
+  font-weight: 800;
+  color: #81c784;
+  letter-spacing: 0.02em;
+}
+
+.score-side.player.money-flash .score-money {
+  animation: money-pop 0.45s ease-out;
+}
+
+@keyframes money-pop {
+  0% { transform: scale(1); color: #81c784; }
+  40% { transform: scale(1.35); color: #c8ffc8; }
+  100% { transform: scale(1); color: #81c784; }
+}
+
+#money-toast {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  z-index: 25;
+  pointer-events: none;
+  font-size: clamp(28px, 8vw, 48px);
+  font-weight: 900;
+  color: #a5d6a7;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.75), 0 0 20px rgba(76, 175, 80, 0.55);
+  animation: money-toast-fly 0.9s ease-out forwards;
+}
+
+#money-toast.hidden {
+  display: none;
+}
+
+@keyframes money-toast-fly {
+  0% { opacity: 0; transform: translate(-50%, -40%) scale(0.6); }
+  25% { opacity: 1; transform: translate(-50%, -55%) scale(1.15); }
+  100% { opacity: 0; transform: translate(-50%, -120%) scale(0.9); }
+}
+
+/* Screen punch on knockout */
+#punch-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle at center, rgba(255, 236, 160, 0.18), transparent 55%);
+}
+
+#punch-overlay.punch {
+  animation: punch-flash 0.28s ease-out;
+}
+
+#game-root.punch-shake {
+  animation: punch-shake 0.32s ease-out;
+}
+
+@keyframes punch-flash {
+  0% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
+@keyframes punch-shake {
+  0% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(3px, -2px) scale(1.012); }
+  50% { transform: translate(-3px, 2px) scale(1.008); }
+  75% { transform: translate(2px, 1px) scale(1.004); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+/* Replay transport bar */
+#replay-controls {
+  position: absolute;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 28;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 8px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(8, 18, 36, 0.88);
+  border: 1px solid rgba(144, 202, 249, 0.45);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  max-width: min(520px, 96vw);
+}
+
+#replay-controls.hidden {
+  display: none;
+}
+
+#replay-controls button,
+#replay-controls select {
+  appearance: none;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.12);
+  color: #e3f2fd;
+  cursor: pointer;
+}
+
+#replay-controls button:active {
+  transform: scale(0.96);
+}
+
+#replay-btn-play {
+  background: linear-gradient(180deg, #90caf9, #42a5f5);
+  color: #0d2137;
+  min-width: 44px;
+}
+
+#replay-btn-exit {
+  background: linear-gradient(180deg, #f5d76e, #c9a227);
+  color: #1a1008;
+}
+
+#replay-scrub {
+  flex: 1 1 140px;
+  min-width: 120px;
+  accent-color: #64b5f6;
+}
+
+.replay-speed-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #bbdefb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#replay-banner {
+  top: max(88px, calc(env(safe-area-inset-top) + 72px));
+}
+
+@media (max-width: 420px) {
+  #replay-controls {
+    bottom: max(100px, calc(env(safe-area-inset-bottom) + 92px));
+    gap: 4px;
+    padding: 8px;
+  }
+}

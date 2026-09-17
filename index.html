@@ -15,9 +15,10 @@
         <div id="top-bar">
           <button id="btn-drop" type="button">Soltar canicas</button>
           <div id="score-panel">
-            <span class="score-side player">
+            <span class="score-side player" id="score-player-side">
               <span class="score-name">Jugador</span>
               <span id="score-player">0</span>
+              <span class="score-money" id="score-money">$0</span>
             </span>
             <span class="score-vs">vs</span>
             <span class="score-side ai">
@@ -53,6 +54,27 @@
 
       <div id="location-banner" class="hidden">Tu canica está aquí</div>
       <div id="replay-banner" class="hidden">▶ Repetición</div>
+
+      <div id="replay-controls" class="hidden" aria-label="Controles de repetición">
+        <button id="replay-btn-back" type="button" title="Rebobinar">⏪</button>
+        <button id="replay-btn-play" type="button" title="Reproducir / Pausar">▶</button>
+        <button id="replay-btn-fwd" type="button" title="Avanzar">⏩</button>
+        <button id="replay-btn-stop" type="button" title="Detener">⏹</button>
+        <input id="replay-scrub" type="range" min="0" max="1000" value="0" step="1" aria-label="Posición" />
+        <label class="replay-speed-label" for="replay-speed">Vel
+          <select id="replay-speed" aria-label="Velocidad">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </label>
+        <button id="replay-btn-exit" type="button">Salir</button>
+      </div>
+
+      <div id="money-toast" class="hidden">+$2</div>
+      <div id="punch-overlay" aria-hidden="true"></div>
 
       <div id="end-screen" class="hidden">
         <div id="end-card">

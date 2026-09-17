@@ -47,3 +47,6 @@ export const REPLAY_CAPACITY = REPLAY_SECONDS * REPLAY_FPS;
 
 /** Starting AI difficulty level */
 export const START_LEVEL = 1;
+
+/** Dollars credited per field marble knocked out of the circle */
+export const MONEY_PER_KNOCKOUT = 2;

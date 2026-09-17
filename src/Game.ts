@@ -25,6 +25,7 @@ import {
   DESPAWN_DIST,
   START_LEVEL,
   REPLAY_FPS,
+  MONEY_PER_KNOCKOUT,
 } from './constants';
 import {
   createAIDesign,
@@ -45,7 +46,7 @@ import {
 } from './replay';
 import { pickOpponentName } from './names';
 import { ParticleFX } from './particles';
-import { buildStadium } from './stadium';
+import { buildPark } from './park';
 
 type GamePhase =
   | 'ready'
@@ -141,6 +142,14 @@ export class Game {
   private dirtCooldown = new Map<object, number>();
   private sparkCooldownUntil = 0;
 
+  /** Running player balance ($2 per knockout). */
+  private playerMoney = 0;
+
+  // Replay transport
+  private replayPaused = false;
+  private replaySpeed = 1;
+  private replayScrubbing = false;
+
   private els: {
     btnDrop: HTMLButtonElement;
     btnShoot: HTMLButtonElement;
@@ -150,6 +159,8 @@ export class Game {
     scorePlayer: HTMLElement;
     scoreAI: HTMLElement;
     scoreAIName: HTMLElement;
+    scoreMoney: HTMLElement;
+    scorePlayerSide: HTMLElement;
     turnLabel: HTMLElement;
     levelLabel: HTMLElement;
     powerWrap: HTMLElement;
@@ -164,6 +175,17 @@ export class Game {
     playerPreview: HTMLCanvasElement;
     locationBanner: HTMLElement;
     replayBanner: HTMLElement;
+    replayControls: HTMLElement;
+    replayBtnPlay: HTMLButtonElement;
+    replayBtnBack: HTMLButtonElement;
+    replayBtnFwd: HTMLButtonElement;
+    replayBtnStop: HTMLButtonElement;
+    replayBtnExit: HTMLButtonElement;
+    replayScrub: HTMLInputElement;
+    replaySpeed: HTMLSelectElement;
+    moneyToast: HTMLElement;
+    punchOverlay: HTMLElement;
+    gameRoot: HTMLElement;
   };
 
   private playerDesign = createPlayerDesign();
@@ -187,6 +209,8 @@ export class Game {
       scorePlayer: document.getElementById('score-player')!,
       scoreAI: document.getElementById('score-ai')!,
       scoreAIName: document.getElementById('score-ai-name')!,
+      scoreMoney: document.getElementById('score-money')!,
+      scorePlayerSide: document.getElementById('score-player-side')!,
       turnLabel: document.getElementById('turn-label')!,
       levelLabel: document.getElementById('level-label')!,
       powerWrap: document.getElementById('power-wrap')!,
@@ -201,6 +225,17 @@ export class Game {
       playerPreview: document.getElementById('player-preview') as HTMLCanvasElement,
       locationBanner: document.getElementById('location-banner')!,
       replayBanner: document.getElementById('replay-banner')!,
+      replayControls: document.getElementById('replay-controls')!,
+      replayBtnPlay: document.getElementById('replay-btn-play') as HTMLButtonElement,
+      replayBtnBack: document.getElementById('replay-btn-back') as HTMLButtonElement,
+      replayBtnFwd: document.getElementById('replay-btn-fwd') as HTMLButtonElement,
+      replayBtnStop: document.getElementById('replay-btn-stop') as HTMLButtonElement,
+      replayBtnExit: document.getElementById('replay-btn-exit') as HTMLButtonElement,
+      replayScrub: document.getElementById('replay-scrub') as HTMLInputElement,
+      replaySpeed: document.getElementById('replay-speed') as HTMLSelectElement,
+      moneyToast: document.getElementById('money-toast')!,
+      punchOverlay: document.getElementById('punch-overlay')!,
+      gameRoot: document.getElementById('game-root')!,
     };
 
     drawPreviewMarble(this.els.playerPreview, this.playerDesign);
@@ -222,7 +257,7 @@ export class Game {
     this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x9ec8e6, 0.018);
+    this.scene.fog = new THREE.FogExp2(0xb5d6a8, 0.014);
 
     this.camera = new THREE.PerspectiveCamera(
       45,
@@ -260,10 +295,15 @@ export class Game {
         restitution: GROUND_RESTITUTION,
       }),
     );
+    // Billiard-like marble–marble: cannon-es resolves impulses along the
+    // contact normal by default. Keep friction low so glancing vs head-on
+    // transfers feel physical; do not override velocities on impact.
     this.world.addContactMaterial(
       new CANNON.ContactMaterial(marbleMat, marbleMat, {
-        friction: 0.3,
-        restitution: 0.45,
+        friction: 0.08,
+        restitution: 0.58,
+        contactEquationStiffness: 1e7,
+        contactEquationRelaxation: 3,
       }),
     );
 
@@ -387,7 +427,7 @@ export class Game {
     // Endless dirt ground
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
     const groundMat3 = new THREE.MeshStandardMaterial({
-      color: '#7a5230',
+      color: '#5a7a42',
       roughness: 0.95,
       metalness: 0.0,
     });
@@ -468,8 +508,8 @@ export class Game {
 
     this.buildInvisibleBoundary();
 
-    // Stadium scenery (bleachers, crowd, mountains, buildings)
-    buildStadium(this.scene);
+    // Park scenery (grass, trees, paths, benches — no stadium)
+    buildPark(this.scene);
 
     // Impact sparks + dirt dust FX
     this.particles = new ParticleFX(this.scene);
@@ -515,6 +555,34 @@ export class Game {
     this.els.btnRestart.addEventListener('click', () => this.restart());
     this.els.btnReplay.addEventListener('click', () => this.startReplay());
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
+
+    this.els.replayBtnPlay.addEventListener('click', () => this.toggleReplayPlay());
+    this.els.replayBtnBack.addEventListener('click', () => this.nudgeReplay(-Math.round(REPLAY_FPS * 0.5)));
+    this.els.replayBtnFwd.addEventListener('click', () => this.nudgeReplay(Math.round(REPLAY_FPS * 0.5)));
+    this.els.replayBtnStop.addEventListener('click', () => this.stopReplayPlayback());
+    this.els.replayBtnExit.addEventListener('click', () => this.finishReplay());
+    this.els.replaySpeed.addEventListener('change', () => {
+      const v = parseFloat(this.els.replaySpeed.value);
+      this.replaySpeed = Number.isFinite(v) && v > 0 ? v : 1;
+    });
+    this.els.replayScrub.addEventListener('pointerdown', () => {
+      this.replayScrubbing = true;
+      this.replayPaused = true;
+      this.syncReplayPlayButton();
+    });
+    this.els.replayScrub.addEventListener('input', () => {
+      if (this.phase !== 'replay' || this.replayPlaying.length === 0) return;
+      const max = Math.max(1, this.replayPlaying.length - 1);
+      const t = parseInt(this.els.replayScrub.value, 10) / 1000;
+      this.replayIndex = Math.max(0, Math.min(max, Math.round(t * max)));
+      this.replayAcc = 0;
+      this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+    });
+    const endScrub = () => {
+      this.replayScrubbing = false;
+    };
+    this.els.replayScrub.addEventListener('pointerup', endScrub);
+    this.els.replayScrub.addEventListener('pointercancel', endScrub);
   }
 
   private rollOpponentName(): void {
@@ -540,6 +608,9 @@ export class Game {
 
     this.els.replayBanner.classList.toggle('hidden', phase !== 'replay');
     this.els.btnReplay.disabled = phase === 'replay' || this.replay.length < 30;
+    if (phase !== 'replay') {
+      this.els.replayControls.classList.add('hidden');
+    }
 
     if (phase === 'ready') {
       this.els.instructions.textContent =
@@ -580,6 +651,7 @@ export class Game {
     this.els.scorePlayer.textContent = String(this.playerScore);
     this.els.scoreAI.textContent = String(this.aiScore);
     this.els.scoreAIName.textContent = this.opponentName;
+    this.els.scoreMoney.textContent = `$${this.playerMoney}`;
   }
 
   private clearFieldMarbles(): void {
@@ -596,7 +668,9 @@ export class Game {
     this.aiKnocked.clear();
     this.playerScore = 0;
     this.aiScore = 0;
+    this.playerMoney = 0;
     this.lastScorer = null;
+    this.particles?.clear();
     this.updateScoreHUD();
   }
 
@@ -1004,6 +1078,9 @@ export class Game {
     const body = shooter.body;
     body.type = CANNON.Body.DYNAMIC;
     body.wakeUp();
+    // Impulse along aim direction (horizontal) — billiard-style cue strike.
+    // Marble–marble collisions then transfer momentum along the contact normal
+    // via cannon-es (no custom velocity overrides).
     const impulseMag = impulseFromPower(pending.power01);
     body.applyImpulse(
       new CANNON.Vec3(
@@ -1036,12 +1113,19 @@ export class Game {
       if (out || fallen) {
         if (!this.playerKnocked.has(m) && !this.aiKnocked.has(m)) {
           const scorer = this.lastScorer ?? this.turn;
+          const kx = m.body.position.x;
+          const ky = Math.max(MARBLE_RADIUS * 2, m.body.position.y);
+          const kz = m.body.position.z;
           if (scorer === 'player') {
             this.playerKnocked.add(m);
             this.playerScore = this.playerKnocked.size;
+            this.playerMoney += MONEY_PER_KNOCKOUT;
+            this.celebratePlayerKnockout(kx, ky, kz);
           } else {
             this.aiKnocked.add(m);
             this.aiScore = this.aiKnocked.size;
+            // Milder money puff for opponent (no saldo / no punch)
+            this.particles?.spawnMoney(kx, ky, kz, true);
           }
           this.updateScoreHUD();
         }
@@ -1091,7 +1175,7 @@ export class Game {
         'Misma cantidad de canicas fuera. ¡Casi!';
     }
     this.els.endScore.textContent =
-      `Jugador ${p} · ${this.opponentName} ${a}  (Nivel ${this.level})`;
+      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (Nivel ${this.level})`;
     this.els.endScreen.classList.remove('hidden');
     this.updateTurnHUD();
   }
@@ -1126,7 +1210,9 @@ export class Game {
 
     this.charging = false;
     this.els.powerWrap.classList.add('hidden');
-    this.controls.enabled = false;
+    // Free camera during replay — user can orbit/pinch while scrubbing
+    this.controls.enabled = true;
+    this.controls.enableDamping = true;
     this.els.btnShoot.disabled = true;
     this.markerGroup.visible = false;
     this.recording = false;
@@ -1135,13 +1221,24 @@ export class Game {
     this.replayPlaying = frames;
     this.replayIndex = 0;
     this.replayAcc = 0;
+    this.replayPaused = false;
+    this.replaySpeed = parseFloat(this.els.replaySpeed.value) || 1;
+    this.replayScrubbing = false;
+    this.els.replayControls.classList.remove('hidden');
+    this.els.replayScrub.value = '0';
+    this.syncReplayPlayButton();
     this.setPhase('replay');
+    this.els.instructions.textContent =
+      'Repetición: órbita libre · pellizca zoom · usa la barra para pausar/rebobinar';
   }
 
   private finishReplay(): void {
     this.replayPlaying = [];
     this.recording = true;
     this.controls.enabled = true;
+    this.els.replayControls.classList.add('hidden');
+    this.replayPaused = false;
+    this.replayScrubbing = false;
     this.syncMeshes();
 
     if (this.phaseBeforeReplay === 'ended') {
@@ -1220,23 +1317,16 @@ export class Game {
     if (this.aiMarble && frame.ai) {
       this.applySnapToMesh(this.aiMarble, frame.ai);
     }
-    if (
-      Number.isFinite(frame.camX) &&
-      Number.isFinite(frame.camY) &&
-      Number.isFinite(frame.camZ) &&
-      Number.isFinite(frame.targetX) &&
-      Number.isFinite(frame.targetY) &&
-      Number.isFinite(frame.targetZ)
-    ) {
-      this.camera.position.set(frame.camX, frame.camY, frame.camZ);
-      this.controls.target.set(frame.targetX, frame.targetY, frame.targetZ);
-      this.controls.update();
-    }
+    // Camera is NOT restored from the frame — free orbit/zoom while replaying.
     this.playerScore = frame.playerScore;
     this.aiScore = frame.aiScore;
     this.turn = frame.turn;
     this.updateScoreHUD();
     this.updateTurnHUD();
+    if (this.replayPlaying.length > 1) {
+      const t = this.replayIndex / (this.replayPlaying.length - 1);
+      this.els.replayScrub.value = String(Math.round(t * 1000));
+    }
   }
 
   private syncMeshes(): void {
@@ -1376,10 +1466,10 @@ export class Game {
         if (other.mass === 0 && marbleBody.position.y < MARBLE_RADIUS * 3) {
           const speed = marbleBody.velocity.length();
           if (speed > 0.25) {
-            const intensity = Math.min(1.8, speed / 0.8);
+            const intensity = Math.min(0.65, speed / 1.6);
             this.particles.spawnDirt(
               marbleBody.position.x,
-              0.004,
+              0.002,
               marbleBody.position.z,
               intensity,
             );
@@ -1389,7 +1479,7 @@ export class Game {
     }
   }
 
-  /** Continuous dirt when marbles scrape/roll fast on the dirt surface. */
+  /** Continuous dirt when marbles scrape/roll fast — kept tiny & sparse. */
   private processDirtRollFX(dt: number): void {
     if (!this.particles) return;
     if (this.phase !== 'shot_flying' && this.phase !== 'settling') return;
@@ -1405,7 +1495,8 @@ export class Game {
       const y = body.position.y;
       if (y > MARBLE_RADIUS * 2.5) continue;
       const speed = body.velocity.length();
-      if (speed < 0.28) continue;
+      // Higher threshold so only fast scrapes kick dust
+      if (speed < 0.55) continue;
 
       const key = body as unknown as object;
       const cd = this.dirtCooldown.get(key) ?? 0;
@@ -1414,15 +1505,15 @@ export class Game {
         this.dirtCooldown.set(key, next);
         continue;
       }
-      const intensity = Math.min(1.6, (speed - 0.2) / 0.9);
+      const intensity = Math.min(0.7, (speed - 0.45) / 1.4);
       this.particles.spawnDirt(
         body.position.x,
-        0.003,
+        0.002,
         body.position.z,
         intensity,
       );
-      // Faster scrapes → more frequent puffs
-      this.dirtCooldown.set(key, Math.max(0.04, 0.14 - intensity * 0.05));
+      // Sparse cadence — never a dust cloud
+      this.dirtCooldown.set(key, Math.max(0.18, 0.38 - intensity * 0.08));
     }
   }
 
@@ -1488,15 +1579,28 @@ export class Game {
     this.liveTime += dt;
 
     if (this.phase === 'replay') {
-      this.replayAcc += dt;
-      const step = 1 / REPLAY_FPS;
-      while (this.replayAcc >= step && this.replayIndex < this.replayPlaying.length) {
-        this.replayAcc -= step;
-        this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
-        this.replayIndex++;
+      this.updateMoneyHudTarget();
+      this.particles?.update(dt);
+      if (!this.replayPaused && !this.replayScrubbing && this.replayPlaying.length > 0) {
+        this.replayAcc += dt * this.replaySpeed;
+        const step = 1 / REPLAY_FPS;
+        while (this.replayAcc >= step && this.replayIndex < this.replayPlaying.length) {
+          this.replayAcc -= step;
+          this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+          this.replayIndex++;
+        }
+        if (this.replayIndex >= this.replayPlaying.length) {
+          // Freeze on last frame — user exits via Salir / Stop
+          this.replayIndex = this.replayPlaying.length - 1;
+          this.replayPaused = true;
+          this.syncReplayPlayButton();
+          if (this.replayPlaying[this.replayIndex]) {
+            this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+          }
+        }
       }
-      if (this.replayIndex >= this.replayPlaying.length) {
-        this.finishReplay();
+      if (!this.camEase?.active) {
+        this.controls.update();
       }
       this.renderer.render(this.scene, this.camera);
       return;
@@ -1505,6 +1609,7 @@ export class Game {
     this.world.step(1 / 60, dt, 4);
     this.processImpactFX();
     this.processDirtRollFX(dt);
+    this.updateMoneyHudTarget();
     this.particles?.update(dt);
 
     if (this.charging && this.playerMarble) {
@@ -1612,6 +1717,87 @@ export class Game {
     }
     this.controls.update();
     this.renderer.setSize(w, h, false);
+  }
+
+
+  /** Satisfying feedback + money burst flying toward the saldo HUD. */
+  private celebratePlayerKnockout(x: number, y: number, z: number): void {
+    this.particles?.spawnMoney(x, y, z, false);
+    this.particles?.spawnSparks(x, y + 0.01, z, 1.6);
+    this.triggerScreenPunch();
+    this.showMoneyToast();
+    this.els.scorePlayerSide.classList.remove('money-flash');
+    void this.els.scorePlayerSide.offsetWidth;
+    this.els.scorePlayerSide.classList.add('money-flash');
+  }
+
+  private triggerScreenPunch(): void {
+    this.els.punchOverlay.classList.remove('punch');
+    this.els.gameRoot.classList.remove('punch-shake');
+    void this.els.punchOverlay.offsetWidth;
+    this.els.punchOverlay.classList.add('punch');
+    this.els.gameRoot.classList.add('punch-shake');
+    window.setTimeout(() => {
+      this.els.punchOverlay.classList.remove('punch');
+      this.els.gameRoot.classList.remove('punch-shake');
+    }, 340);
+  }
+
+  private showMoneyToast(): void {
+    this.els.moneyToast.textContent = `+$${MONEY_PER_KNOCKOUT}`;
+    this.els.moneyToast.classList.remove('hidden');
+        window.setTimeout(() => {
+      this.els.moneyToast.classList.add('hidden');
+    }, 900);
+  }
+
+  /** Project the score/saldo HUD into a world point so money particles home in. */
+  private updateMoneyHudTarget(): void {
+    if (!this.particles) return;
+    const el = this.els.scoreMoney;
+    const rect = el.getBoundingClientRect();
+    const ndcX = ((rect.left + rect.width * 0.5) / window.innerWidth) * 2 - 1;
+    const ndcY = -((rect.top + rect.height * 0.5) / window.innerHeight) * 2 + 1;
+    const v = new THREE.Vector3(ndcX, ndcY, 0.35).unproject(this.camera);
+    this.particles.setHudTarget(v.x, v.y, v.z);
+  }
+
+  private syncReplayPlayButton(): void {
+    this.els.replayBtnPlay.textContent = this.replayPaused ? '▶' : '⏸';
+    this.els.replayBanner.textContent = this.replayPaused
+      ? '⏸ Repetición (pausa) — órbita libre'
+      : '▶ Repetición — órbita libre';
+  }
+
+  private toggleReplayPlay(): void {
+    if (this.phase !== 'replay') return;
+    if (this.replayIndex >= this.replayPlaying.length - 1 && this.replayPaused) {
+      this.replayIndex = 0;
+      this.replayAcc = 0;
+    }
+    this.replayPaused = !this.replayPaused;
+    this.syncReplayPlayButton();
+  }
+
+  private nudgeReplay(deltaFrames: number): void {
+    if (this.phase !== 'replay' || this.replayPlaying.length === 0) return;
+    this.replayPaused = true;
+    this.replayIndex = Math.max(
+      0,
+      Math.min(this.replayPlaying.length - 1, this.replayIndex + deltaFrames),
+    );
+    this.replayAcc = 0;
+    this.playReplayFrame(this.replayPlaying[this.replayIndex]!);
+    this.syncReplayPlayButton();
+  }
+
+  private stopReplayPlayback(): void {
+    if (this.phase !== 'replay' || this.replayPlaying.length === 0) return;
+    this.replayPaused = true;
+    this.replayIndex = 0;
+    this.replayAcc = 0;
+    this.playReplayFrame(this.replayPlaying[0]!);
+    this.syncReplayPlayButton();
   }
 
   private onResize(): void {
