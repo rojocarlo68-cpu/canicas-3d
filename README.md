@@ -17,7 +17,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 10. **Empuje más ágil:** `PUSH_VELOCITY_GAIN` 1.45, `PUSH_MAX_SPEED` 2.25 m/s; velocidad por muestras recientes en plano suelo (pico + promedio).
 11. **Punch-in de cámara al sacar:** al contar un knockout, la cámara acerca a esa canica (ease-in + hold) y **libera el encuadre ahí** — ya no vuelve obligatoriamente a la canica del jugador/shooter.
 12. **Cámara director en turno IA:** mientras la IA tira / hay movimiento, la cámara actúa como director de TV deportiva (low chase, high wide, side track, cluster, punch-ins en impactos); el sujeto es el tirador IA activo o la acción más caliente (preparado para varias IAs).
-13. **Repetición:** cámara **bloqueada** siguiendo la canica del jugador (sin órbita ni pellizca); scrub/velocidad siguen disponibles.
+13. **Repetición:** sigue la canica del jugador como *target* de órbita; **arrastra para orbitar** y **pellizca para zoom**; scrub/velocidad siguen disponibles.
 14. **Superficie:** física + dirt pad + `MARBLE_REST_Y` alineados (tiny bias) — las canicas reposan al ras del dirt sin flotar.
 
 ## Stack
