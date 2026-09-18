@@ -100,6 +100,7 @@ import { pickOpponentName } from './names';
 import { ParticleFX } from './particles';
 import { buildPark } from './park';
 import { ParkLife } from './parkLife';
+import { SportsCommentator } from './commentator';
 import {
   DAY_CYCLE_SECONDS,
   applyDayNight,
@@ -244,6 +245,7 @@ export class Game {
 
   /** Running player balance ($2 per knockout). */
   private playerMoney = 0;
+  private commentator: SportsCommentator | null = null;
 
   /** Field marbles still inside the circle after the post-drop freeze (scoring set). */
   private scoringMarbles = new Set<MarbleEntity>();
@@ -427,6 +429,8 @@ export class Game {
       punchOverlay: document.getElementById('punch-overlay')!,
       gameRoot: document.getElementById('game-root')!,
     };
+    const casterEl = document.getElementById('caster-toast');
+    this.commentator = casterEl ? new SportsCommentator(casterEl) : null;
 
     this.rollOpponentName();
     this.applyEquippedSkinFromSave();
@@ -556,6 +560,7 @@ export class Game {
   }
 
   dispose(): void {
+    this.commentator?.dispose(); /* caster:dispose */
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
@@ -966,6 +971,9 @@ export class Game {
     this.els.btnReplay.disabled = phase === 'replay' || this.replay.length < 30;
     if (phase !== 'replay') {
       this.els.replayControls.classList.add('hidden');
+      this.commentator?.setEnabled(true); /* caster:replay-on */
+    } else {
+      this.commentator?.setEnabled(false);
     }
 
     const modeHint = controlModeHint(this.controlMode);
@@ -1064,6 +1072,7 @@ export class Game {
     this.dirtCooldown.clear();
     this.rollOpponentName();
     this.setPhase('dropping');
+    this.commentator?.say('drop', { preferLower: false }); /* caster:drop */
 
     // Briefcase opens → releases marbles at same height → holds 3s → rises away
     triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
@@ -2000,6 +2009,14 @@ private spawnShootersInitial(): void {
     this.shotSettleTimer = performance.now();
     this.lastScorer = side;
     this.scoringEnabled = true;
+    // Big shots: high power flick or strong push
+    const pushSp =
+      push && push.pushVx !== undefined && push.pushVz !== undefined
+        ? Math.hypot(push.pushVx, push.pushVz)
+        : 0;
+    if (power01 >= 0.72 || pushSp >= 1.35) {
+      this.commentator?.say('bigShot', { side, preferLower: true }); /* caster:bigShot */
+    }
   }
 
   private applyPendingImpulse(): void {
@@ -2100,6 +2117,10 @@ private spawnShootersInitial(): void {
           this.aiScore = this.aiKnocked.size;
           this.particles?.spawnMoney(kx, ky, kz, true);
         }
+        this.commentator?.say('knockout', {
+          side: scorer === 'player' ? 'player' : 'ai',
+          preferLower: false,
+        }); /* caster:knockout */
         this.scoringMarbles.delete(m);
         this.updateScoreHUD();
         this.startKnockoutCamPunch(m);
@@ -2144,6 +2165,7 @@ private spawnShootersInitial(): void {
     this.els.btnContinueLevel.classList.add('hidden');
 
     if (won) {
+      this.commentator?.say('win', { force: true, preferLower: false }); /* caster:win */
       this.els.endTitle.textContent = '¡Victoria!';
       this.els.endMessage.textContent =
         `Sacaste más canicas del círculo que ${this.opponentName}.`;
@@ -2161,6 +2183,7 @@ private spawnShootersInitial(): void {
         this.pendingContinueLevel = null; // special: menu
       }
     } else if (a > p) {
+      this.commentator?.say('lose', { force: true, preferLower: false }); /* caster:lose */
       this.els.endTitle.textContent = 'Derrota';
       this.els.endMessage.textContent =
         `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
@@ -2182,6 +2205,7 @@ private spawnShootersInitial(): void {
   }
 
   private restart(): void {
+    this.commentator?.hide(); /* caster:restart */
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
     resetBriefcase(this.briefcase);
@@ -2212,6 +2236,8 @@ private spawnShootersInitial(): void {
     if (frames.length < 30) return;
 
     this.phaseBeforeReplay = this.phase;
+    this.commentator?.setEnabled(false); /* caster:replay-off */
+    this.commentator?.hide();
     // Hide end screen during replay so the scene is visible
     this.els.endScreen.classList.add('hidden');
 
@@ -2456,6 +2482,8 @@ private spawnShootersInitial(): void {
 
     if (this.updateScoreAndWin()) return;
 
+    this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */
+
     const next: Side = this.turn === 'player' ? 'ai' : 'player';
     this.beginTurn(next);
   }
@@ -2544,6 +2572,7 @@ private spawnShootersInitial(): void {
             bodyA.velocity.length() >= bodyB.velocity.length() ? bodyA : bodyB;
           const followEnt = this.entityFromBody(followBody);
           if (followEnt) this.enterSlowMo(followEnt);
+          this.commentator?.say('hit'); /* caster:hit */
         }
       }
 

@@ -1239,3 +1239,102 @@ body {
     object-position: center 20%;
   }
 }
+
+
+/* Sports caster banners (Memo / Lalo) — play only */
+#caster-toast {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 18;
+  pointer-events: none;
+  max-width: min(92vw, 440px);
+  padding: 10px 18px 12px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(12, 8, 4, 0.88), rgba(40, 24, 8, 0.82));
+  border: 1px solid rgba(255, 214, 90, 0.55);
+  box-shadow:
+    0 0 18px rgba(255, 200, 60, 0.25),
+    0 8px 28px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  text-align: center;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #fff8e7;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+}
+
+#caster-toast.caster-top {
+  top: max(108px, calc(env(safe-area-inset-top) + 92px));
+  bottom: auto;
+}
+
+#caster-toast.caster-lower {
+  top: auto;
+  /* Above power meter / instructions — leave aim controls free */
+  bottom: max(128px, calc(env(safe-area-inset-bottom) + 118px));
+}
+
+#caster-toast .caster-tag {
+  display: inline-block;
+  margin-right: 0.35em;
+  font-size: clamp(11px, 2.6vw, 13px);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffe08a;
+  text-shadow:
+    0 0 8px rgba(255, 220, 100, 0.65),
+    0 1px 2px #000;
+}
+
+#caster-toast .caster-text {
+  font-size: clamp(13px, 3.2vw, 16px);
+  font-weight: 800;
+  color: #fff;
+}
+
+#caster-toast.caster-player {
+  border-color: rgba(255, 224, 138, 0.7);
+  box-shadow:
+    0 0 20px rgba(255, 200, 60, 0.35),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+#caster-toast.caster-ai {
+  border-color: rgba(100, 200, 255, 0.55);
+  box-shadow:
+    0 0 18px rgba(80, 180, 255, 0.28),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+#caster-toast.caster-ai .caster-tag {
+  color: #90caf9;
+  text-shadow:
+    0 0 8px rgba(100, 180, 255, 0.65),
+    0 1px 2px #000;
+}
+
+#caster-toast.hidden {
+  display: none;
+}
+
+#caster-toast.caster-in {
+  animation: caster-pop 0.38s cubic-bezier(0.22, 1.2, 0.36, 1) both;
+}
+
+@keyframes caster-pop {
+  0% { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.92); }
+  55% { opacity: 1; transform: translateX(-50%) translateY(-2px) scale(1.03); }
+  100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+@media (max-width: 520px) {
+  #caster-toast.caster-lower {
+    bottom: max(150px, calc(env(safe-area-inset-bottom) + 140px));
+  }
+  #caster-toast.caster-top {
+    top: max(96px, calc(env(safe-area-inset-top) + 80px));
+  }
+}
