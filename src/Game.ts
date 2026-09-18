@@ -680,7 +680,7 @@ export class Game {
     // Thick static box (not an infinitely thin Plane) — prevents tunneling when
     // tiny marbles get multi-m/s velocities after AI / player collisions.
     // Top face sits exactly at PLAY_SURFACE_Y (park grass + L2 sand).
-    const groundHalfH = 0.12;
+    const groundHalfH = 0.25;
     const groundBody = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
@@ -691,6 +691,8 @@ export class Game {
     });
     groundBody.position.set(0, PLAY_SURFACE_Y - groundHalfH, 0);
     this.world.addBody(groundBody);
+    // Keep visual plane flush with physics top (park dirt / camp sand share this Y)
+    this.groundMesh.position.y = 0;
 
     // Scoring ring visuals — park: chalk; desert: imperfect sand line from desertCamp
     if (this.sceneLevel === 1) {
@@ -1072,7 +1074,7 @@ export class Game {
     this.dirtCooldown.clear();
     this.rollOpponentName();
     this.setPhase('dropping');
-    this.commentator?.say('drop', { preferLower: false }); /* caster:drop */
+    this.commentator?.say('drop', { force: true, preferLower: false }); /* caster:drop */
 
     // Briefcase opens → releases marbles at same height → holds 3s → rises away
     triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
@@ -2033,6 +2035,11 @@ private spawnShootersInitial(): void {
     if (!Number.isFinite(body.position.y) || body.position.y < MARBLE_REST_Y) {
       body.position.y = MARBLE_REST_Y;
     }
+    body.previousPosition.y = Math.max(body.previousPosition.y, MARBLE_REST_Y);
+    if (body.position.y < MARBLE_REST_Y + 1e-5) {
+      body.position.y = MARBLE_REST_Y;
+      body.previousPosition.y = MARBLE_REST_Y;
+    }
     body.wakeUp();
 
     // Push mode: map finger world velocity → heavy marble exit + roll spin
@@ -2119,11 +2126,21 @@ private spawnShootersInitial(): void {
         }
         this.commentator?.say('knockout', {
           side: scorer === 'player' ? 'player' : 'ai',
+          force: true,
           preferLower: false,
         }); /* caster:knockout */
         this.scoringMarbles.delete(m);
         this.updateScoreHUD();
         this.startKnockoutCamPunch(m);
+        if (
+          this.scoringMarbles.size <= 2 ||
+          Math.abs(this.playerScore - this.aiScore) <= 1
+        ) {
+          this.commentator?.say('clutch', {
+            side: scorer === 'player' ? 'player' : 'ai',
+            preferLower: false,
+          }); /* caster:clutch */
+        }
       }
 
       if (fallen || dist > DESPAWN_DIST) {
@@ -2392,34 +2409,53 @@ private spawnShootersInitial(): void {
 
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
         p.set(0, minY, 0);
+        body.previousPosition.set(0, minY, 0);
         body.velocity.setZero();
         body.angularVelocity.setZero();
+        body.wakeUp();
         continue;
       }
 
-      // Hard floor — mesh sync follows body, so this keeps AI / field visible
+      let clamped = false;
+      // Hard floor — also rewind previousPosition so next integrate doesn't re-sink
       if (p.y < minY) {
         p.y = minY;
+        body.previousPosition.y = Math.max(body.previousPosition.y, minY);
         if (body.velocity.y < 0) body.velocity.y = 0;
+        clamped = true;
       }
 
       // Soft sticky contact: if barely above surface with downward vel, pin it
       if (
         body.type === CANNON.Body.DYNAMIC &&
-        p.y <= minY + MARBLE_RADIUS * 0.15 &&
+        p.y <= minY + MARBLE_RADIUS * 0.35 &&
         body.velocity.y < 0
       ) {
         p.y = minY;
+        body.previousPosition.y = minY;
         body.velocity.y = 0;
+        clamped = true;
       }
+
+      // Escape deep underground / rock-wedge jams (camp bumps intersecting ground)
+      if (p.y < PLAY_SURFACE_Y) {
+        p.y = minY;
+        body.previousPosition.y = minY;
+        body.velocity.y = Math.max(0, body.velocity.y);
+        clamped = true;
+      }
+
+      if (clamped) body.wakeUp();
     }
   }
 
   private syncMeshes(): void {
-
+    const floorY = MARBLE_REST_Y;
     for (const m of this.fieldMarbles) {
       if (!m.active && !m.mesh.visible) continue;
-      m.mesh.position.set(m.body.position.x, m.body.position.y, m.body.position.z);
+      let y = m.body.position.y;
+      if (m.active && Number.isFinite(y) && y < floorY) y = floorY;
+      m.mesh.position.set(m.body.position.x, y, m.body.position.z);
       m.mesh.quaternion.set(
         m.body.quaternion.x,
         m.body.quaternion.y,
@@ -2429,7 +2465,9 @@ private spawnShootersInitial(): void {
     }
     for (const m of [this.playerMarble, this.aiMarble]) {
       if (!m) continue;
-      m.mesh.position.set(m.body.position.x, m.body.position.y, m.body.position.z);
+      let y = m.body.position.y;
+      if (Number.isFinite(y) && y < floorY) y = floorY;
+      m.mesh.position.set(m.body.position.x, y, m.body.position.z);
       m.mesh.quaternion.set(
         m.body.quaternion.x,
         m.body.quaternion.y,
@@ -2572,7 +2610,9 @@ private spawnShootersInitial(): void {
             bodyA.velocity.length() >= bodyB.velocity.length() ? bodyA : bodyB;
           const followEnt = this.entityFromBody(followBody);
           if (followEnt) this.enterSlowMo(followEnt);
-          this.commentator?.say('hit'); /* caster:hit */
+        }
+        if (impact >= 0.42) {
+          this.commentator?.say('hit', { side: this.turn }); /* caster:hit */
         }
       }
 

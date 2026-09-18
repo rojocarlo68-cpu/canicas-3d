@@ -826,10 +826,10 @@ body {
   opacity: 0.7;
 }
 
-/* Neon emissive glow for menu labels (no diamond/shimmer streak) */
-.shimmer-text,
+/* Neon emissive glow for menu labels — diamond shimmer removed */
+.neon-text,
 .menu-item .menu-label,
-.modal-card h2.shimmer-text {
+.modal-card h2.neon-text {
   position: relative;
   color: #7ef9ff;
   -webkit-text-fill-color: #7ef9ff;

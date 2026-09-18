@@ -143,17 +143,17 @@ export function buildDesertCamp(
     mesh.receiveShadow = true;
     root.add(mesh);
 
-    // Solid mound: sphere sits high enough that marbles deflect (not ghost)
-    const sr = Math.max(b.r * 1.15, b.h * 2.2 + 0.01);
+    // Solid mound ABOVE the pad — avoid deep underground spheres that wedge
+    // marbles under the ground box (AI sink / director digs underground).
+    const sr = Math.max(b.r * 1.05, b.h * 2.0 + 0.008);
     const body = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stoneMat,
       shape: new CANNON.Sphere(sr),
     });
-    // Top of collider ≈ visual rock crest above play surface
-    const topY = PLAY_SURFACE_Y + Math.max(b.h * 1.6, sr * 0.55);
-    body.position.set(b.x, topY - sr, b.z);
+    // Slight embed only (~28% of radius) so bottom stays near PLAY_SURFACE_Y
+    body.position.set(b.x, PLAY_SURFACE_Y + sr * 0.72, b.z);
     bumpBodies.push(body);
   }
 
@@ -182,7 +182,8 @@ export function buildDesertCamp(
       material: stoneMat,
       shape: new CANNON.Sphere(rockR),
     });
-    body.position.set(px, PLAY_SURFACE_Y + rockR * 0.35, pz);
+    // Keep collider mostly above sand — prevents under-floor marble wedges
+    body.position.set(px, PLAY_SURFACE_Y + rockR * 0.72, pz);
     bumpBodies.push(body);
   }
   scat.count = si;
@@ -408,7 +409,7 @@ function buildCampfire(
     });
     body.position.set(
       x + Math.cos(a) * ringR,
-      PLAY_SURFACE_Y + stoneR * 0.45,
+      PLAY_SURFACE_Y + stoneR * 0.72,
       z + Math.sin(a) * ringR,
     );
     bumpBodies.push(body);
@@ -651,7 +652,7 @@ function addCampSeating(
         material: stonePhysMat,
         shape: new CANNON.Sphere(0.1),
       });
-      stoneBody.position.set(sx, PLAY_SURFACE_Y + 0.07, sz);
+      stoneBody.position.set(sx, PLAY_SURFACE_Y + 0.1 * 0.72, sz);
       bumpBodies.push(stoneBody);
     }
   }

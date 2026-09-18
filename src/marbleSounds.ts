@@ -9,10 +9,11 @@ let master: GainNode | null = null;
 let lastPlayMs = 0;
 let muted = false;
 let unlockWired = false;
-const COOLDOWN_MS = 55;
-const MIN_IMPACT = 0.18;
-/** Master bus — loud enough to hear over game ambience on laptop speakers */
-const MASTER_GAIN = 0.95;
+let unlocked = false;
+const COOLDOWN_MS = 48;
+const MIN_IMPACT = 0.12;
+/** Master bus — loud enough on laptop speakers / phone */
+const MASTER_GAIN = 1.0;
 
 export function setMarbleAudioMuted(m: boolean): void {
   muted = m;
@@ -21,6 +22,10 @@ export function setMarbleAudioMuted(m: boolean): void {
 
 export function isMarbleAudioMuted(): boolean {
   return muted;
+}
+
+export function isMarbleAudioUnlocked(): boolean {
+  return unlocked && !!ctx && ctx.state === 'running';
 }
 
 function ensureAudio(): AudioContext | null {
@@ -36,31 +41,30 @@ function ensureAudio(): AudioContext | null {
       master.gain.value = muted ? 0 : MASTER_GAIN;
       master.connect(ctx.destination);
     }
-    if (ctx.state === 'suspended') {
-      void ctx.resume();
-    }
     return ctx;
   } catch {
     return null;
   }
 }
 
-/** Play a near-silent blip so mobile Safari fully unlocks the context. */
+/** Audible unlock chirp so Safari/Chrome mark the context as user-activated. */
 function tickUnlock(audio: AudioContext, dest: GainNode): void {
   try {
-    const n = Math.max(1, Math.floor(audio.sampleRate * 0.02));
+    const n = Math.max(1, Math.floor(audio.sampleRate * 0.03));
     const buf = audio.createBuffer(1, n, audio.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < n; i++) {
-      data[i] = (Math.random() * 2 - 1) * 0.0004 * Math.exp(-i / (n * 0.25));
+      const t = i / audio.sampleRate;
+      data[i] = Math.sin(2 * Math.PI * 880 * t) * Math.exp(-t * 90) * 0.04;
     }
     const src = audio.createBufferSource();
     src.buffer = buf;
     const g = audio.createGain();
-    g.gain.value = 0.001;
+    g.gain.value = 0.35;
     src.connect(g);
     g.connect(dest);
     src.start();
+    unlocked = true;
   } catch {
     /* ignore */
   }
@@ -73,12 +77,15 @@ function tickUnlock(audio: AudioContext, dest: GainNode): void {
 export function unlockMarbleAudio(): void {
   const audio = ensureAudio();
   if (!audio || !master) return;
+  const run = () => {
+    if (ctx && master) tickUnlock(ctx, master);
+  };
   if (audio.state === 'suspended') {
-    void audio.resume().then(() => {
-      if (ctx && master) tickUnlock(ctx, master);
+    void audio.resume().then(run).catch(() => {
+      /* ignore */
     });
   } else {
-    tickUnlock(audio, master);
+    run();
   }
 }
 
@@ -100,43 +107,45 @@ function playBuffer(
   variant: number,
   impact01: number,
 ): void {
-  // Short, bright glass/marble clacks (~3 variants)
-  const dur = [0.048, 0.058, 0.042][variant % 3]!;
+  const dur = [0.072, 0.088, 0.065][variant % 3]!;
   const sampleRate = audio.sampleRate;
   const n = Math.max(1, Math.floor(sampleRate * dur));
   const buf = audio.createBuffer(1, n, sampleRate);
   const data = buf.getChannelData(0);
 
-  const baseFreq = [2400, 3100, 1950][variant % 3]!;
-  const pitch = 0.94 + Math.random() * 0.14;
+  const baseFreq = [2650, 3400, 2100][variant % 3]!;
+  const pitch = 0.92 + Math.random() * 0.16;
   const f0 = baseFreq * pitch;
-  const noiseAmt = [0.55, 0.42, 0.62][variant % 3]!;
-  const decay = [70, 58, 85][variant % 3]!;
+  const noiseAmt = [0.72, 0.55, 0.8][variant % 3]!;
+  const decay = [55, 48, 62][variant % 3]!;
 
   for (let i = 0; i < n; i++) {
     const t = i / sampleRate;
     const env = Math.exp(-t * decay) * (1 - t / dur);
-    // Transient click + two partials = readable “glass clack”
-    const click = (Math.random() * 2 - 1) * noiseAmt * Math.exp(-t * 280);
-    const sine = Math.sin(2 * Math.PI * f0 * t) * 0.72;
-    const sine2 = Math.sin(2 * Math.PI * f0 * 1.53 * t) * 0.28;
-    const sine3 = Math.sin(2 * Math.PI * f0 * 2.35 * t) * 0.12;
+    const click = (Math.random() * 2 - 1) * noiseAmt * Math.exp(-t * 320);
+    const sine = Math.sin(2 * Math.PI * f0 * t) * 0.78;
+    const sine2 = Math.sin(2 * Math.PI * f0 * 1.53 * t) * 0.32;
+    const sine3 = Math.sin(2 * Math.PI * f0 * 2.35 * t) * 0.14;
     data[i] = (click + sine + sine2 + sine3) * env;
   }
 
   const src = audio.createBufferSource();
   src.buffer = buf;
   const g = audio.createGain();
-  // Louder per-hit gain (was ~0.22–0.77); now clearly audible
-  const vol = 0.55 + Math.min(1, impact01) * 0.7;
+  const vol = 0.85 + Math.min(1, impact01) * 0.95;
   g.gain.value = vol;
-  // Mild highpass so clacks cut through without boom
   const hp = audio.createBiquadFilter();
   hp.type = 'highpass';
-  hp.frequency.value = 420;
-  hp.Q.value = 0.7;
+  hp.frequency.value = 280;
+  hp.Q.value = 0.65;
+  const peak = audio.createBiquadFilter();
+  peak.type = 'peaking';
+  peak.frequency.value = 2200;
+  peak.Q.value = 1.1;
+  peak.gain.value = 4.5;
   src.connect(hp);
-  hp.connect(g);
+  hp.connect(peak);
+  peak.connect(g);
   g.connect(dest);
   src.start();
 }
@@ -152,16 +161,26 @@ export function playMarbleClack(impactAbs: number): void {
   if (now - lastPlayMs < COOLDOWN_MS) return;
   const audio = ensureAudio();
   if (!audio || !master) return;
-  if (audio.state === 'suspended') {
-    void audio.resume();
-    return; // wait until unlocked; next hit will play
-  }
-  lastPlayMs = now;
-  const impact01 = Math.min(1.5, impactAbs / 0.95);
+
+  const impact01 = Math.min(1.5, impactAbs / 0.85);
   const variant = Math.floor(Math.random() * 3);
-  try {
-    playBuffer(audio, master, variant, impact01);
-  } catch {
-    /* ignore audio failures */
+  const fire = () => {
+    if (!ctx || !master || muted) return;
+    lastPlayMs = performance.now();
+    try {
+      playBuffer(ctx, master, variant, impact01);
+    } catch {
+      /* ignore audio failures */
+    }
+  };
+
+  if (audio.state === 'suspended') {
+    // Critical: do NOT skip the hit — resume then play so first clash is audible
+    void audio.resume().then(() => {
+      unlocked = true;
+      fire();
+    });
+    return;
   }
+  fire();
 }

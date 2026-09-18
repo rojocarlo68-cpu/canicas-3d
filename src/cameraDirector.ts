@@ -118,6 +118,7 @@ export function framingForDirectorMode(
 ): DirectorFraming {
   const p = subject.body.position;
   const lookY = Math.max(MARBLE_REST_Y, Number.isFinite(p.y) ? p.y : MARBLE_REST_Y);
+  const CAM_FLOOR_Y = 0.06;
   const { fx, fz } = horizDirFromVelocity(subject, fallbackAz);
   // Perpendicular for side track
   const sx = -fz;
@@ -152,7 +153,7 @@ export function framingForDirectorMode(
       return {
         pos: new THREE.Vector3(
           p.x - fx * dist,
-          portrait ? 0.08 : 0.1,
+          Math.max(CAM_FLOOR_Y, portrait ? 0.08 : 0.1),
           p.z - fz * dist,
         ),
         target: new THREE.Vector3(p.x + fx * 0.04, lookY, p.z + fz * 0.04),
@@ -200,7 +201,7 @@ export function framingForDirectorMode(
       return {
         pos: new THREE.Vector3(
           p.x - fx * dist * 0.4 + sx * dist * 0.75,
-          portrait ? 0.1 : 0.12,
+          Math.max(CAM_FLOOR_Y, portrait ? 0.1 : 0.12),
           p.z - fz * dist * 0.4 + sz * dist * 0.75,
         ),
         target: new THREE.Vector3(p.x, lookY, p.z),

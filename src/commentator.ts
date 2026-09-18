@@ -8,15 +8,16 @@ export type CasterEvent =
   | 'hit'
   | 'knockout'
   | 'bigShot'
+  | 'clutch'
   | 'endTurn'
   | 'win'
   | 'lose';
 
 export type CasterSide = 'player' | 'ai';
 
-const DISPLAY_MS = 2500;
-const COOLDOWN_MIN_MS = 4000;
-const COOLDOWN_MAX_MS = 8000;
+const DISPLAY_MS = 2800;
+const COOLDOWN_MIN_MS = 2800;
+const COOLDOWN_MAX_MS = 4500;
 
 const TAGS = ['Memo', 'Lalo'] as const;
 
@@ -50,7 +51,7 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Como billar de lujo! ¡Qué golpe!',
     '¡Chispas, polvo y drama! ¡Me encanta!',
     '¡Ese choque merecía cámara lenta!',
-    '¡Canica contra canica… ¡y gana la física!',
+    '¡Canica contra canica… y gana la física!',
   ],
   knockout: [
     '¡FUERA DEL CÍRCULO! ¡Qué despedida!',
@@ -86,6 +87,16 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Qué impulso! ¡Física en modo fiesta!',
     '¡Disparo de alto riesgo y alta recompensa!',
   ],
+  clutch: [
+    '¡Partido ajustadísimo! ¡Cada canica vale oro!',
+    '¡Momento clutch! ¡El círculo no perdona!',
+    '¡Quedan pocas… ¡nervios de acero!',
+    '¡Esto se decide en un tiro! ¡Qué tensión!',
+    '¡El marcador aprieta! ¡Nadie respira!',
+    '¡Últimas fichas en el tablero! ¡Drama puro!',
+    '¡Situación de campeonato! ¡Concentración total!',
+    '¡Uno contra uno en el alma del círculo!',
+  ],
   endTurn: [
     '¡Se detiene el polvo! ¡Cambio de turno!',
     '¡Respiro… y ahora le toca al rival!',
@@ -106,9 +117,9 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Triunfo total! ¡Canicas y gloria!',
   ],
   lose: [
-    '¡La IA se lleva el botín! ¡Qué rival!',
-    '¡Derrota amarga… pero qué pelea!',
-    '¡Hoy gana la máquina! ¡Revancha segura!',
+    '¡El rival se lleva el botín! ¡Qué pelea!',
+    '¡Derrota amarga… pero qué partido!',
+    '¡Hoy gana el oponente! ¡Revancha segura!',
     '¡Se escapó la victoria! ¡Qué drama!',
   ],
 };
@@ -160,16 +171,19 @@ export class SportsCommentator {
     if (!this.enabled) return false;
     const now = performance.now();
     const force = opts?.force === true;
-    // Knockouts / wins get a softer gate so big moments land more often
+    // Big moments get a softer gate so they land more often
     const softGate =
-      event === 'knockout' || event === 'win' || event === 'lose'
-        ? this.readyAt - 1800
+      event === 'knockout' ||
+      event === 'win' ||
+      event === 'lose' ||
+      event === 'drop' ||
+      event === 'clutch'
+        ? this.readyAt - 1600
         : this.readyAt;
     if (!force && now < softGate) return false;
 
     const pool = PHRASES[event];
     let phrase = pick(pool);
-    // Avoid immediate repeat
     if (pool.length > 1) {
       let guard = 0;
       while (phrase === this.lastPhrase && guard++ < 6) {
@@ -184,9 +198,13 @@ export class SportsCommentator {
     this.tagEl.textContent = `${tag}:`;
     this.textEl.textContent = phrase;
 
+    // Prefer top during aim so lower HUD / finger aim stays clear
     const useLower =
-      opts?.preferLower === true ||
-      (opts?.preferLower !== false && Math.random() < 0.45);
+      opts?.preferLower === true
+        ? true
+        : opts?.preferLower === false
+          ? false
+          : Math.random() < 0.35;
     this.el.classList.toggle('caster-lower', useLower);
     this.el.classList.toggle('caster-top', !useLower);
     this.el.classList.toggle('caster-player', opts?.side === 'player');

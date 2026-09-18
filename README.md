@@ -47,6 +47,14 @@ Ejemplos:
 - Colliders sólidos en rocas, anillo de piedras y asientos del campamento (L2); llamas no sólidas.
 - Sonidos de choque canica–canica (WebAudio procedural, ~3 variantes).
 
+
+## Fixes (2026-09-17 evening)
+
+1. **AI / field sink under floor:** Root cause — tiny spheres at cañonazo speeds tunneling a thin Cannon plane, worsened on L2 by rock colliders buried deep under the sand (wedge into the ground box). Thick ground box at `PLAY_SURFACE_Y`, per-frame Y clamp + `previousPosition` rewind, mesh floor sync, camp rocks lifted mostly above the pad.
+2. **Title neon:** Diamond streak / gold shimmer removed; cyan neon glow letters (`neon-text`).
+3. **Marble clacks:** AudioContext unlock on first gesture; resume-then-play (no silent skip); louder ~3 glass variants.
+4. **Commentators:** Spanish Memo/Lalo toast banners on drop, strong hits, knockouts, big shots, clutch, end-turn, win/lose.
+
 ## Fixes (2026-09-17)
 
 1. **Cámara lenta:** follows the relevant marble for the whole slow-mo window; on exit, meshes snap to bodies and Y is corrected so marbles are not half-buried.
