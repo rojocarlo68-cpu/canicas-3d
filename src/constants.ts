@@ -47,10 +47,7 @@ export const KNOCKOUT_PUNCH_OUT = 0;
 /** Scale current cam→marble distance for the punch framing (closer = smaller) */
 export const KNOCKOUT_PUNCH_ZOOM = 0.38;
 
-/** AI TV-director: min seconds between non-impact shot changes */
-export const AI_DIRECTOR_MIN_CUT = 2.8;
-/** Max shot changes after the establish (establish + this = ~2 shots total) */
-export const AI_DIRECTOR_MAX_CUTS = 1;
+/** AI turn uses a simple 2-phase camera (aim → one wide overview); no cut cycling. */
 
 /** Shot power: impulse magnitude range */
 export const SHOT_MIN = 0.0012;

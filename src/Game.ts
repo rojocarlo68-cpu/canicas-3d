@@ -33,20 +33,19 @@ import {
   KNOCKOUT_PUNCH_IN,
   KNOCKOUT_PUNCH_HOLD,
   KNOCKOUT_PUNCH_ZOOM,
-  AI_DIRECTOR_MIN_CUT,
-  AI_DIRECTOR_MAX_CUTS,
   MARBLE_PICK_TOLERANCE,
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
   PLAYER_IDLE_HINT_SEC,
 } from './constants';
 import {
-  pickDirectorSubject,
-  framingForDirectorMode,
-  nextDirectorMode,
-  directorModeDuration,
-  directorBlendDuration,
-  type DirectorMode,
+  framingAIAim,
+  framingAIWide,
+  aiShotBlendDuration,
+  clampCamAboveSurface,
+  CAM_MIN_Y,
+  LOOK_MIN_Y,
+  type AIShotCam,
 } from './cameraDirector';
 import {
   requireSceneLevel,
@@ -281,28 +280,19 @@ export class Game {
   private readonly _aimRight = new THREE.Vector3();
 
   /**
-   * AI-turn TV director camera. Picks a subject (active AI shooter or hottest
-   * action) and cycles dramatic but stable angles while the AI shot is live.
+   * AI-turn 2-phase camera: aim framing while thinking, one ease to a wide
+   * play-circle overview once the shot is flying. No multi-cut cycling.
    */
   private aiDirector: {
     active: boolean;
-    mode: DirectorMode;
-    modeT: number;
-    modeDur: number;
+    shot: AIShotCam;
     blendT: number;
     blendDur: number;
     blending: boolean;
-    hardCut: boolean;
-    subject: MarbleEntity | null;
-    impactHint: MarbleEntity | null;
-    impactUntil: number;
     fromPos: THREE.Vector3;
     toPos: THREE.Vector3;
     fromTarget: THREE.Vector3;
     toTarget: THREE.Vector3;
-    cutGate: number;
-    /** Shot changes after establish (cap ≈1 → max ~2 shots total). */
-    cutsUsed: number;
   } | null = null;
   private readonly _dirLook = new THREE.Vector3();
 
@@ -1246,7 +1236,7 @@ private spawnShootersInitial(): void {
     const shooter = this.getActiveShooter();
     if (!shooter) return;
 
-    // Player turn: classic aim cam. AI turn: establish hero, then TV director.
+    // Player turn: classic aim cam. AI turn: 2-phase aim → wide overview.
     if (side === 'player') this.stopAIDirector();
 
     // Clamp shooter onto ground / finite coords before framing camera
@@ -1475,18 +1465,19 @@ private spawnShootersInitial(): void {
     }
 
     // Exact marble center — geometric screen center (no HUD look bias)
-    const lookY = Number.isFinite(py) ? Math.max(MARBLE_RADIUS, py) : MARBLE_RADIUS;
+    const lookY = Number.isFinite(py) ? Math.max(LOOK_MIN_Y, py) : LOOK_MIN_Y;
     const look = new THREE.Vector3(px, lookY, pz);
 
-    // Behind marble along radial; height chosen so lookAt keeps marble centered
+    // Behind marble along radial; height stays safely above play surface
     // (no lateral bias — that was offsetting the marble on screen)
     const back = portrait ? 0.26 : 0.34;
-    const up = portrait ? 0.13 : 0.16;
+    const up = Math.max(CAM_MIN_Y, portrait ? 0.18 : 0.22);
     const toPos = new THREE.Vector3(
       px + dirX * back,
       up,
       pz + dirZ * back,
     );
+    clampCamAboveSurface(toPos, look);
 
     // FOV: slightly wider on tall phones so arena ahead stays in frame
     // while the marble still projects near dead-center
@@ -2730,14 +2721,16 @@ private spawnShootersInitial(): void {
     }
 
     // Keep camera looking at target without OrbitControls overwriting the ease
+    clampCamAboveSurface(this.camera.position, this.controls.target);
     this.camera.lookAt(this.controls.target);
 
     if (u >= 1) {
       this.camera.position.copy(this.camEase.toPos);
       this.controls.target.copy(this.camEase.toTarget);
+      clampCamAboveSurface(this.camera.position, this.controls.target);
       this.camEase.active = false;
       this.camEase = null;
-      // AI turn → director takes over; player turn → free orbit / aim
+      // AI turn → 2-phase cam takes over; player turn → free orbit / aim
       this.restoreControlsAfterCinematic();
       if (this.controls.enabled) this.controls.update();
     }
@@ -2752,12 +2745,11 @@ private spawnShootersInitial(): void {
       this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.45);
       return;
     }
-    // AI TV director owns framing — slow-mo time only + brief impact cut
+    // AI 2-phase cam owns framing — slow-mo time only (stay on aim/wide shot)
     if (this.shouldAIDirectorRun()) {
       this.timeScale = SLOWMO_SCALE;
       this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.55);
       this.slowMoFollow = null;
-      this.aiDirectorRequestImpact(follow);
       return;
     }
     // Capture camera offset relative to follow target so we can keep framing it
@@ -2817,13 +2809,14 @@ private spawnShootersInitial(): void {
     if (!this.knockoutPunch?.active && follow && follow.active) {
       const fp = follow.body.position;
       // Continuously follow + look at the relevant marble for the whole slow-mo window
-      const fy = Math.max(MARBLE_REST_Y, Number.isFinite(fp.y) ? fp.y : MARBLE_REST_Y);
+      const fy = Math.max(LOOK_MIN_Y, Number.isFinite(fp.y) ? fp.y : LOOK_MIN_Y);
       this.camera.position.set(
         fp.x + this._slowMoCamOffset.x,
-        Math.max(0.08, fy + this._slowMoCamOffset.y),
+        Math.max(CAM_MIN_Y, fy + this._slowMoCamOffset.y),
         fp.z + this._slowMoCamOffset.z,
       );
       this.controls.target.set(fp.x, fy, fp.z);
+      clampCamAboveSurface(this.camera.position, this.controls.target);
       this.camera.lookAt(this.controls.target);
     }
     if (this.slowMoTimer <= 0) {
@@ -2844,7 +2837,7 @@ private spawnShootersInitial(): void {
     const fp = follow.body.position;
     if (!Number.isFinite(fp.x) || !Number.isFinite(fp.z)) return;
 
-    const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(fp.y) ? fp.y : MARBLE_RADIUS);
+    const lookY = Math.max(LOOK_MIN_Y, Number.isFinite(fp.y) ? fp.y : LOOK_MIN_Y);
     const ox = this.camera.position.x - fp.x;
     const oy = this.camera.position.y - fp.y;
     const oz = this.camera.position.z - fp.z;
@@ -2854,8 +2847,13 @@ private spawnShootersInitial(): void {
     let dz = oz;
     if (len < 0.08) {
       dx = 0.12;
-      dy = 0.14;
+      dy = 0.18;
       dz = 0.18;
+      len = Math.hypot(dx, dy, dz);
+    }
+    // Prefer a slightly elevated punch vector so we never dive under dirt
+    if (dy < 0.12) {
+      dy = 0.12;
       len = Math.hypot(dx, dy, dz);
     }
     dx /= len;
@@ -2954,7 +2952,7 @@ private spawnShootersInitial(): void {
       if (Number.isFinite(bp.x) && Number.isFinite(bp.z)) {
         kp.lastFollow.set(
           bp.x,
-          Math.max(MARBLE_RADIUS, Number.isFinite(bp.y) ? bp.y : MARBLE_RADIUS),
+          Math.max(LOOK_MIN_Y, Number.isFinite(bp.y) ? bp.y : LOOK_MIN_Y),
           bp.z,
         );
       }
@@ -2962,9 +2960,10 @@ private spawnShootersInitial(): void {
     this._punchTarget.copy(kp.lastFollow);
     this._punchPos.set(
       this._punchTarget.x + kp.offsetDir.x * kp.offsetLen,
-      Math.max(0.08, this._punchTarget.y + kp.offsetDir.y * kp.offsetLen),
+      Math.max(CAM_MIN_Y, this._punchTarget.y + kp.offsetDir.y * kp.offsetLen),
       this._punchTarget.z + kp.offsetDir.z * kp.offsetLen,
     );
+    clampCamAboveSurface(this._punchPos, this._punchTarget);
 
     kp.t += dt;
     const smooth = (u: number) => {
@@ -2998,10 +2997,11 @@ private spawnShootersInitial(): void {
       this.fitCameraToArena(true);
       return;
     }
+    clampCamAboveSurface(this.camera.position, this.controls.target);
     this.camera.lookAt(this.controls.target);
   }
 
-  // ─── AI TV director camera ───────────────────────────────────────────
+  // ─── AI 2-phase camera (aim → wide) ─────────────────────────────────
 
   private shouldAIDirectorRun(): boolean {
     return (
@@ -3016,63 +3016,38 @@ private spawnShootersInitial(): void {
     this.aiDirector = null;
   }
 
+  private desiredAIShot(): AIShotCam {
+    return this.phase === 'shot_flying' ? 'wide' : 'aim';
+  }
+
   private ensureAIDirector(): void {
     if (this.aiDirector?.active) return;
+    const shot = this.desiredAIShot();
     this.aiDirector = {
       active: true,
-      mode: 'hero',
-      modeT: 0,
-      modeDur: directorModeDuration('hero', 'thinking'),
+      shot,
       blendT: 0,
-      blendDur: 0.7,
+      blendDur: aiShotBlendDuration(shot),
       blending: true,
-      hardCut: false,
-      subject: this.aiMarble,
-      impactHint: null,
-      impactUntil: 0,
       fromPos: this.camera.position.clone(),
       toPos: this.camera.position.clone(),
       fromTarget: this.controls.target.clone(),
       toTarget: this.controls.target.clone(),
-      cutGate: 0,
-      cutsUsed: 0,
     };
     this.controls.enabled = false;
     this.controls.enableDamping = false;
-    // Blend from current pose into the first director shot (no hard pop)
+    // Blend from current pose into the first phase shot (no hard pop)
     this.refreshAIDirectorFraming(false);
   }
 
-  private aiDirectorRequestImpact(follow: MarbleEntity): void {
-    if (!this.shouldAIDirectorRun()) return;
-    this.ensureAIDirector();
-    const d = this.aiDirector!;
-    d.impactHint = follow;
-    d.impactUntil = performance.now() + 900;
-    // Impact counts as the (optional) second shot — skip if already cut once
-    if (d.mode === 'impact') return;
-    if (d.cutsUsed >= AI_DIRECTOR_MAX_CUTS) {
-      // Stay on current framing; still bias subject toward the impact marble
-      return;
-    }
-    this.switchAIDirectorMode('impact', true);
-  }
-
-  private switchAIDirectorMode(mode: DirectorMode, hardCut: boolean): void {
+  /** Switch aim ↔ wide at most once per phase change (no cut cycling). */
+  private switchAIDirectorShot(shot: AIShotCam): void {
     const d = this.aiDirector;
-    if (!d) return;
-    if (mode !== d.mode) {
-      d.cutsUsed += 1;
-    }
-    d.mode = mode;
-    d.modeT = 0;
-    const phase = this.phase === 'ai_thinking' ? 'thinking' : 'action';
-    d.modeDur = directorModeDuration(mode, phase);
-    d.hardCut = hardCut;
-    d.blendDur = directorBlendDuration(mode, hardCut);
+    if (!d || d.shot === shot) return;
+    d.shot = shot;
+    d.blendDur = aiShotBlendDuration(shot);
     d.blendT = 0;
     d.blending = true;
-    d.cutGate = AI_DIRECTOR_MIN_CUT;
     d.fromPos.copy(this.camera.position);
     d.fromTarget.copy(this.controls.target);
     this.refreshAIDirectorFraming(false);
@@ -3082,40 +3057,36 @@ private spawnShootersInitial(): void {
     const d = this.aiDirector;
     if (!d) return;
     const portrait = window.innerHeight > window.innerWidth;
-    const shooters: MarbleEntity[] = [];
-    if (this.aiMarble) shooters.push(this.aiMarble);
-    // Future: push every AI shooter; preferred = active turn's marble
-    const hint =
-      d.impactUntil > performance.now() ? d.impactHint : null;
-    const subject = pickDirectorSubject(
-      shooters,
-      this.fieldMarbles,
-      this.aiMarble,
-      hint,
-    );
-    d.subject = subject;
-    if (!subject) {
-      d.toTarget.set(0, MARBLE_REST_Y, 0);
-      d.toPos.set(0.35, 0.4, 0.45);
-      if (snap) {
-        this.camera.position.copy(d.toPos);
-        this.controls.target.copy(d.toTarget);
+
+    let frame;
+    if (d.shot === 'aim') {
+      const subject = this.aiMarble;
+      if (!subject?.active) {
+        d.toTarget.set(0, LOOK_MIN_Y, 0);
+        d.toPos.set(0.35, Math.max(CAM_MIN_Y, 0.4), 0.45);
+        clampCamAboveSurface(d.toPos, d.toTarget);
+      } else {
+        frame = framingAIAim(subject, this.defaultCamAzimuth, portrait);
+        d.toPos.copy(frame.pos);
+        d.toTarget.copy(frame.target);
       }
-      return;
+    } else {
+      frame = framingAIWide(
+        this.fieldMarbles,
+        this.aiMarble,
+        this.defaultCamAzimuth,
+        portrait,
+        this._dirLook,
+      );
+      d.toPos.copy(frame.pos);
+      d.toTarget.copy(frame.target);
     }
-    const frame = framingForDirectorMode(
-      d.mode,
-      subject,
-      this.fieldMarbles,
-      this.defaultCamAzimuth,
-      portrait,
-      this._dirLook,
-    );
-    d.toPos.copy(frame.pos);
-    d.toTarget.copy(frame.target);
+
+    clampCamAboveSurface(d.toPos, d.toTarget);
     if (snap) {
       this.camera.position.copy(d.toPos);
       this.controls.target.copy(d.toTarget);
+      clampCamAboveSurface(this.camera.position, this.controls.target);
       d.blending = false;
     }
   }
@@ -3130,25 +3101,20 @@ private spawnShootersInitial(): void {
 
     this.ensureAIDirector();
     const d = this.aiDirector!;
-    d.modeT += dt;
-    d.cutGate = Math.max(0, d.cutGate - dt);
 
-    const phase = this.phase === 'ai_thinking' ? 'thinking' : 'action';
+    // Phase change: thinking→flying triggers one ease to wide (and never back-cycles)
+    const want = this.desiredAIShot();
+    if (want !== d.shot) {
+      this.switchAIDirectorShot(want);
+    }
 
-    // Continuously refresh chase targets so low_chase / side_track track motion
-    if (!d.blending && (d.mode === 'low_chase' || d.mode === 'side_track' || d.mode === 'impact')) {
-      this.refreshAIDirectorFraming(false);
-      const trackK = 1 - Math.exp(-5.5 * dt);
-      this.camera.position.lerp(d.toPos, trackK);
-      this.controls.target.lerp(d.toTarget, trackK);
-    } else if (d.blending) {
+    // Keep destination fresh so aim tracks the AI marble / wide tracks the circle
+    this.refreshAIDirectorFraming(false);
+
+    if (d.blending) {
       d.blendT += dt;
       const u = Math.min(1, d.blendT / Math.max(1e-6, d.blendDur));
-      const e = d.hardCut ? u : u * u * (3 - 2 * u);
-      // Keep destination fresh while blending into chase modes
-      if (d.mode === 'low_chase' || d.mode === 'side_track' || d.mode === 'impact') {
-        this.refreshAIDirectorFraming(false);
-      }
+      const e = u * u * (3 - 2 * u);
       this.camera.position.lerpVectors(d.fromPos, d.toPos, e);
       this.controls.target.lerpVectors(d.fromTarget, d.toTarget, e);
       if (u >= 1) {
@@ -3156,10 +3122,9 @@ private spawnShootersInitial(): void {
         this.camera.position.copy(d.toPos);
         this.controls.target.copy(d.toTarget);
       }
-    } else if (d.mode === 'high_wide' || d.mode === 'cluster' || d.mode === 'hero') {
-      // Soft drift toward refreshed framing
-      this.refreshAIDirectorFraming(false);
-      const k = 1 - Math.exp(-2.2 * dt);
+    } else {
+      // Soft track — aim follows marble; wide drifts with field centroid
+      const k = 1 - Math.exp((d.shot === 'aim' ? -3.2 : -2.0) * dt);
       this.camera.position.lerp(d.toPos, k);
       this.controls.target.lerp(d.toTarget, k);
     }
@@ -3172,27 +3137,9 @@ private spawnShootersInitial(): void {
       this.fitCameraToArena(true);
       return;
     }
+    clampCamAboveSurface(this.camera.position, this.controls.target);
     this.camera.lookAt(this.controls.target);
     this.controls.enabled = false;
-
-    // Advance shot vocabulary rarely — at most ~2 shots (establish + one cut)
-    if (
-      d.modeT >= d.modeDur &&
-      d.cutGate <= 0 &&
-      !d.blending &&
-      d.cutsUsed < AI_DIRECTOR_MAX_CUTS
-    ) {
-      const wantImpact = d.impactUntil > performance.now();
-      const next = nextDirectorMode(
-        d.mode,
-        phase,
-        wantImpact && d.mode !== 'impact',
-      );
-      if (next && next !== d.mode) {
-        const hard = next === 'impact' || d.mode === 'impact';
-        this.switchAIDirectorMode(next, hard);
-      }
-    }
   }
 
   private update(): void {
