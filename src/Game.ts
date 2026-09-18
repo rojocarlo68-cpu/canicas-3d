@@ -1912,15 +1912,14 @@ private spawnShootersInitial(): void {
   }
 
   private onAimPointerUp(e: PointerEvent): void {
-    if (e.button === 2 || (e.pointerType === 'mouse' && this.rmbOrbiting && e.button !== 0)) {
+    // Only consume RMB when we were orbiting during aim (don't steal OrbitControls RMB)
+    if (this.rmbOrbiting && e.pointerType === 'mouse' && e.button === 2) {
       this.rmbOrbiting = false;
-      if (e.button === 2) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      }
-      // LMB still held → keep aiming; only clear orbit flag
-      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
     }
+    if (e.button === 2) return; // ignore RMB for shoot release
     if (!this.aiming) return;
     if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
     e.preventDefault();
