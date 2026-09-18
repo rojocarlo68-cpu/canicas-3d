@@ -5,9 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/canicas-3d/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <title>Canicas 3D</title>
-    <script type="module" crossorigin src="/canicas-3d/assets/index-49GtMROQ.js"></script>
-    <link rel="stylesheet" crossorigin href="/canicas-3d/assets/index-Dnalvd3g.css">
+    <meta name="theme-color" content="#0a0604" />
+    <title>TAMA Project</title>
+    <script type="module" crossorigin src="/canicas-3d/assets/index-nOtrGZcB.js"></script>
+    <link rel="stylesheet" crossorigin href="/canicas-3d/assets/index-CPtejg6M.css">
   </head>
   <body>
     <div id="game-root">
@@ -64,6 +65,10 @@
           <button id="btn-pause-close" type="button" title="Continuar" aria-label="Cerrar">×</button>
           <h2 id="pause-title">Pausa</h2>
           <p>El juego está en pausa.</p>
+          <div class="pause-extra">
+            <button id="btn-pause-gallery" type="button" class="premium-btn">Galería</button>
+            <button id="btn-pause-menu" type="button" class="premium-btn secondary">Menú título</button>
+          </div>
         </div>
       </div>
 
@@ -97,13 +102,111 @@
           <p id="end-message"></p>
           <p id="end-score"></p>
           <div id="end-actions">
+            <button id="btn-continue-level" class="premium-btn hidden" type="button">Continuar · Nivel 2</button>
             <button id="btn-restart" type="button">Jugar de nuevo</button>
             <button id="btn-end-replay" type="button">Repetición</button>
           </div>
         </div>
       </div>
 
+      <!-- Victory gacha -->
+      <div id="gacha-overlay" class="hidden" aria-hidden="true">
+        <div id="gacha-stage">
+          <div id="gacha-fx" aria-hidden="true"></div>
+          <div id="gacha-case" class="spinning">
+            <div class="gacha-case-body"></div>
+            <div class="gacha-case-lid"></div>
+            <div class="gacha-lightning"></div>
+          </div>
+          <div id="gacha-reveal" class="hidden">
+            <div id="gacha-pad">
+              <canvas id="gacha-marble-canvas" width="220" height="220"></canvas>
+            </div>
+            <h2 id="gacha-marble-name">Canica única</h2>
+            <p id="gacha-marble-sub">Añadida a tu colección</p>
+            <button id="btn-gacha-continue" class="premium-btn" type="button">Continuar</button>
+          </div>
+          <p id="gacha-status">Generando canica única…</p>
+        </div>
+      </div>
+
       <div id="settle-banner" class="hidden">Esperando a que se detengan las canicas…</div>
     </div>
+
+    <!-- Title screen -->
+    <div id="title-screen" class="hidden" aria-label="TAMA Project">
+      <div id="title-art-wrap">
+        <img id="title-art" src="ui/title-tama.png" alt="TAMA Project" draggable="false" />
+        <div id="title-menu">
+          <button id="btn-menu-new" type="button" class="menu-item shimmer-text">
+            <span class="menu-label">Nueva partida</span>
+            <span class="menu-sub">New Game</span>
+          </button>
+          <button id="btn-menu-load" type="button" class="menu-item shimmer-text is-disabled" disabled>
+            <span class="menu-label">Cargar</span>
+            <span class="menu-sub">Próximamente</span>
+          </button>
+          <button id="btn-menu-multi" type="button" class="menu-item shimmer-text">
+            <span class="menu-label">Multijugador</span>
+            <span class="menu-sub">Próximamente</span>
+          </button>
+          <button id="btn-menu-gallery" type="button" class="menu-item shimmer-text">
+            <span class="menu-label">Galería</span>
+            <span class="menu-sub">Colección</span>
+          </button>
+          <button id="btn-menu-options" type="button" class="menu-item shimmer-text">
+            <span class="menu-label">Opciones</span>
+            <span class="menu-sub">Options</span>
+          </button>
+        </div>
+      </div>
+      <div id="menu-toast" class="hidden"></div>
+    </div>
+
+    <div id="level-pick" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <button id="btn-level-pick-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
+        <h2 class="shimmer-text">Elegir nivel</h2>
+        <div class="level-pick-actions">
+          <button id="btn-level-1" type="button" class="premium-btn">
+            Nivel 1 · Parque
+            <span class="menu-sub">Park</span>
+          </button>
+          <button id="btn-level-2" type="button" class="premium-btn secondary">
+            Nivel 2 · Campamento
+            <span class="menu-sub">Desert camp</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gallery-overlay" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card gallery-card-wrap">
+        <button id="btn-gallery-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
+        <h2 class="shimmer-text">Galería</h2>
+        <p class="modal-hint">Toca una canica para equiparla como piel del tirador.</p>
+        <div id="gallery-grid"></div>
+      </div>
+    </div>
+
+    <div id="options-overlay" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <button id="btn-options-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
+        <h2 class="shimmer-text">Opciones</h2>
+        <label class="opt-row">
+          <span>Silenciar SFX</span>
+          <input id="opt-mute" type="checkbox" />
+        </label>
+        <label class="opt-row">
+          <span>Calidad</span>
+          <select id="opt-quality">
+            <option value="auto">Auto</option>
+            <option value="high">Alta</option>
+            <option value="low">Baja</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
   </body>
 </html>
