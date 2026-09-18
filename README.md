@@ -1,7 +1,33 @@
-# Canicas 3D
+# TAMA Project
+
+Canicas 3D rebranded as **TAMA Project**: title screen, spy-briefcase dropper, victory gacha / collection, localStorage save, desktop RMB orbit while aiming.
+
+
 
 Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara táctil y repetición.
 
+
+
+
+## URLs (GitHub Pages)
+
+- Title / menú: https://rojocarlo68-cpu.github.io/canicas-3d/
+- Nivel 1: https://rojocarlo68-cpu.github.io/canicas-3d/?level=1
+- Nivel 2: https://rojocarlo68-cpu.github.io/canicas-3d/?level=2
+
+### Controles (PC)
+
+| Acción | Entrada |
+|--------|---------|
+| Apuntar / flick | LMB en tu canica + arrastrar; suelta para tirar |
+| Órbita mientras apuntas | **RMB arrastra** (mismo rol que el 2º dedo en móvil) |
+| Órbita normal | LMB en espacio vacío / RMB |
+| Zoom | Rueda / pellizca |
+| Soltar canicas | Botón maletín (Drop) |
+
+### Gacha / colección
+
+Al ganar un nivel se abre un maletín con VFX eléctrico; se genera una canica única (seed procedural) que entra en la **Galería**. Desde Galería puedes equiparla como piel del tirador. Progreso en `localStorage` (niveles, colección, skin, mute).
 
 
 ## Escenas / niveles de mapa

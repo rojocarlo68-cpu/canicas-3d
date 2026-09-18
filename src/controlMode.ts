@@ -36,7 +36,7 @@ export function controlModeHint(mode: ControlMode): string {
   if (mode === 'push') {
     return 'Tu turno: toca TU canica y desliza el dedo para empujarla (fuera de la canica = solo cámara).';
   }
-  return 'Tu turno: mantén pulsada TU canica para apuntar (línea); suelta para disparar. Con el dedo de mira abajo, otro dedo fuera = órbita cámara.';
+  return 'Tu turno: LMB en TU canica para apuntar; suelta para disparar. Mientras apuntas: RMB arrastra = órbita. Móvil: segundo dedo = órbita.';
 }
 
 /** Map flick drag length + swipe speed → power 0..1 (addictive but controllable). */

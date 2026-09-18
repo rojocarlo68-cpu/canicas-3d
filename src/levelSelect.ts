@@ -4,9 +4,9 @@ export type SceneLevel = 1 | 2;
 
 /**
  * Resolve play scene from ?level= / ?nivel= (1 park, 2 desert camp).
- * Default: 1.
+ * Returns null when absent — title / menu should show.
  */
-export function resolveSceneLevel(): SceneLevel {
+export function resolveSceneLevel(): SceneLevel | null {
   try {
     const params = new URLSearchParams(window.location.search);
     const raw = (
@@ -20,7 +20,12 @@ export function resolveSceneLevel(): SceneLevel {
   } catch {
     /* ignore */
   }
-  return 1;
+  return null;
+}
+
+/** For Game constructor when already on a level URL. */
+export function requireSceneLevel(fallback: SceneLevel = 1): SceneLevel {
+  return resolveSceneLevel() ?? fallback;
 }
 
 export function sceneLevelLabel(level: SceneLevel): string {
@@ -39,4 +44,9 @@ export function buildGameHref(
 ): string {
   const b = base.endsWith('/') ? base : `${base}/`;
   return `${b}?control=${control}&level=${scene}`;
+}
+
+export function buildMenuHref(base = '/canicas-3d/'): string {
+  const b = base.endsWith('/') ? base : `${base}/`;
+  return b;
 }

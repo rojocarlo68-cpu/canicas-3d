@@ -6,8 +6,18 @@
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let lastPlayMs = 0;
+let muted = false;
 const COOLDOWN_MS = 70;
 const MIN_IMPACT = 0.28;
+
+export function setMarbleAudioMuted(m: boolean): void {
+  muted = m;
+  if (master) master.gain.value = m ? 0 : 0.55;
+}
+
+export function isMarbleAudioMuted(): boolean {
+  return muted;
+}
 
 function ensureAudio(): AudioContext | null {
   try {
@@ -19,7 +29,7 @@ function ensureAudio(): AudioContext | null {
       if (!AC) return null;
       ctx = new AC();
       master = ctx.createGain();
-      master.gain.value = 0.55;
+      master.gain.value = muted ? 0 : 0.55;
       master.connect(ctx.destination);
     }
     if (ctx.state === 'suspended') {
@@ -48,7 +58,6 @@ function playBuffer(
   const buf = audio.createBuffer(1, n, sampleRate);
   const data = buf.getChannelData(0);
 
-  // Three pleasant glass-like “clack” envelopes: short noise burst + damped sine
   const baseFreq = [1850, 2200, 1550][variant % 3]!;
   const pitch = 0.92 + Math.random() * 0.18;
   const f0 = baseFreq * pitch;
@@ -78,6 +87,7 @@ function playBuffer(
  * @param impactAbs absolute impact velocity along contact normal (m/s)
  */
 export function playMarbleClack(impactAbs: number): void {
+  if (muted) return;
   if (impactAbs < MIN_IMPACT) return;
   const now = performance.now();
   if (now - lastPlayMs < COOLDOWN_MS) return;

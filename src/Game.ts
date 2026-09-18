@@ -49,12 +49,29 @@ import {
   type DirectorMode,
 } from './cameraDirector';
 import {
-  resolveSceneLevel,
+  requireSceneLevel,
   sceneLevelLabel,
+  buildGameHref,
+  buildMenuHref,
   type SceneLevel,
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
 import { playMarbleClack, unlockMarbleAudio } from './marbleSounds';
+import {
+  createSpyBriefcase,
+  resetBriefcase,
+  triggerBriefcaseDrop,
+  updateBriefcase,
+  type SpyBriefcase,
+} from './briefcase';
+import { loadSave, unlockLevel, addToCollection } from './save';
+import {
+  createDesignFromSeed,
+  randomMarbleSeed,
+  paramsFromSeed,
+  paintSeedPreview,
+} from './proceduralMarble';
+import { openGalleryFromGame } from './titleMenu';
 import {
   createAIDesign,
   createFieldDesigns,
@@ -111,7 +128,7 @@ export class Game {
 
   private groundMesh!: THREE.Mesh;
   private circleMesh!: THREE.Mesh;
-  private containerMesh!: THREE.Group;
+  private briefcase!: SpyBriefcase;
   private sky!: Sky;
   private sunLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
@@ -120,7 +137,7 @@ export class Game {
   private parkLife: ParkLife | null = null;
   private desertCamp: DesertCampBuild | null = null;
   /** Map / scene from URL (?level=1 park, ?level=2 desert camp). */
-  private sceneLevel: SceneLevel = resolveSceneLevel();
+  private sceneLevel: SceneLevel = requireSceneLevel(1);
   private sunDir = new THREE.Vector3();
   /** Elapsed seconds for the 30-min day/night cycle (independent of match reset). */
   private dayNightTime = 0;
@@ -153,6 +170,12 @@ export class Game {
   private aimPower = 0;
   private aimSamples: { t: number; x: number; y: number; gx?: number; gz?: number }[] = [];
   private canPlayerShoot = false;
+
+  /** Desktop: RMB drag while LMB-aiming orbits the camera (touch: 2nd finger). */
+  private rmbOrbiting = false;
+  private rmbLastX = 0;
+  private rmbLastY = 0;
+  private pendingContinueLevel: SceneLevel | null = null;
 
   private aimLineGroup: THREE.Group | null = null;
   private aimShaft: THREE.Mesh | null = null;
@@ -310,6 +333,17 @@ export class Game {
     endTitle: HTMLElement;
     endMessage: HTMLElement;
     endScore: HTMLElement;
+    btnContinueLevel: HTMLButtonElement;
+    gachaOverlay: HTMLElement;
+    gachaCase: HTMLElement;
+    gachaReveal: HTMLElement;
+    gachaStatus: HTMLElement;
+    gachaMarbleCanvas: HTMLCanvasElement;
+    gachaMarbleName: HTMLElement;
+    gachaMarbleSub: HTMLElement;
+    btnGachaContinue: HTMLButtonElement;
+    btnPauseGallery: HTMLButtonElement | null;
+    btnPauseMenu: HTMLButtonElement | null;
     settleBanner: HTMLElement;
     instructions: HTMLElement;
     btnHudRestart: HTMLButtonElement;
@@ -362,6 +396,17 @@ export class Game {
       endTitle: document.getElementById('end-title')!,
       endMessage: document.getElementById('end-message')!,
       endScore: document.getElementById('end-score')!,
+      btnContinueLevel: document.getElementById('btn-continue-level') as HTMLButtonElement,
+      gachaOverlay: document.getElementById('gacha-overlay')!,
+      gachaCase: document.getElementById('gacha-case')!,
+      gachaReveal: document.getElementById('gacha-reveal')!,
+      gachaStatus: document.getElementById('gacha-status')!,
+      gachaMarbleCanvas: document.getElementById('gacha-marble-canvas') as HTMLCanvasElement,
+      gachaMarbleName: document.getElementById('gacha-marble-name')!,
+      gachaMarbleSub: document.getElementById('gacha-marble-sub')!,
+      btnGachaContinue: document.getElementById('btn-gacha-continue') as HTMLButtonElement,
+      btnPauseGallery: document.getElementById('btn-pause-gallery') as HTMLButtonElement | null,
+      btnPauseMenu: document.getElementById('btn-pause-menu') as HTMLButtonElement | null,
       settleBanner: document.getElementById('settle-banner')!,
       instructions: document.getElementById('instructions')!,
       btnHudRestart: document.getElementById('btn-hud-restart') as HTMLButtonElement,
@@ -384,6 +429,7 @@ export class Game {
     };
 
     this.rollOpponentName();
+    this.applyEquippedSkinFromSave();
     this.updateScoreHUD();
     this.applyControlModeUI();
 
@@ -423,6 +469,12 @@ export class Game {
     this.controls.touches = {
       ONE: THREE.TOUCH.ROTATE,
       TWO: THREE.TOUCH.DOLLY_ROTATE,
+    };
+    // LMB empty-space orbit (prior); RMB also orbits (esp. while aiming with LMB)
+    this.controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
     };
 
     this.world = new CANNON.World({
@@ -484,6 +536,7 @@ export class Game {
     window.addEventListener('pointerup', this.boundPointerUp, { capture: true });
     window.addEventListener('pointermove', this.boundPointerMove, { capture: true });
     window.addEventListener('pointercancel', this.boundPointerCancel, { capture: true });
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('resize', this.boundOrient);
     window.addEventListener('orientationchange', this.boundOrient);
 
@@ -684,27 +737,9 @@ export class Game {
       );
     }
 
-    // Drop hopper
-    this.containerMesh = new THREE.Group();
-    const cupGeo = new THREE.CylinderGeometry(0.035, 0.028, 0.04, 24, 1, true);
-    const cupMat = new THREE.MeshStandardMaterial({
-      color: '#5d4037',
-      roughness: 0.6,
-      metalness: 0.1,
-      side: THREE.DoubleSide,
-    });
-    const cup = new THREE.Mesh(cupGeo, cupMat);
-    cup.castShadow = true;
-    this.containerMesh.add(cup);
-
-    const rimGeo = new THREE.TorusGeometry(0.035, 0.003, 8, 24);
-    const rim = new THREE.Mesh(rimGeo, new THREE.MeshStandardMaterial({ color: '#8d6e63' }));
-    rim.rotation.x = Math.PI / 2;
-    rim.position.y = 0.02;
-    this.containerMesh.add(rim);
-
-    this.containerMesh.position.set(0, DROP_HEIGHT + 0.02, 0);
-    this.scene.add(this.containerMesh);
+    // Spy briefcase dropper (all levels) — starts upside-down above the circle
+    this.briefcase = createSpyBriefcase();
+    this.scene.add(this.briefcase.root);
 
     this.buildInvisibleBoundary();
 
@@ -837,6 +872,14 @@ export class Game {
     this.els.btnRestart.addEventListener('click', () => this.restart());
     this.els.btnReplay.addEventListener('click', () => this.startReplay());
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
+    this.els.btnContinueLevel.addEventListener('click', () => this.continueToNextLevel());
+    this.els.btnGachaContinue.addEventListener('click', () => this.finishGachaAndShowEnd());
+    this.els.btnPauseGallery?.addEventListener('click', () => {
+      openGalleryFromGame();
+    });
+    this.els.btnPauseMenu?.addEventListener('click', () => {
+      window.location.href = buildMenuHref();
+    });
 
     this.els.btnHudRestart.addEventListener('click', () => {
       unlockMarbleAudio();
@@ -1000,6 +1043,7 @@ export class Game {
     this.removeShooter('player');
     this.removeShooter('ai');
     this.els.endScreen.classList.add('hidden');
+    this.els.gachaOverlay.classList.add('hidden');
     this.replay.clear();
     this.recording = true;
     this.camEase = null;
@@ -1008,10 +1052,14 @@ export class Game {
     this.rollOpponentName();
     this.setPhase('dropping');
 
+    // Briefcase opens → releases marbles at same height → holds 3s → rises away
+    triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
+  }
+
+  private spawnFieldFromBriefcase(): void {
     const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
     for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
       const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2;
-      // Cluster under hopper; scale lightly with circle so they spread on bounce
       const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
@@ -1035,7 +1083,6 @@ export class Game {
       this.world.addBody(entity.body);
       this.fieldMarbles.push(entity);
     }
-
     this.settleStart = performance.now();
     this.setPhase('settling');
   }
@@ -1053,7 +1100,7 @@ export class Game {
     return true;
   }
 
-    private beginPlaying(): void {
+  private beginPlaying(): void {
     this.freezeFieldAfterDrop();
     this.spawnShootersInitial();
     this.turn = 'player';
@@ -1756,6 +1803,7 @@ private spawnShootersInitial(): void {
   private cancelAimGesture(_reenableControls: boolean): void {
     const pid = this.aimPointerId;
     this.aiming = false;
+    this.rmbOrbiting = false;
     this.aimPointerId = null;
     this.aimSamples = [];
     this.aimPower = 0;
@@ -1775,6 +1823,15 @@ private spawnShootersInitial(): void {
   }
 
   private onAimPointerDown(e: PointerEvent): void {
+    // Desktop: while aiming with LMB, RMB starts camera orbit (same role as 2nd finger)
+    if (e.pointerType === 'mouse' && e.button === 2 && this.aiming) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.rmbOrbiting = true;
+      this.rmbLastX = e.clientX;
+      this.rmbLastY = e.clientY;
+      return;
+    }
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     if (this.phase !== 'playing' || this.turn !== 'player' || !this.playerMarble) return;
 
@@ -1821,6 +1878,23 @@ private spawnShootersInitial(): void {
   }
 
   private onAimPointerMove(e: PointerEvent): void {
+    // RMB orbit while aiming (mouse shares pointerId across buttons)
+    if (this.aiming && e.pointerType === 'mouse' && (this.rmbOrbiting || (e.buttons & 2) !== 0)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!this.rmbOrbiting) {
+        this.rmbOrbiting = true;
+        this.rmbLastX = e.clientX;
+        this.rmbLastY = e.clientY;
+        return;
+      }
+      const dx = e.clientX - this.rmbLastX;
+      const dy = e.clientY - this.rmbLastY;
+      this.rmbLastX = e.clientX;
+      this.rmbLastY = e.clientY;
+      this.orbitCameraByDelta(dx, dy);
+      return;
+    }
     if (!this.aiming || this.aimPointerId !== e.pointerId) return;
     // Keep OrbitControls from seeing the aim pointer's moves
     e.stopImmediatePropagation();
@@ -1838,6 +1912,15 @@ private spawnShootersInitial(): void {
   }
 
   private onAimPointerUp(e: PointerEvent): void {
+    if (e.button === 2 || (e.pointerType === 'mouse' && this.rmbOrbiting && e.button !== 0)) {
+      this.rmbOrbiting = false;
+      if (e.button === 2) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      // LMB still held → keep aiming; only clear orbit flag
+      if (e.button !== 0) return;
+    }
     if (!this.aiming) return;
     if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
     e.preventDefault();
@@ -2040,11 +2123,27 @@ private spawnShootersInitial(): void {
 
     const p = this.playerScore;
     const a = this.aiScore;
-    if (p > a) {
+    const won = p > a;
+    this.pendingContinueLevel = null;
+    this.els.btnContinueLevel.classList.add('hidden');
+
+    if (won) {
       this.els.endTitle.textContent = '¡Victoria!';
       this.els.endMessage.textContent =
         `Sacaste más canicas del círculo que ${this.opponentName}.`;
       this.level += 1;
+      // Unlock next map level in save
+      if (this.sceneLevel === 1) {
+        unlockLevel(2);
+        this.pendingContinueLevel = 2;
+        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 2';
+        this.els.btnContinueLevel.classList.remove('hidden');
+      } else {
+        unlockLevel(2);
+        this.els.btnContinueLevel.textContent = 'Menú título';
+        this.els.btnContinueLevel.classList.remove('hidden');
+        this.pendingContinueLevel = null; // special: menu
+      }
     } else if (a > p) {
       this.els.endTitle.textContent = 'Derrota';
       this.els.endMessage.textContent =
@@ -2056,12 +2155,20 @@ private spawnShootersInitial(): void {
     }
     this.els.endScore.textContent =
       `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA ${this.level})`;
-    this.els.endScreen.classList.remove('hidden');
     this.updateTurnHUD();
+
+    if (won) {
+      // Victory gacha first, then end card + Continuar
+      this.startVictoryGacha();
+    } else {
+      this.els.endScreen.classList.remove('hidden');
+    }
   }
 
   private restart(): void {
     this.els.endScreen.classList.add('hidden');
+    this.els.gachaOverlay.classList.add('hidden');
+    resetBriefcase(this.briefcase);
     this.clearFieldMarbles();
     this.removeShooter('player');
     this.removeShooter('ai');
@@ -2969,6 +3076,7 @@ private spawnShootersInitial(): void {
     this.liveTime += dt;
     this.dayNightTime += dt;
     this.syncDayNight();
+    if (this.briefcase) updateBriefcase(this.briefcase, dt);
     this.parkLife?.update(dt);
     if (this.desertCamp) {
       this.desertCamp.update(dt, this.currentNightAmount());
@@ -3296,5 +3404,88 @@ private spawnShootersInitial(): void {
 
   private onResize(): void {
     this.fitCameraToArena(false);
+  }
+
+  private applyEquippedSkinFromSave(): void {
+    const save = loadSave();
+    if (save.equippedSkinSeed) {
+      try {
+        this.playerDesign = createDesignFromSeed(save.equippedSkinSeed);
+      } catch {
+        /* keep default */
+      }
+    }
+  }
+
+  /** Orbit camera around controls.target by screen pixel deltas (RMB-while-aim). */
+  private orbitCameraByDelta(dx: number, dy: number): void {
+    const offset = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+    const spherical = new THREE.Spherical().setFromVector3(offset);
+    const rotSpeed = 0.0055;
+    spherical.theta -= dx * rotSpeed;
+    spherical.phi -= dy * rotSpeed;
+    const eps = 0.05;
+    spherical.phi = Math.max(
+      this.controls.minPolarAngle + eps,
+      Math.min(this.controls.maxPolarAngle - eps, spherical.phi),
+    );
+    spherical.makeSafe();
+    offset.setFromSpherical(spherical);
+    this.camera.position.copy(this.controls.target).add(offset);
+    this.camera.lookAt(this.controls.target);
+    this.controls.update();
+  }
+
+  private continueToNextLevel(): void {
+    const control = resolveControlMode();
+    if (this.pendingContinueLevel === 2) {
+      window.location.href = buildGameHref(control, 2);
+      return;
+    }
+    // L2 victory or no next → title
+    window.location.href = buildMenuHref();
+  }
+
+  private startVictoryGacha(): void {
+    this.els.endScreen.classList.add('hidden');
+    this.els.gachaOverlay.classList.remove('hidden');
+    this.els.gachaOverlay.setAttribute('aria-hidden', 'false');
+    this.els.gachaReveal.classList.add('hidden');
+    this.els.gachaCase.classList.add('spinning');
+    this.els.gachaCase.classList.remove('open');
+    this.els.gachaStatus.classList.remove('hidden');
+    this.els.gachaStatus.textContent = 'Generando canica única…';
+
+    const seed = randomMarbleSeed(`L${this.sceneLevel}`);
+    const params = paramsFromSeed(seed);
+
+    // Spin + lightning beat, then open
+    window.setTimeout(() => {
+      this.els.gachaStatus.textContent = 'Abriendo maletín…';
+      this.els.gachaCase.classList.remove('spinning');
+      this.els.gachaCase.classList.add('open');
+    }, 1600);
+
+    window.setTimeout(() => {
+      paintSeedPreview(this.els.gachaMarbleCanvas, seed);
+      this.els.gachaMarbleName.textContent = params.name;
+      this.els.gachaMarbleSub.textContent = 'Añadida a tu colección · puedes equiparla en Galería';
+      this.els.gachaStatus.classList.add('hidden');
+      this.els.gachaReveal.classList.remove('hidden');
+      addToCollection({
+        seed,
+        name: params.name,
+        createdAt: Date.now(),
+        fromLevel: this.sceneLevel,
+      });
+      // Auto-equip the new marble as shooter skin
+      this.playerDesign = createDesignFromSeed(seed);
+    }, 2300);
+  }
+
+  private finishGachaAndShowEnd(): void {
+    this.els.gachaOverlay.classList.add('hidden');
+    this.els.gachaOverlay.setAttribute('aria-hidden', 'true');
+    this.els.endScreen.classList.remove('hidden');
   }
 }
