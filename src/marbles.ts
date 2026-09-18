@@ -244,6 +244,180 @@ export function createFieldDesigns(): MarbleDesign[] {
   ];
 }
 
+
+/** Level 3 field marbles — colorful glass, each at least partially transparent. */
+export function createLevel3FieldDesigns(): MarbleDesign[] {
+  const glass = (
+    id: string,
+    name: string,
+    draw: (ctx: CanvasRenderingContext2D, size: number) => void,
+    opts: Partial<THREE.MeshPhysicalMaterialParameters> = {},
+  ): MarbleDesign => ({
+    id,
+    name,
+    material: glassMat(draw, {
+      transparent: true,
+      opacity: 0.78,
+      transmission: 0.28,
+      thickness: 0.5,
+      ior: 1.52,
+      roughness: 0.08,
+      clearcoat: 1,
+      ...opts,
+    }),
+  });
+
+  return [
+    glass('l3-aurora-teal', 'Aurora teal', (ctx, s) => {
+      swirlPattern(ctx, s, '#004d40', ['#80cbc4', '#26a69a', '#e0f7fa', '#00bfa5']);
+    }, { opacity: 0.72, transmission: 0.35 }),
+    glass('l3-fresa-soda', 'Fresa soda', (ctx, s) => {
+      swirlPattern(ctx, s, '#fce4ec', ['#f48fb1', '#ec407a', '#ffffff', '#ad1457']);
+    }, { opacity: 0.75, transmission: 0.32 }),
+    glass('l3-cobalto-humo', 'Cobalto humo', (ctx, s) => {
+      swirlPattern(ctx, s, '#0d47a1', ['#90caf9', '#1565c0', '#e3f2fd', '#263238']);
+    }, { opacity: 0.8, transmission: 0.25 }),
+    glass('l3-limon-hielo', 'Limón hielo', (ctx, s) => {
+      ctx.fillStyle = '#f0fbe0';
+      ctx.fillRect(0, 0, s, s);
+      swirlPattern(ctx, s, 'rgba(200,230,120,0.5)', ['#dce775', '#aeea00', '#fffde7', '#827717']);
+    }, { opacity: 0.7, transmission: 0.4 }),
+    glass('l3-uva-neon', 'Uva neón', (ctx, s) => {
+      swirlPattern(ctx, s, '#4a148c', ['#ea80fc', '#aa00ff', '#ce93d8', '#ffffff']);
+    }, { opacity: 0.74, transmission: 0.3 }),
+    glass('l3-ambar-liquido', 'Ámbar líquido', (ctx, s) => {
+      const g = ctx.createRadialGradient(s * 0.35, s * 0.3, s * 0.05, s / 2, s / 2, s * 0.55);
+      g.addColorStop(0, '#fff8e1');
+      g.addColorStop(0.35, '#ffb300');
+      g.addColorStop(0.75, '#ff6f00');
+      g.addColorStop(1, '#e65100');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, s, s);
+    }, { opacity: 0.68, transmission: 0.42 }),
+    glass('l3-oceano-claro', 'Océano claro', (ctx, s) => {
+      swirlPattern(ctx, s, '#01579b', ['#4fc3f7', '#29b6f6', '#e1f5fe', '#0277bd']);
+    }, { opacity: 0.73, transmission: 0.36 }),
+    glass('l3-menta-cristal', 'Menta cristal', (ctx, s) => {
+      ctx.fillStyle = '#e8faf4';
+      ctx.fillRect(0, 0, s, s);
+      for (let i = -s; i < s * 2; i += 20) {
+        ctx.fillStyle = 'rgba(0, 150, 136, 0.35)';
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.bezierCurveTo(i + 28, s * 0.4, i - 8, s * 0.7, i + 18, s);
+        ctx.lineTo(i + 10, s);
+        ctx.bezierCurveTo(i + 0, s * 0.7, i + 36, s * 0.4, i + 10, 0);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }, { opacity: 0.7, transmission: 0.38 }),
+    glass('l3-rubi-humo', 'Rubí humo', (ctx, s) => {
+      swirlPattern(ctx, s, '#b71c1c', ['#ff8a80', '#ff5252', '#ffebee', '#4a0000']);
+    }, { opacity: 0.76, transmission: 0.28 }),
+    glass('l3-prisma-iris', 'Prisma iris', (ctx, s) => {
+      swirlPattern(ctx, s, '#311b92', ['#ff1744', '#ffea00', '#00e676', '#00b0ff', '#d500f9', '#ffffff']);
+      const g = ctx.createRadialGradient(s / 2, s / 2, s * 0.05, s / 2, s / 2, s * 0.45);
+      g.addColorStop(0, 'rgba(255,255,255,0.45)');
+      g.addColorStop(0.4, 'rgba(255,255,255,0)');
+      g.addColorStop(1, 'rgba(49,27,146,0.25)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, s, s);
+    }, { opacity: 0.72, transmission: 0.34 }),
+  ];
+}
+
+/**
+ * Collaboration marble: Marblus (assistant) × Carlo (player).
+ * Twin helix of cyan neon + warm ember gold, fused in clear glass —
+ * not a generic swirl.
+ */
+export function createCollabDesign(): MarbleDesign {
+  return {
+    id: 'collab-marblus-carlo',
+    name: 'Lazo Marblus–Carlo',
+    material: glassMat(
+      (ctx, s) => {
+        // Deep clear glass base
+        const base = ctx.createRadialGradient(s * 0.45, s * 0.4, s * 0.05, s / 2, s / 2, s * 0.55);
+        base.addColorStop(0, 'rgba(255,255,255,0.95)');
+        base.addColorStop(0.35, 'rgba(200, 230, 255, 0.55)');
+        base.addColorStop(0.7, 'rgba(30, 40, 60, 0.35)');
+        base.addColorStop(1, 'rgba(10, 14, 24, 0.55)');
+        ctx.fillStyle = base;
+        ctx.fillRect(0, 0, s, s);
+
+        // Marblus helix (cyan / electric assistant)
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 9;
+        ctx.lineCap = 'round';
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        for (let t = 0; t <= 1; t += 0.02) {
+          const a = t * Math.PI * 3.2;
+          const r = s * (0.1 + t * 0.32);
+          const x = s * 0.48 + Math.cos(a) * r;
+          const y = s * 0.5 + Math.sin(a * 1.05) * r * 0.78;
+          if (t === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Carlo helix (warm ember / player orange-gold), counter-wound
+        ctx.strokeStyle = '#ff9100';
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        for (let t = 0; t <= 1; t += 0.02) {
+          const a = -t * Math.PI * 3.2 + Math.PI * 0.6;
+          const r = s * (0.1 + t * 0.32);
+          const x = s * 0.52 + Math.cos(a) * r;
+          const y = s * 0.5 + Math.sin(a * 1.05) * r * 0.78;
+          if (t === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // Fusion knot at center — friendship clasp
+        const knot = ctx.createRadialGradient(s / 2, s / 2, 1, s / 2, s / 2, s * 0.14);
+        knot.addColorStop(0, '#fffde7');
+        knot.addColorStop(0.45, '#ffe082');
+        knot.addColorStop(0.75, '#00bcd4');
+        knot.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = knot;
+        ctx.beginPath();
+        ctx.arc(s / 2, s / 2, s * 0.14, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Infinity hint (∞) lightly etched
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.ellipse(s * 0.42, s * 0.5, s * 0.09, s * 0.055, 0, 0, Math.PI * 2);
+        ctx.ellipse(s * 0.58, s * 0.5, s * 0.09, s * 0.055, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Tiny M / C marks
+        ctx.fillStyle = 'rgba(0, 229, 255, 0.85)';
+        ctx.font = `bold ${Math.floor(s * 0.09)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText('M', s * 0.3, s * 0.72);
+        ctx.fillStyle = 'rgba(255, 145, 0, 0.9)';
+        ctx.fillText('C', s * 0.7, s * 0.72);
+      },
+      {
+        transparent: true,
+        opacity: 0.88,
+        transmission: 0.22,
+        thickness: 0.45,
+        roughness: 0.07,
+        clearcoat: 1,
+        clearcoatRoughness: 0.04,
+        metalness: 0.08,
+      },
+    ),
+  };
+}
+
 export function createPlayerDesign(): MarbleDesign {
   return {
     id: 'jugador',

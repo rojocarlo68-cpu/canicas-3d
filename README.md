@@ -14,6 +14,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 - Title / menú: https://rojocarlo68-cpu.github.io/canicas-3d/
 - Nivel 1: https://rojocarlo68-cpu.github.io/canicas-3d/?level=1
 - Nivel 2: https://rojocarlo68-cpu.github.io/canicas-3d/?level=2
+- Nivel 3: https://rojocarlo68-cpu.github.io/canicas-3d/?level=3
 
 ### Controles (PC)
 
@@ -34,11 +35,16 @@ Al ganar un nivel se abre un maletín con VFX eléctrico; se genera una canica �
 
 - **Nivel 1 (Parque):** `?level=1` — parque día/noche (ciclo 30 min).
 - **Nivel 2 (Campamento):** `?level=2` — desierto de noche con fogata, montañas y círculo imperfecto en arena.
+- **Nivel 3 (Consultorio):** `?level=3` — dentist office; play vessel = white cuspidor/spit bowl. After drop settle, center opens as a hole. Score = field marbles into the hole. Personal marble into hole or out of bowl = lose that marble / match. AI skill L1 < L2 < L3.
+
+### Canica colaboración
+**Lazo Marblus–Carlo** — en la Galería por defecto (equipable). Diseño: doble hélice cian (Marblus) + ámbar (Carlo) fusionadas en vidrio.
 
 Ejemplos:
 
 - https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=1
 - https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=2
+- https://rojocarlo68-cpu.github.io/canicas-3d/?control=flick&level=3
 
 ## HUD / física (2026-09-17)
 

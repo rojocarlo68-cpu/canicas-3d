@@ -80,3 +80,11 @@ export const MONEY_PER_KNOCKOUT = 2;
 
 /** Player turn: idle “here’s your marble” reminder interval (seconds) */
 export const PLAYER_IDLE_HINT_SEC = 5;
+
+/** AI turn: thinking pause before the shot (ms). */
+export const AI_THINK_MS = 2000;
+
+/** L3 cuspidor: hole / center mark radius (= ½ marble diameter → diameter = 1 marble). */
+export const L3_HOLE_RADIUS = MARBLE_RADIUS;
+/** L3 bowl wall height ≈ 2 marble diameters */
+export const L3_BOWL_WALL_HEIGHT = MARBLE_RADIUS * 4;

@@ -33,7 +33,7 @@ function toast(msg: string): void {
   }, 2200);
 }
 
-function navigateToLevel(level: 1 | 2): void {
+function navigateToLevel(level: 1 | 2 | 3): void {
   const control = resolveControlMode();
   window.location.href = buildGameHref(control, level);
 }
@@ -62,7 +62,9 @@ function renderGallery(save: SaveData): void {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'gallery-card' + (save.equippedSkinSeed === item.seed ? ' equipped' : '');
-    card.title = 'Equipar como piel de tirador';
+    card.title = item.description
+      ? `${item.description} · Equipar como piel de tirador`
+      : 'Equipar como piel de tirador';
     const canvas = document.createElement('canvas');
     canvas.width = 96;
     canvas.height = 96;
@@ -119,6 +121,15 @@ export function initTitleMenu(): void {
     }
     navigateToLevel(2);
   });
+  $('btn-level-3').addEventListener('click', () => {
+    unlockMarbleAudio();
+    const s = loadSave();
+    if (!s.unlockedLevels.includes(3)) {
+      toast('Nivel 3 bloqueado — gana el Nivel 2');
+      return;
+    }
+    navigateToLevel(3);
+  });
   $('btn-level-pick-close').addEventListener('click', () => levelPick.classList.add('hidden'));
 
   $('btn-menu-load').addEventListener('click', () => {
@@ -128,8 +139,8 @@ export function initTitleMenu(): void {
       toast('Próximamente');
       return;
     }
-    const lvl = s.unlockedLevels.includes(2) ? 2 : 1;
-    navigateToLevel(lvl as 1 | 2);
+    const lvl = s.unlockedLevels.includes(3) ? 3 : s.unlockedLevels.includes(2) ? 2 : 1;
+    navigateToLevel(lvl as 1 | 2 | 3);
   });
 
   $('btn-menu-multi').addEventListener('click', () => {
@@ -161,11 +172,17 @@ export function initTitleMenu(): void {
     toast(v === 'low' ? 'Calidad baja' : v === 'high' ? 'Calidad alta' : 'Calidad automática');
   });
 
-  // Update L2 lock badge
+  // Update lock badges
   const l2 = $('btn-level-2');
   if (!save.unlockedLevels.includes(2)) {
     l2.classList.add('locked');
     const sub = l2.querySelector('.menu-sub');
+    if (sub) sub.textContent = 'Bloqueado';
+  }
+  const l3 = $('btn-level-3');
+  if (!save.unlockedLevels.includes(3)) {
+    l3.classList.add('locked');
+    const sub = l3.querySelector('.menu-sub');
     if (sub) sub.textContent = 'Bloqueado';
   }
 

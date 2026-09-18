@@ -3,7 +3,8 @@
  * Same seed → same colors / swirls / flakes / glass params.
  */
 import * as THREE from 'three';
-import type { MarbleDesign } from './marbles';
+import { createCollabDesign, type MarbleDesign } from './marbles';
+import { COLLAB_MARBLE_SEED } from './save';
 
 export type ProceduralMarbleParams = {
   seed: string;
@@ -215,6 +216,7 @@ function drawParams(ctx: CanvasRenderingContext2D, s: number, p: ProceduralMarbl
 }
 
 export function createDesignFromSeed(seed: string): MarbleDesign {
+  if (seed === COLLAB_MARBLE_SEED) return createCollabDesign();
   const p = paramsFromSeed(seed);
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -246,6 +248,36 @@ export function createDesignFromSeed(seed: string): MarbleDesign {
 
 /** Paint a flat circular preview of a seeded marble into a canvas. */
 export function paintSeedPreview(canvas: HTMLCanvasElement, seed: string): void {
+  if (seed === COLLAB_MARBLE_SEED) {
+    const design = createCollabDesign();
+    const map = design.material.map;
+    const ctx = canvas.getContext("2d")!;
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (map && map instanceof THREE.CanvasTexture) {
+      const src = map.image as HTMLCanvasElement;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(src, 0, 0, w, h);
+      ctx.restore();
+    }
+    const hl = ctx.createRadialGradient(w * 0.35, h * 0.3, 1, w * 0.35, h * 0.3, w * 0.2);
+    hl.addColorStop(0, "rgba(255,255,255,0.8)");
+    hl.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = hl;
+    ctx.beginPath();
+    ctx.arc(w * 0.35, h * 0.3, w * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,229,255,0.65)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2);
+    ctx.stroke();
+    return;
+  }
   const p = paramsFromSeed(seed);
   const ctx = canvas.getContext('2d')!;
   const w = canvas.width;

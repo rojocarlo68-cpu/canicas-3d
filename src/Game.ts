@@ -37,6 +37,8 @@ import {
   PUSH_MAX_SPEED,
   PUSH_VELOCITY_GAIN,
   PLAYER_IDLE_HINT_SEC,
+  AI_THINK_MS,
+  L3_HOLE_RADIUS,
 } from './constants';
 import {
   framingAIAim,
@@ -55,6 +57,7 @@ import {
   type SceneLevel,
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
+import { buildDentistOffice, type DentistOfficeBuild, L3_BOWL_INNER_R } from './dentistOffice';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
   createSpyBriefcase,
@@ -74,6 +77,7 @@ import { openGalleryFromGame } from './titleMenu';
 import {
   createAIDesign,
   createFieldDesigns,
+  createLevel3FieldDesigns,
   createMarbleEntity,
   createPlayerDesign,
   getMarbleCannonMaterial,
@@ -136,7 +140,10 @@ export class Game {
   private streetLamps: StreetLamp[] = [];
   private parkLife: ParkLife | null = null;
   private desertCamp: DesertCampBuild | null = null;
-  /** Map / scene from URL (?level=1 park, ?level=2 desert camp). */
+  private dentistOffice: DentistOfficeBuild | null = null;
+  /** Player marble X-ray outline (visible through occluders). */
+  private playerOutline: THREE.Mesh | null = null;
+  /** Map / scene from URL (?level=1 park, ?level=2 desert, ?level=3 dentist). */
   private sceneLevel: SceneLevel = requireSceneLevel(1);
   private sunDir = new THREE.Vector3();
   /** Elapsed seconds for the 30-min day/night cycle (independent of match reset). */
@@ -176,6 +183,8 @@ export class Game {
   private rmbLastX = 0;
   private rmbLastY = 0;
   private pendingContinueLevel: SceneLevel | null = null;
+  /** L3: personal marble fail forces the opposing side to win. */
+  private forcedWinner: Side | null = null;
 
   private aimLineGroup: THREE.Group | null = null;
   private aimShaft: THREE.Mesh | null = null;
@@ -201,8 +210,6 @@ export class Game {
 
   private markerGroup: THREE.Group;
   private markerRing!: THREE.Mesh;
-  private markerArrow!: THREE.Mesh;
-  private markerBeam!: THREE.Mesh;
   private markerLife = 0;
   /** Stronger pulse while an idle / turn-start location cue is active. */
   private markerHintBoost = 0;
@@ -359,7 +366,7 @@ export class Game {
 
   private playerDesign = createPlayerDesign();
   private aiDesign = createAIDesign();
-  private fieldDesigns = createFieldDesigns();
+  private fieldDesigns = createFieldDesigns(); // overwritten per scene in ctor
 
   private boundPointerDown: (e: PointerEvent) => void;
   private boundPointerUp: (e: PointerEvent) => void;
@@ -424,6 +431,10 @@ export class Game {
 
     this.rollOpponentName();
     this.applyEquippedSkinFromSave();
+    this.fieldDesigns =
+      this.sceneLevel === 3 ? createLevel3FieldDesigns() : createFieldDesigns();
+    // AI skill tier follows map level (L1 easy → L3 strongest)
+    this.level = this.sceneLevel;
     this.updateScoreHUD();
     this.applyControlModeUI();
 
@@ -563,9 +574,10 @@ export class Game {
   }
 
   private buildMarker(): void {
+    // Player hint: white ground ring only (no spike / arrow / beam)
     const ringGeo = new THREE.RingGeometry(MARBLE_RADIUS * 2.4, MARBLE_RADIUS * 3.8, 40);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffe08a,
+      color: 0xffffff,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.95,
@@ -575,24 +587,6 @@ export class Game {
     this.markerRing.rotation.x = -Math.PI / 2;
     this.markerGroup.add(this.markerRing);
 
-    const beamGeo = new THREE.CylinderGeometry(0.0018, 0.005, 0.1, 8);
-    const beamMat = new THREE.MeshBasicMaterial({
-      color: 0xffe08a,
-      transparent: true,
-      opacity: 0.65,
-      depthWrite: false,
-    });
-    this.markerBeam = new THREE.Mesh(beamGeo, beamMat);
-    this.markerBeam.position.y = 0.055;
-    this.markerGroup.add(this.markerBeam);
-
-    const arrowGeo = new THREE.ConeGeometry(0.01, 0.022, 10);
-    const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffc107 });
-    this.markerArrow = new THREE.Mesh(arrowGeo, arrowMat);
-    // Cone default tip is +Y; flip so it points DOWN toward the marble
-    this.markerArrow.rotation.x = Math.PI;
-    this.markerArrow.position.y = 0.115;
-    this.markerGroup.add(this.markerArrow);
   }
 
   private buildEnvironment(): void {
@@ -639,7 +633,12 @@ export class Game {
     // Base grass ground — keep center flat so displaced quads never poke through dirt
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
     const groundMat3 = new THREE.MeshStandardMaterial({
-      color: this.sceneLevel === 2 ? '#c4a574' : '#5a7a42',
+      color:
+        this.sceneLevel === 3
+          ? '#2a2e32'
+          : this.sceneLevel === 2
+            ? '#c4a574'
+            : '#5a7a42',
       roughness: 0.95,
       metalness: 0.0,
     });
@@ -684,7 +683,7 @@ export class Game {
     // Keep visual plane flush with physics top (park dirt / camp sand share this Y)
     this.groundMesh.position.y = 0;
 
-    // Scoring ring visuals — park: chalk; desert: imperfect sand line from desertCamp
+    // Scoring ring visuals — park: chalk; desert: sand line; L3: bowl is the vessel
     if (this.sceneLevel === 1) {
       const edgeGeo = new THREE.RingGeometry(
         CIRCLE_RADIUS - 0.012,
@@ -754,6 +753,7 @@ export class Game {
     if (this.sceneLevel === 2) {
       // Night desert camp (mountains, sand, campfire) — same gameplay
       this.desertCamp = buildDesertCamp(this.scene, this.groundMat);
+      this.dentistOffice = null;
       for (const b of this.desertCamp.bumpBodies) {
         this.world.addBody(b);
       }
@@ -774,11 +774,37 @@ export class Game {
       this.playFillLight.intensity = 0.12;
       this.playFillLight.distance = 1.8;
       this.playFillLight.color.setHex(0xffc080);
+    } else if (this.sceneLevel === 3) {
+      this.desertCamp = null;
+      this.parkLife = null;
+      this.streetLamps = [];
+      this.dentistOffice = buildDentistOffice(this.scene, this.groundMat);
+      for (const b of this.dentistOffice.bodies) {
+        this.world.addBody(b);
+      }
+      this.world.addContactMaterial(
+        new CANNON.ContactMaterial(this.dentistOffice.ceramicMat, getMarbleCannonMaterial(), {
+          friction: 0.45,
+          restitution: 0.38,
+          contactEquationStiffness: 1e7,
+          contactEquationRelaxation: 3,
+        }),
+      );
+      // Dim room; bowl key light is the hero
+      this.dayNightTime = DAY_CYCLE_SECONDS * 0.78;
+      this.playFillLight.intensity = 0.04;
+      this.playFillLight.distance = 1.2;
+      this.playFillLight.color.setHex(0xaabbcc);
+      this.hemiLight.intensity = 0.18;
+      this.sunLight.intensity = 0.12;
+      this.scene.fog = new THREE.FogExp2(0x0a0c10, 0.045);
+      if (this.sky) this.sky.visible = false;
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
       this.parkLife = new ParkLife(this.scene);
       this.desertCamp = null;
+      this.dentistOffice = null;
       this.dayNightTime = DAY_CYCLE_SECONDS * 0.18; // late morning
     }
     this.syncDayNight();
@@ -787,6 +813,16 @@ export class Game {
   private syncDayNight(): void {
     const fog = this.scene.fog;
     if (!(fog instanceof THREE.FogExp2)) return;
+    if (this.sceneLevel === 3) {
+      // Dentist: keep room dim; bowl lights handled in dentistOffice.update
+      fog.color.setHex(0x0a0c10);
+      fog.density = 0.045;
+      this.sunLight.intensity = 0.08;
+      this.hemiLight.intensity = 0.16;
+      this.playFillLight.intensity = 0.03;
+      this.renderer.toneMappingExposure = 0.85;
+      return;
+    }
     applyDayNight(this.dayNightTime, {
       sky: this.sky,
       sunLight: this.sunLight,
@@ -971,12 +1007,21 @@ export class Game {
     const modeHint = controlModeHint(this.controlMode);
     if (phase === 'ready') {
       this.els.instructions.textContent =
-        `Pulsa el botón de soltar (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}.`;
+        this.sceneLevel === 3
+          ? `L3 Escupidera: mete canicas de campo al HOYO. Tu canica al hoyo o fuera del bowl = pierdes. IA L3.`
+          : `Pulsa el botón de soltar (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
-      this.els.instructions.textContent = 'Las canicas caen y se acomodan…';
+      this.els.instructions.textContent =
+        this.sceneLevel === 3
+          ? 'Canicas en el bowl… luego se abre el hoyo central.'
+          : 'Las canicas caen y se acomodan…';
     } else if (phase === 'playing') {
       this.els.instructions.textContent =
-        this.turn === 'player' ? modeHint : `Turno de ${this.opponentName}…`;
+        this.turn === 'player'
+          ? this.sceneLevel === 3
+            ? `${modeHint} · Meta: hoyo · No caigas al hoyo ni fuera del bowl`
+            : modeHint
+          : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
       this.els.instructions.textContent =
         this.turn === 'ai'
@@ -1040,6 +1085,7 @@ export class Game {
   private removeShooter(which: 'player' | 'ai'): void {
     const m = which === 'player' ? this.playerMarble : this.aiMarble;
     if (!m) return;
+    if (which === 'player') this.clearPlayerOutline();
     this.scene.remove(m.mesh);
     this.world.removeBody(m.body);
     m.mesh.geometry.dispose();
@@ -1052,6 +1098,7 @@ export class Game {
 
   private dropMarbles(): void {
     if (this.phase !== 'ready') return;
+    this.forcedWinner = null;
     this.clearFieldMarbles();
     this.removeShooter('player');
     this.removeShooter('ai');
@@ -1156,6 +1203,24 @@ export class Game {
       }
       this.syncOneMesh(m);
     }
+
+    // L3: after settle, center opens as a hole — marbles on the mark fall (no score)
+    if (this.sceneLevel === 3 && this.dentistOffice) {
+      this.dentistOffice.openCenterHole(this.world);
+      for (const m of this.fieldMarbles) {
+        if (!m.active) continue;
+        const dist = Math.hypot(m.body.position.x, m.body.position.z);
+        if (dist < L3_HOLE_RADIUS + OUT_MARGIN) {
+          this.scoringMarbles.delete(m);
+          m.active = false;
+          m.mesh.visible = false;
+          m.body.velocity.setZero();
+          m.body.angularVelocity.setZero();
+          m.body.position.y = -1;
+          m.body.type = CANNON.Body.STATIC;
+        }
+      }
+    }
   }
 
   /** Snap body Y onto the play surface, clear bad velocities / penetration. */
@@ -1197,7 +1262,11 @@ export class Game {
 private spawnShootersInitial(): void {
     this.removeShooter('player');
     this.removeShooter('ai');
-    const dist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+    // L1/L2: outside chalk circle. L3: inside cuspidor on the annular floor.
+    const dist =
+      this.sceneLevel === 3
+        ? (L3_BOWL_INNER_R + L3_HOLE_RADIUS) * 0.55
+        : CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
     const y = MARBLE_REST_Y;
 
     const player = createMarbleEntity(
@@ -1211,6 +1280,7 @@ private spawnShootersInitial(): void {
     this.scene.add(player.mesh);
     this.world.addBody(player.body);
     this.playerMarble = player;
+    this.attachPlayerOutline(player);
 
     const ai = createMarbleEntity(
       this.aiDesign,
@@ -1224,6 +1294,39 @@ private spawnShootersInitial(): void {
     this.world.addBody(ai.body);
     this.aiMarble = ai;
 
+  }
+
+  /** White silhouette outline that draws through rocks/props (X-ray findability). */
+  private attachPlayerOutline(player: MarbleEntity): void {
+    this.clearPlayerOutline();
+    const geo = new THREE.SphereGeometry(MARBLE_RADIUS * 1.16, 28, 22);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 0.72,
+      depthTest: false, // draw through occluders
+      depthWrite: false,
+    });
+    const outline = new THREE.Mesh(geo, mat);
+    outline.renderOrder = 999;
+    outline.frustumCulled = false;
+    player.mesh.add(outline);
+    this.playerOutline = outline;
+  }
+
+  private clearPlayerOutline(): void {
+    if (!this.playerOutline) return;
+    this.playerOutline.parent?.remove(this.playerOutline);
+    this.playerOutline.geometry.dispose();
+    (this.playerOutline.material as THREE.Material).dispose();
+    this.playerOutline = null;
+  }
+
+  private syncPlayerOutline(): void {
+    if (!this.playerOutline || !this.playerMarble) return;
+    // Child of mesh — follows automatically; keep visible while player marble active
+    this.playerOutline.visible = this.playerMarble.active && this.playerMarble.mesh.visible;
   }
 
   private getActiveShooter(): MarbleEntity | null {
@@ -1267,8 +1370,16 @@ private spawnShootersInitial(): void {
         'banner-ai',
         2200,
       );
-      this.aiPlan = planAIShot(shooter, this.fieldMarbles, this.level);
-      this.aiThinkUntil = performance.now() + 700 + Math.random() * 500;
+      const mode = this.sceneLevel === 3 ? 'hole_in' : 'circle_out';
+      this.aiPlan = planAIShot(
+        shooter,
+        this.fieldMarbles,
+        this.sceneLevel,
+        mode,
+        L3_HOLE_RADIUS,
+      );
+      // Thinking pause ~2s before shooting
+      this.aiThinkUntil = performance.now() + AI_THINK_MS + Math.random() * 250;
       this.setPhase('ai_thinking');
     }
   }
@@ -1286,7 +1397,8 @@ private spawnShootersInitial(): void {
     }
     // Soft clamp extreme flyaways so turn handoff stays on-arena
     const horiz = Math.hypot(p.x, p.z);
-    const maxR = CIRCLE_RADIUS * 3.5;
+    const maxR =
+      this.sceneLevel === 3 ? CIRCLE_RADIUS * 0.92 : CIRCLE_RADIUS * 3.5;
     if (horiz > maxR) {
       const s = maxR / horiz;
       p.x *= s;
@@ -1297,12 +1409,10 @@ private spawnShootersInitial(): void {
   }
 
   private showLocationMarker(shooter: MarbleEntity, side: Side): void {
-    const color = side === 'player' ? 0xffe08a : 0x64b5f6;
+    // White ground ring only (player); soft blue ring for AI — no spike/arrow
+    const color = side === 'player' ? 0xffffff : 0x90caf9;
     (this.markerRing.material as THREE.MeshBasicMaterial).color.setHex(color);
-    (this.markerBeam.material as THREE.MeshBasicMaterial).color.setHex(color);
-    (this.markerArrow.material as THREE.MeshBasicMaterial).color.setHex(color);
     (this.markerRing.material as THREE.MeshBasicMaterial).opacity = 0.95;
-    (this.markerBeam.material as THREE.MeshBasicMaterial).opacity = 0.7;
     this.markerGroup.position.set(
       shooter.body.position.x,
       PLAY_SURFACE_Y + 0.001,
@@ -2087,15 +2197,30 @@ private spawnShootersInitial(): void {
       return false;
     }
 
+    const l3 = this.sceneLevel === 3;
+    const holeOpen = l3 && !!this.dentistOffice?.holeOpen;
+
+    // L3: personal marble into hole OR out of bowl = loss of that marble / match
+    if (l3 && holeOpen) {
+      const personalLoss = this.checkPersonalMarbleFail();
+      if (personalLoss) return true;
+    }
+
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const out = dist > CIRCLE_RADIUS + OUT_MARGIN;
       const fallen = m.body.position.y < -0.05;
+      // L1/L2: out of chalk circle. L3: into the center hole (or fallen through).
+      const scored = l3
+        ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
+        : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
+      // L3 also despawn if they somehow leave the bowl
+      const leftBowl = l3 && dist > CIRCLE_RADIUS + OUT_MARGIN * 4;
 
-      if (!(out || fallen)) continue;
+      if (!(scored || leftBowl)) continue;
 
       const eligible =
+        scored &&
         this.scoringMarbles.has(m) &&
         !this.playerKnocked.has(m) &&
         !this.aiKnocked.has(m);
@@ -2132,9 +2257,12 @@ private spawnShootersInitial(): void {
             preferLower: false,
           }); /* caster:clutch */
         }
+      } else if (leftBowl && this.scoringMarbles.has(m)) {
+        // Left bowl without hole — no score, remove from scoring set
+        this.scoringMarbles.delete(m);
       }
 
-      if (fallen || dist > DESPAWN_DIST) {
+      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl))) {
         m.active = false;
         m.mesh.visible = false;
         m.body.velocity.setZero();
@@ -2149,6 +2277,48 @@ private spawnShootersInitial(): void {
       this.endGame();
       return true;
     }
+    return false;
+  }
+
+  /**
+   * L3 lose conditions for a personal (shooter) marble:
+   * falls into the hole OR out of the bowl → that side loses the match.
+   */
+  private checkPersonalMarbleFail(): boolean {
+    const check = (m: MarbleEntity | null, side: Side): boolean => {
+      if (!m || !m.active) return false;
+      const dist = Math.hypot(m.body.position.x, m.body.position.z);
+      const inHole = dist < L3_HOLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.02;
+      const outBowl = dist > CIRCLE_RADIUS + MARBLE_RADIUS * 1.2;
+      if (!(inHole || outBowl)) return false;
+
+      m.active = false;
+      m.mesh.visible = false;
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      m.body.type = CANNON.Body.STATIC;
+      if (side === 'player') this.clearPlayerOutline();
+
+      this.forcedWinner = side === 'player' ? 'ai' : 'player';
+      const why = inHole ? 'cayó al hoyo' : 'salió del bowl';
+      if (side === 'player') {
+        this.flashLocationBanner(
+          `Tu canica ${why} — pierdes la canica`,
+          'banner-player',
+          2800,
+        );
+      } else {
+        this.flashLocationBanner(
+          `Canica de ${this.opponentName} ${why}`,
+          'banner-ai',
+          2800,
+        );
+      }
+      this.endGame();
+      return true;
+    };
+    if (check(this.playerMarble, 'player')) return true;
+    if (check(this.aiMarble, 'ai')) return true;
     return false;
   }
 
@@ -2168,40 +2338,68 @@ private spawnShootersInitial(): void {
 
     const p = this.playerScore;
     const a = this.aiScore;
-    const won = p > a;
+    let won = p > a;
+    let lost = a > p;
+    if (this.forcedWinner === 'player') {
+      won = true;
+      lost = false;
+    } else if (this.forcedWinner === 'ai') {
+      won = false;
+      lost = true;
+    }
     this.pendingContinueLevel = null;
     this.els.btnContinueLevel.classList.add('hidden');
+
+    const beatMsg =
+      this.sceneLevel === 3
+        ? `Metiste más canicas al hoyo que ${this.opponentName}.`
+        : `Sacaste más canicas del círculo que ${this.opponentName}.`;
+    const loseMsg =
+      this.sceneLevel === 3
+        ? `${this.opponentName} metió más canicas al hoyo. ¡Inténtalo de nuevo!`
+        : `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
 
     if (won) {
       this.commentator?.say('win', { force: true, preferLower: false }); /* caster:win */
       this.els.endTitle.textContent = '¡Victoria!';
       this.els.endMessage.textContent =
-        `Sacaste más canicas del círculo que ${this.opponentName}.`;
-      this.level += 1;
-      // Unlock next map level in save
+        this.forcedWinner === 'player'
+          ? `La canica rival salió del bowl / cayó al hoyo. ${beatMsg}`
+          : beatMsg;
+      // Unlock next map: L1→L2→L3
       if (this.sceneLevel === 1) {
         unlockLevel(2);
         this.pendingContinueLevel = 2;
         this.els.btnContinueLevel.textContent = 'Continuar · Nivel 2';
         this.els.btnContinueLevel.classList.remove('hidden');
+      } else if (this.sceneLevel === 2) {
+        unlockLevel(3);
+        this.pendingContinueLevel = 3;
+        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 3';
+        this.els.btnContinueLevel.classList.remove('hidden');
       } else {
-        unlockLevel(2);
+        unlockLevel(3);
         this.els.btnContinueLevel.textContent = 'Menú título';
         this.els.btnContinueLevel.classList.remove('hidden');
-        this.pendingContinueLevel = null; // special: menu
+        this.pendingContinueLevel = null;
       }
-    } else if (a > p) {
+    } else if (lost) {
       this.commentator?.say('lose', { force: true, preferLower: false }); /* caster:lose */
       this.els.endTitle.textContent = 'Derrota';
       this.els.endMessage.textContent =
-        `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
+        this.forcedWinner === 'ai'
+          ? 'Tu canica cayó al hoyo o salió del bowl. Pierdes la canica.'
+          : loseMsg;
     } else {
       this.els.endTitle.textContent = 'Empate';
       this.els.endMessage.textContent =
-        'Misma cantidad de canicas fuera. ¡Casi!';
+        this.sceneLevel === 3
+          ? 'Misma cantidad de canicas en el hoyo. ¡Casi!'
+          : 'Misma cantidad de canicas fuera. ¡Casi!';
     }
     this.els.endScore.textContent =
-      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA ${this.level})`;
+      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA L${this.sceneLevel})`;
+    this.forcedWinner = null;
     this.updateTurnHUD();
 
     if (won) {
@@ -2213,6 +2411,12 @@ private spawnShootersInitial(): void {
   }
 
   private restart(): void {
+    // L3 hole can't be re-sealed cleanly — reload the level
+    if (this.sceneLevel === 3 && this.dentistOffice?.holeOpen) {
+      window.location.href = buildGameHref(resolveControlMode(), 3);
+      return;
+    }
+    this.forcedWinner = null;
     this.commentator?.hide(); /* caster:restart */
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
@@ -2522,7 +2726,7 @@ private spawnShootersInitial(): void {
 
     // Charge visual on power meter only
     const remain = this.aiThinkUntil - performance.now();
-    const chargeT = Math.max(0, Math.min(1, 1 - remain / 900));
+    const chargeT = Math.max(0, Math.min(1, 1 - remain / AI_THINK_MS));
 
     this.els.powerWrap.classList.remove('hidden');
     this.els.powerWrap.classList.add('visible');
@@ -2670,20 +2874,13 @@ private spawnShootersInitial(): void {
     this.markerLife -= dt;
     if (this.markerHintBoost > 0) this.markerHintBoost -= dt;
     const boost = this.markerHintBoost > 0;
-    const t = performance.now();
+    const now = performance.now();
     const amp = boost ? 0.28 : 0.1;
     const freq = boost ? 0.014 : 0.008;
-    const pulse = 1 + Math.sin(t * freq) * amp;
+    const pulse = 1 + Math.sin(now * freq) * amp;
     this.markerRing.scale.setScalar(pulse);
     const ringMat = this.markerRing.material as THREE.MeshBasicMaterial;
-    const beamMat = this.markerBeam.material as THREE.MeshBasicMaterial;
-    ringMat.opacity = boost ? 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 0.012)) : 0.9;
-    beamMat.opacity = boost ? 0.75 : 0.55;
-    this.markerArrow.position.y =
-      0.115 + Math.sin(t * (boost ? 0.014 : 0.01)) * (boost ? 0.018 : 0.01);
-    // Keep tip pointing DOWN at the marble; spin around vertical only
-    this.markerArrow.rotation.x = Math.PI;
-    this.markerArrow.rotation.y += dt * (boost ? 4.2 : 2.5);
+    ringMat.opacity = boost ? 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(now * 0.012)) : 0.9;
     if (this.markerLife <= 0) {
       this.markerGroup.visible = false;
       this.markerHintBoost = 0;
@@ -3157,6 +3354,10 @@ private spawnShootersInitial(): void {
     if (this.desertCamp) {
       this.desertCamp.update(dt, this.currentNightAmount());
     }
+    if (this.dentistOffice) {
+      this.dentistOffice.update(dt);
+    }
+    this.syncPlayerOutline();
 
     if (this.phase === 'replay') {
       this.updateMoneyHudTarget();
@@ -3516,11 +3717,11 @@ private spawnShootersInitial(): void {
 
   private continueToNextLevel(): void {
     const control = resolveControlMode();
-    if (this.pendingContinueLevel === 2) {
-      window.location.href = buildGameHref(control, 2);
+    if (this.pendingContinueLevel === 2 || this.pendingContinueLevel === 3) {
+      window.location.href = buildGameHref(control, this.pendingContinueLevel);
       return;
     }
-    // L2 victory or no next → title
+    // L3 victory or no next → title
     window.location.href = buildMenuHref();
   }
 

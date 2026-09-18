@@ -19,8 +19,6 @@ const DISPLAY_MS = 2800;
 const COOLDOWN_MIN_MS = 2800;
 const COOLDOWN_MAX_MS = 4500;
 
-const TAGS = ['Memo', 'Lalo'] as const;
-
 const PHRASES: Record<CasterEvent, string[]> = {
   drop: [
     '¡Ahí van las canicas! ¡Lluvia de cristal!',
@@ -47,7 +45,7 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Qué duelo! ¡Dos esferas a toda velocidad!',
     '¡Rebote de oro! ¡Qué contacto!',
     '¡Eso dejó temblando el círculo!',
-    '¡Impacto de antología! ¡Memo se para!',
+    '¡Impacto de antología! ¡Qué jugada!',
     '¡Como billar de lujo! ¡Qué golpe!',
     '¡Chispas, polvo y drama! ¡Me encanta!',
     '¡Ese choque merecía cámara lenta!',
@@ -80,7 +78,7 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Tiro de elite! ¡Apunten y… ¡fuego!',
     '¡Esa sale con visa express!',
     '¡Misil de canica! ¡Cubran el círculo!',
-    '¡Qué descarga! ¡Lalo no puede creer!',
+    '¡Qué descarga! ¡No se puede creer!',
     '¡Full draw! ¡Eso duele si te toca!',
     '¡Tiro de autor! ¡Firma y fecha!',
     '¡La empujó como locomotora!',
@@ -113,7 +111,7 @@ const PHRASES: Record<CasterEvent, string[]> = {
   win: [
     '¡VICTORIA! ¡El jugador se lleva la noche!',
     '¡Campeón del círculo! ¡Qué cierre!',
-    '¡Gana el humano! ¡Memo pierde la voz!',
+    '¡Gana el humano! ¡La tribuna enloquece!',
     '¡Triunfo total! ¡Canicas y gloria!',
   ],
   lose: [
@@ -138,7 +136,6 @@ export class SportsCommentator {
   private readonly textEl: HTMLElement;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private readyAt = 0;
-  private tagIndex = Math.random() < 0.5 ? 0 : 1;
   private lastPhrase = '';
   private enabled = true;
 
@@ -192,10 +189,9 @@ export class SportsCommentator {
     }
     this.lastPhrase = phrase;
 
-    const tag = TAGS[this.tagIndex % TAGS.length]!;
-    this.tagIndex += 1;
-
-    this.tagEl.textContent = `${tag}:`;
+    // Name tags (Memo/Lalo) removed — show comment text only
+    this.tagEl.textContent = '';
+    this.tagEl.style.display = 'none';
     this.textEl.textContent = phrase;
 
     // Prefer top during aim so lower HUD / finger aim stays clear

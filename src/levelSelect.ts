@@ -1,9 +1,9 @@
 /** Scene / map selection via URL (independent of AI difficulty). */
 
-export type SceneLevel = 1 | 2;
+export type SceneLevel = 1 | 2 | 3;
 
 /**
- * Resolve play scene from ?level= / ?nivel= (1 park, 2 desert camp).
+ * Resolve play scene from ?level= / ?nivel= (1 park, 2 desert camp, 3 dentist).
  * Returns null when absent — title / menu should show.
  */
 export function resolveSceneLevel(): SceneLevel | null {
@@ -15,6 +15,7 @@ export function resolveSceneLevel(): SceneLevel | null {
       ''
     ).trim();
     const n = parseInt(raw, 10);
+    if (n === 3) return 3;
     if (n === 2) return 2;
     if (n === 1) return 1;
   } catch {
@@ -29,11 +30,15 @@ export function requireSceneLevel(fallback: SceneLevel = 1): SceneLevel {
 }
 
 export function sceneLevelLabel(level: SceneLevel): string {
-  return level === 2 ? 'Nivel 2 · Campamento' : 'Nivel 1 · Parque';
+  if (level === 3) return 'Nivel 3 · Consultorio';
+  if (level === 2) return 'Nivel 2 · Campamento';
+  return 'Nivel 1 · Parque';
 }
 
 export function sceneLevelShort(level: SceneLevel): string {
-  return level === 2 ? 'Campamento' : 'Parque';
+  if (level === 3) return 'Consultorio';
+  if (level === 2) return 'Campamento';
+  return 'Parque';
 }
 
 /** Build shareable href preserving control mode + scene level. */
