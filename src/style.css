@@ -826,71 +826,62 @@ body {
   opacity: 0.7;
 }
 
-/* Metallic gold + diamond light streak shimmer behind letters */
+/* Neon emissive glow for menu labels (no diamond/shimmer streak) */
 .shimmer-text,
 .menu-item .menu-label,
-.menu-item .menu-sub,
 .modal-card h2.shimmer-text {
   position: relative;
-  color: #e8c56a;
-  background: linear-gradient(
-    100deg,
-    #6a4e18 0%,
-    #c9a227 18%,
-    #fff4c2 38%,
-    #e8c56a 48%,
-    #a67c1a 62%,
-    #fff1a8 78%,
-    #8a6918 100%
-  );
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.85))
-    drop-shadow(0 0 10px rgba(255, 214, 120, 0.25));
-  animation: gold-shimmer 3.8s linear infinite;
+  color: #7ef9ff;
+  -webkit-text-fill-color: #7ef9ff;
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  text-shadow:
+    0 0 4px rgba(126, 249, 255, 0.95),
+    0 0 12px rgba(0, 229, 255, 0.85),
+    0 0 28px rgba(0, 180, 255, 0.55),
+    0 0 48px rgba(80, 120, 255, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.75);
+  filter: none;
+  animation: neon-pulse 2.8s ease-in-out infinite;
 }
 
 .menu-item .menu-sub {
   font-size: 10px;
-  opacity: 1;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7));
+  opacity: 0.85;
+  color: #b8f0ff;
+  -webkit-text-fill-color: #b8f0ff;
+  background: none;
+  text-shadow:
+    0 0 6px rgba(0, 220, 255, 0.55),
+    0 1px 3px rgba(0, 0, 0, 0.7);
+  filter: none;
+  animation: none;
 }
 
-@keyframes gold-shimmer {
-  0% { background-position: 100% 50%; }
-  100% { background-position: -100% 50%; }
+@keyframes neon-pulse {
+  0%, 100% {
+    text-shadow:
+      0 0 4px rgba(126, 249, 255, 0.95),
+      0 0 12px rgba(0, 229, 255, 0.85),
+      0 0 28px rgba(0, 180, 255, 0.55),
+      0 0 48px rgba(80, 120, 255, 0.35),
+      0 2px 4px rgba(0, 0, 0, 0.75);
+  }
+  50% {
+    text-shadow:
+      0 0 6px rgba(180, 255, 255, 1),
+      0 0 18px rgba(0, 240, 255, 0.95),
+      0 0 36px rgba(40, 160, 255, 0.7),
+      0 0 60px rgba(100, 140, 255, 0.45),
+      0 2px 4px rgba(0, 0, 0, 0.75);
+  }
 }
 
-/* Diamond streak that passes behind the row */
+/* No diamond streak behind letters */
 .menu-item::before {
-  content: "";
-  position: absolute;
-  inset: 20% -20%;
-  background: linear-gradient(
-    105deg,
-    transparent 0%,
-    transparent 40%,
-    rgba(255, 255, 255, 0.55) 49%,
-    rgba(255, 240, 180, 0.9) 50%,
-    rgba(255, 255, 255, 0.45) 51%,
-    transparent 60%,
-    transparent 100%
-  );
-  background-size: 220% 100%;
-  animation: diamond-streak 3.8s linear infinite;
-  pointer-events: none;
-  z-index: -1;
-  mix-blend-mode: screen;
-  opacity: 0.55;
-  clip-path: polygon(0 40%, 100% 25%, 100% 75%, 0 60%);
-}
-
-@keyframes diamond-streak {
-  0% { background-position: 120% 0; opacity: 0.15; }
-  40% { opacity: 0.65; }
-  100% { background-position: -120% 0; opacity: 0.15; }
+  content: none;
+  display: none;
 }
 
 #menu-toast {

@@ -56,7 +56,7 @@ import {
   type SceneLevel,
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
-import { playMarbleClack, unlockMarbleAudio } from './marbleSounds';
+import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
   createSpyBriefcase,
   resetBriefcase,
@@ -482,7 +482,8 @@ export class Game {
     });
     this.world.broadphase = new CANNON.NaiveBroadphase();
     this.world.allowSleep = true;
-    (this.world.solver as CANNON.GSSolver).iterations = 12;
+    // Extra iterations help small spheres stay on the play surface under cañonazo hits
+    (this.world.solver as CANNON.GSSolver).iterations = 20;
 
     this.groundMat = new CANNON.Material('ground');
     const marbleMat = getMarbleCannonMaterial();
@@ -490,6 +491,8 @@ export class Game {
       new CANNON.ContactMaterial(this.groundMat, marbleMat, {
         friction: GROUND_FRICTION,
         restitution: GROUND_RESTITUTION,
+        contactEquationStiffness: 1e8,
+        contactEquationRelaxation: 3,
       }),
     );
     // Billiard-like marble–marble: cannon-es resolves impulses along the
@@ -669,14 +672,19 @@ export class Game {
     this.groundMesh.receiveShadow = true;
     this.scene.add(this.groundMesh);
 
+    // Thick static box (not an infinitely thin Plane) — prevents tunneling when
+    // tiny marbles get multi-m/s velocities after AI / player collisions.
+    // Top face sits exactly at PLAY_SURFACE_Y (park grass + L2 sand).
+    const groundHalfH = 0.12;
     const groundBody = new CANNON.Body({
       mass: 0,
-      shape: new CANNON.Plane(),
+      type: CANNON.Body.STATIC,
+      shape: new CANNON.Box(
+        new CANNON.Vec3(GROUND_SIZE / 2, groundHalfH, GROUND_SIZE / 2),
+      ),
       material: this.groundMat,
     });
-    groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-    // Match dirt pad top so marbles rest on the visual play surface
-    groundBody.position.y = PLAY_SURFACE_Y;
+    groundBody.position.set(0, PLAY_SURFACE_Y - groundHalfH, 0);
     this.world.addBody(groundBody);
 
     // Scoring ring visuals — park: chalk; desert: imperfect sand line from desertCamp
@@ -868,7 +876,10 @@ export class Game {
   }
 
   private bindUI(): void {
-    this.els.btnDrop.addEventListener('click', () => this.dropMarbles());
+    this.els.btnDrop.addEventListener('click', () => {
+      unlockMarbleAudio();
+      this.dropMarbles();
+    });
     this.els.btnRestart.addEventListener('click', () => this.restart());
     this.els.btnReplay.addEventListener('click', () => this.startReplay());
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
@@ -894,10 +905,12 @@ export class Game {
     this.els.pauseOverlay.addEventListener('click', (e) => {
       if (e.target === this.els.pauseOverlay) this.setPaused(false);
     });
-    // Unlock audio on first interaction with any action button
+    // Unlock audio on first interaction with UI / canvas (gesture-gated AudioContext)
+    installMarbleAudioUnlock();
     for (const b of [this.els.btnDrop, this.els.btnReplay, this.els.btnPause, this.els.btnHudRestart]) {
       b.addEventListener('pointerdown', () => unlockMarbleAudio(), { once: true });
     }
+    this.canvas.addEventListener('pointerdown', () => unlockMarbleAudio(), { once: true, capture: true });
 
     this.els.replayBtnPlay.addEventListener('click', () => this.toggleReplayPlay());
     this.els.replayBtnBack.addEventListener('click', () => this.nudgeReplay(-Math.round(REPLAY_FPS * 0.5)));
@@ -1999,6 +2012,10 @@ private spawnShootersInitial(): void {
 
     const body = shooter.body;
     body.type = CANNON.Body.DYNAMIC;
+    // Resync onto surface before impulse — kinematic→dynamic can inherit sink
+    if (!Number.isFinite(body.position.y) || body.position.y < MARBLE_REST_Y) {
+      body.position.y = MARBLE_REST_Y;
+    }
     body.wakeUp();
 
     // Push mode: map finger world velocity → heavy marble exit + roll spin
@@ -2330,7 +2347,50 @@ private spawnShootersInitial(): void {
     }
   }
 
+  /**
+   * Safety net vs discrete collision tunneling: keep every active marble's
+   * center at/above the play surface and kill downward velocity when clamped.
+   * Runs every frame after world.step (park grass + L2 sand share PLAY_SURFACE_Y).
+   */
+  private preventMarbleTunneling(): void {
+    const minY = MARBLE_REST_Y;
+    const list: MarbleEntity[] = this.fieldMarbles.slice();
+    if (this.playerMarble) list.push(this.playerMarble);
+    if (this.aiMarble) list.push(this.aiMarble);
+
+    for (const m of list) {
+      if (!m.active) continue;
+      const body = m.body;
+      if (body.type === CANNON.Body.STATIC) continue;
+      const p = body.position;
+
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+        p.set(0, minY, 0);
+        body.velocity.setZero();
+        body.angularVelocity.setZero();
+        continue;
+      }
+
+      // Hard floor — mesh sync follows body, so this keeps AI / field visible
+      if (p.y < minY) {
+        p.y = minY;
+        if (body.velocity.y < 0) body.velocity.y = 0;
+      }
+
+      // Soft sticky contact: if barely above surface with downward vel, pin it
+      if (
+        body.type === CANNON.Body.DYNAMIC &&
+        p.y <= minY + MARBLE_RADIUS * 0.15 &&
+        body.velocity.y < 0
+      ) {
+        p.y = minY;
+        body.velocity.y = 0;
+      }
+    }
+  }
+
   private syncMeshes(): void {
+
     for (const m of this.fieldMarbles) {
       if (!m.active && !m.mesh.visible) continue;
       m.mesh.position.set(m.body.position.x, m.body.position.y, m.body.position.z);
@@ -2464,7 +2524,7 @@ private spawnShootersInitial(): void {
 
       const mi = this.isMarbleBody(bi);
       const mj = this.isMarbleBody(bj);
-      if (mi && mj && impact > 0.35 && now > this.sparkCooldownUntil) {
+      if (mi && mj && impact > 0.18 && now > this.sparkCooldownUntil) {
         // Contact point in world space
         const nx = c.ni.x;
         const ny = c.ni.y;
@@ -2688,12 +2748,13 @@ private spawnShootersInitial(): void {
     if (!this.knockoutPunch?.active && follow && follow.active) {
       const fp = follow.body.position;
       // Continuously follow + look at the relevant marble for the whole slow-mo window
+      const fy = Math.max(MARBLE_REST_Y, Number.isFinite(fp.y) ? fp.y : MARBLE_REST_Y);
       this.camera.position.set(
         fp.x + this._slowMoCamOffset.x,
-        Math.max(0.08, fp.y + this._slowMoCamOffset.y),
+        Math.max(0.08, fy + this._slowMoCamOffset.y),
         fp.z + this._slowMoCamOffset.z,
       );
-      this.controls.target.set(fp.x, Math.max(MARBLE_RADIUS, fp.y), fp.z);
+      this.controls.target.set(fp.x, fy, fp.z);
       this.camera.lookAt(this.controls.target);
     }
     if (this.slowMoTimer <= 0) {
@@ -3110,7 +3171,9 @@ private spawnShootersInitial(): void {
 
     // Scale physics dt during cámara lenta (visual dt stays real-time for camera follow)
     const physDt = dt * this.timeScale;
-    this.world.step(1 / 60, physDt, 4);
+    // Finer fixed step + more substeps reduces sphere–ground tunneling on hard hits
+    this.world.step(1 / 120, physDt, 10);
+    this.preventMarbleTunneling();
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
     this.updateAIDirector(dt);

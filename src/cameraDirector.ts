@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CIRCLE_RADIUS, MARBLE_RADIUS } from './constants';
+import { CIRCLE_RADIUS, MARBLE_RADIUS, MARBLE_REST_Y } from './constants';
 import type { MarbleEntity } from './marbles';
 
 /** TV-director shot vocabulary (spectacular, not nauseating). */
@@ -68,7 +68,7 @@ export function clusterLookAt(
 ): THREE.Vector3 {
   const sp = subject.body.position;
   let x = sp.x;
-  let y = Math.max(MARBLE_RADIUS, sp.y);
+  let y = Math.max(MARBLE_REST_Y, sp.y);
   let z = sp.z;
   let n = 1;
   const R = MARBLE_RADIUS * 14;
@@ -78,7 +78,7 @@ export function clusterLookAt(
     const dz = m.body.position.z - sp.z;
     if (dx * dx + dz * dz < R * R) {
       x += m.body.position.x;
-      y += Math.max(MARBLE_RADIUS, m.body.position.y);
+      y += Math.max(MARBLE_REST_Y, m.body.position.y);
       z += m.body.position.z;
       n++;
     }
@@ -117,7 +117,7 @@ export function framingForDirectorMode(
   scratchLook: THREE.Vector3,
 ): DirectorFraming {
   const p = subject.body.position;
-  const lookY = Math.max(MARBLE_RADIUS, Number.isFinite(p.y) ? p.y : MARBLE_RADIUS);
+  const lookY = Math.max(MARBLE_REST_Y, Number.isFinite(p.y) ? p.y : MARBLE_REST_Y);
   const { fx, fz } = horizDirFromVelocity(subject, fallbackAz);
   // Perpendicular for side track
   const sx = -fz;

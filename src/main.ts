@@ -3,7 +3,7 @@ import { Game } from './Game';
 import { resolveSceneLevel } from './levelSelect';
 import { initTitleMenu, hideTitleMenu, applySaveAudio } from './titleMenu';
 import { loadSave } from './save';
-import { setMarbleAudioMuted } from './marbleSounds';
+import { setMarbleAudioMuted, installMarbleAudioUnlock, unlockMarbleAudio } from './marbleSounds';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 if (!canvas) {
@@ -12,6 +12,7 @@ if (!canvas) {
 
 document.title = 'TAMA Project';
 applySaveAudio();
+installMarbleAudioUnlock();
 
 const level = resolveSceneLevel();
 let game: Game | null = null;
@@ -22,6 +23,12 @@ if (level === null) {
   // Soft-hide in-game HUD until a level is chosen (page navigates away)
   document.getElementById('hud')?.classList.add('hidden');
   document.getElementById('ui-actions')?.classList.add('hidden');
+  // Any title click unlocks AudioContext for the next page load gesture chain
+  document.getElementById('title-screen')?.addEventListener(
+    'pointerdown',
+    () => unlockMarbleAudio(),
+    { once: true, capture: true },
+  );
 } else {
   hideTitleMenu();
   const save = loadSave();

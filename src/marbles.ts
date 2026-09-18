@@ -328,9 +328,14 @@ export function createMarbleEntity(
     material: marbleMaterial,
     linearDamping: MARBLE_LINEAR_DAMPING,
     angularDamping: MARBLE_ANGULAR_DAMPING,
+    allowSleep: true,
+    sleepSpeedLimit: 0.02,
+    sleepTimeLimit: 0.35,
   });
   body.material!.friction = MARBLE_FRICTION;
   body.material!.restitution = MARBLE_RESTITUTION;
+  // Prefer discrete contacts; tunneling is handled by thick ground + Y clamp in Game
+  body.collisionResponse = true;
 
   return { mesh, body, design, owner, active: true };
 }

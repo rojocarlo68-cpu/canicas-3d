@@ -2,8 +2,8 @@
 export const MARBLE_RADIUS = 0.008; // 1.6 cm diameter
 /** Top of the dirt play pad (visual). Physics ground + marble rest align here. */
 export const PLAY_SURFACE_Y = 0.004;
-/** Center Y flush on dirt: surface + radius, tiny negative bias closes visual gap. */
-export const MARBLE_REST_Y = PLAY_SURFACE_Y + MARBLE_RADIUS - 0.00035;
+/** Center Y flush on play surface: surface + radius (exact sphere–plane contact). */
+export const MARBLE_REST_Y = PLAY_SURFACE_Y + MARBLE_RADIUS;
 /** Glass-marble mass ≈ density 2500 kg/m³ × (4/3)πr³ */
 export const MARBLE_MASS = 0.0055;
 /** Fat-finger pick radius vs visual marble radius (screen or world) */
