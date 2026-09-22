@@ -489,9 +489,7 @@ export class Game {
     this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
     this.updateScoreHUD();
     this.applyControlModeUI();
-    if (this.sceneLevel === 4) {
-      document.getElementById('btn-l4-personalizar')?.classList.remove('hidden');
-    }
+    this.syncL4PersonalizarVisibility();
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -522,7 +520,7 @@ export class Game {
     this.controls.dampingFactor = 0.08;
     this.controls.target.set(0, 0, 0);
     this.controls.minDistance = 0.2;
-    this.controls.maxDistance = 4.5;
+    this.controls.maxDistance = this.sceneLevel === 4 ? 6.5 : 4.5;
     this.controls.maxPolarAngle = Math.PI * 0.49;
     this.controls.minPolarAngle = 0.12;
     this.controls.enablePan = false;
@@ -624,6 +622,10 @@ export class Game {
   }
 
   dispose(): void {
+    this.syncL4PersonalizarVisibility();
+    // Force-hide even if sceneLevel were still 4 during teardown / title return
+    document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
+    document.getElementById('l4-mat-menu')?.classList.add('hidden');
     this.commentator?.dispose(); /* caster:dispose */
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
@@ -900,12 +902,13 @@ export class Game {
         }),
       );
       this.dayNightTime = DAY_CYCLE_SECONDS * 0.35;
-      this.playFillLight.intensity = 0.08;
-      this.playFillLight.distance = 1.4;
+      this.playFillLight.intensity = 0.22;
+      this.playFillLight.distance = 2.4;
       this.playFillLight.color.setHex(0xffd0a0);
-      this.hemiLight.intensity = 0.35;
-      this.sunLight.intensity = 0.45;
-      this.scene.fog = new THREE.FogExp2(0xd8c8b0, 0.02);
+      this.playFillLight.position.set(0, 0.55, 0.15);
+      this.hemiLight.intensity = 0.55;
+      this.sunLight.intensity = 0.55;
+      this.scene.fog = new THREE.FogExp2(0xd8c8b0, 0.012);
       if (this.sky) this.sky.visible = false;
       this.groundMesh.visible = false;
     } else {
@@ -935,11 +938,11 @@ export class Game {
     }
     if (this.sceneLevel === 4) {
       fog.color.setHex(0xd8c8b0);
-      fog.density = 0.018;
-      this.sunLight.intensity = 0.4;
-      this.hemiLight.intensity = 0.32;
-      this.playFillLight.intensity = 0.06;
-      this.renderer.toneMappingExposure = 1.05;
+      fog.density = 0.012;
+      this.sunLight.intensity = 0.5;
+      this.hemiLight.intensity = 0.5;
+      this.playFillLight.intensity = 0.2;
+      this.renderer.toneMappingExposure = 1.12;
       return;
     }
     applyDayNight(this.dayNightTime, {
@@ -1038,6 +1041,8 @@ export class Game {
     this.els.btnContinueLevel.addEventListener('click', () => this.continueToNextLevel());
     this.els.btnVictoryMenu.addEventListener('click', () => {
       this.hideVictoryScreen();
+      document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
+      document.getElementById('l4-mat-menu')?.classList.add('hidden');
       window.location.href = buildMenuHref();
     });
     this.els.btnVictoryContinue.addEventListener('click', () => {
@@ -1059,6 +1064,8 @@ export class Game {
       this.loadMatchCheckpointFromPause();
     });
     this.els.btnPauseMenu?.addEventListener('click', () => {
+      document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
+      document.getElementById('l4-mat-menu')?.classList.add('hidden');
       window.location.href = buildMenuHref();
     });
 
@@ -3771,8 +3778,12 @@ private spawnShootersInitial(): void {
       usableCenterY * CIRCLE_RADIUS * 0.25,
       portrait ? CIRCLE_RADIUS * 0.03 : 0,
     );
-    const dist = CIRCLE_RADIUS * (portrait ? 3.0 : 2.5);
-    const polar = portrait ? 1.05 : 0.92;
+    // L4 elevated desk: absolute meters (circle×scale is too tight to show legs)
+    const l4 = this.sceneLevel === 4;
+    const dist = l4
+      ? portrait ? 2.55 : 2.25
+      : CIRCLE_RADIUS * (portrait ? 3.0 : 2.5);
+    const polar = l4 ? (portrait ? 1.28 : 1.2) : portrait ? 1.05 : 0.92;
     const az = this.defaultCamAzimuth;
 
     if (forcePos || this.phase === 'ready') {
@@ -4436,7 +4447,16 @@ private spawnShootersInitial(): void {
     }
   }
 
+  /** Personalizar + mat picker: visible only on Level 4. */
+  private syncL4PersonalizarVisibility(): void {
+    const btn = document.getElementById('btn-l4-personalizar');
+    if (btn) btn.classList.toggle('hidden', this.sceneLevel !== 4);
+    const menu = document.getElementById('l4-mat-menu');
+    if (menu && this.sceneLevel !== 4) menu.classList.add('hidden');
+  }
+
   private bindL4Personalizar(): void {
+
     const btn = document.getElementById('btn-l4-personalizar');
     const menu = document.getElementById('l4-mat-menu');
     const presetsEl = document.getElementById('l4-mat-presets');
@@ -4463,7 +4483,11 @@ private spawnShootersInitial(): void {
     };
 
     btn.addEventListener('click', () => {
-      if (this.sceneLevel !== 4 || !this.officeDesk) return;
+      if (this.sceneLevel !== 4 || !this.officeDesk) {
+        btn.classList.add('hidden');
+        menu.classList.add('hidden');
+        return;
+      }
       refreshPresets();
       menu.classList.remove('hidden');
     });

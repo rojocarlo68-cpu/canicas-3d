@@ -39,7 +39,7 @@ IA: suelo de competencia elevado en todos los niveles, con progresión clara L1 
 - **Nivel 1 (Parque):** `?level=1` — parque día/noche (ciclo 30 min).
 - **Nivel 2 (Campamento):** `?level=2` — desierto de noche con fogata, montañas y círculo imperfecto en arena.
 - **Nivel 3 (Consultorio):** `?level=3` — dentist office; play vessel = white cuspidor/spit bowl. After drop settle, center opens as a hole. Score = field marbles into the hole. Personal marble into hole or out of bowl = lose that marble / match. AI skill L1 < L2 < L3.
-- **Nivel 4 (Escritorio):** `?level=4` — L-shaped mahogany desk (messy office). Playmat on left wing with carved wood gutters on all 4 sides leading to two south-corner holes; subtle south tilt. **Interim scoring:** field marbles that fall into the corner holes count like L1 knockouts (HUD: “hoyos de esquina”). **Personalizar** (top-right) swaps playmat presets (avocado / neon / candy / checker) or upload custom image. Same core turn/camera/save as prior levels.
+- **Nivel 4 (Escritorio):** `?level=4` — L-shaped mahogany desk on 4 black metal legs (messy office). Playmat flush on left wing with carved **U-shaped** wood gutters (west / north / east only; open south) leading to SW & SE holes; subtle south tilt. **Interim scoring:** field marbles into the corner holes count like L1 knockouts (HUD: “hoyos de esquina”). **Personalizar** (top-right) swaps playmat presets (avocado / neon / candy / checker) or upload custom image. Same core turn/camera/save as prior levels.
 
 ### Canica colaboración
 **Lazo Marblus–Carlo** — en la Galería por defecto (equipable). Diseño: doble hélice cian (Marblus) + ámbar (Carlo) fusionadas en vidrio.

@@ -1,6 +1,7 @@
 /**
  * Level 4 — lived-in L-shaped mahogany office desk.
- * Playmat on left wing with carved wood gutters → two south-corner holes.
+ * Playmat on left wing with carved U-shaped wood gutters (W/N/E only; open south)
+ * → two holes at SW/SE channel termini. Desk elevated on 4 black metal legs.
  * Interim scoring: field marbles into corner holes count like L1 knockouts.
  */
 import * as THREE from 'three';
@@ -14,7 +15,7 @@ import {
 /** Half-size of the square playmat (matches chalk diameter). */
 export const L4_MAT_HALF = CIRCLE_RADIUS;
 /** Channel width carved around the mat. */
-export const L4_CHANNEL_W = MARBLE_RADIUS * 5.5;
+export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2; // ≥1 marble + margin; readable gutter
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Subtle south tilt (rad) — downhill toward +Z. */
@@ -135,12 +136,16 @@ export function buildOfficeDesk(
   });
 
   // Room shell — lived-in, not tidy
+  // Play physics stay at PLAY_SURFACE_Y; room floor drops so the desk reads as a real elevated table.
+  const legH = 0.74;
+  const floorY = -legH;
+
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(8, 8),
     woodStandard(0xc4b49a, { roughness: 0.92 }),
   );
   floor.rotation.x = -Math.PI / 2;
-  floor.position.y = -0.04;
+  floor.position.y = floorY;
   floor.receiveShadow = true;
   root.add(floor);
 
@@ -150,18 +155,20 @@ export function buildOfficeDesk(
     woodStandard(0xb8a888, { roughness: 0.9 }),
   );
   lino.rotation.x = -Math.PI / 2;
-  lino.position.set(0.4, -0.038, 0.2);
+  lino.position.set(0.4, floorY + 0.002, 0.2);
   root.add(lino);
 
   const wallMat = woodStandard(0xe8e0d4, { roughness: 0.95 });
+  const wallH = 2.6 + legH;
+  const wallCy = wallH / 2 + floorY;
   const mkWall = (w: number, h: number, d: number, x: number, y: number, z: number) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
     m.position.set(x, y, z);
     m.receiveShadow = true;
     root.add(m);
   };
-  mkWall(7, 2.6, 0.1, 0, 1.3, -2.8);
-  mkWall(0.1, 2.6, 6, -2.8, 1.3, 0);
+  mkWall(7, wallH, 0.1, 0, wallCy, -2.8);
+  mkWall(0.1, wallH, 6, -2.8, wallCy, 0);
   // Peeling paint patch near corner
   const peel = new THREE.Mesh(
     new THREE.PlaneGeometry(0.55, 0.4),
@@ -172,51 +179,138 @@ export function buildOfficeDesk(
   root.add(peel);
 
   // ——— L-shaped desk: left wing (play) + right wing (clutter) ———
+  // Desk top flush with play surface (physics). Legs span down to room floor.
   const deskY = PLAY_SURFACE_Y;
   const leftLen = 1.35; // X extent of left wing
   const leftDepth = 0.95; // Z
   const rightLen = 0.85; // Z extent of right wing along +X stub
   const rightWidth = 0.72;
-  const deskThick = 0.045;
+  const deskThick = 0.05;
 
-  // Left wing top (play area sits on this)
-  const leftTop = new THREE.Mesh(
-    new THREE.BoxGeometry(leftLen, deskThick, leftDepth),
-    mahog,
-  );
-  leftTop.position.set(-0.15, deskY - deskThick / 2 - 0.002, 0.05);
-  leftTop.castShadow = true;
-  leftTop.receiveShadow = true;
-  root.add(leftTop);
+  // Left wing: framed top + recessed well so U-gutters are not buried inside a solid slab
+  const wellHalf = L4_MAT_HALF + L4_CHANNEL_W;
+  const wellDepth = Math.max(MARBLE_RADIUS * 3.0, 0.022);
+  const mkBoard = (
+    w: number,
+    h: number,
+    d: number,
+    x: number,
+    yCenter: number,
+    z: number,
+    mat: THREE.Material = mahog,
+  ) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, yCenter, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    root.add(m);
+    return m;
+  };
+
+  const leftCX = -0.15;
+  const leftCZ = 0.05;
+  const leftMinX = leftCX - leftLen / 2;
+  const leftMaxX = leftCX + leftLen / 2;
+  const leftMinZ = leftCZ - leftDepth / 2;
+  const leftMaxZ = leftCZ + leftDepth / 2;
+  const wMinX = -wellHalf;
+  const wMaxX = wellHalf;
+  const wMinZ = -wellHalf;
+  const wMaxZ = wellHalf;
+  const topYc = deskY - deskThick / 2;
+
+  // North margin (-Z)
+  if (wMinZ > leftMinZ + 0.01) {
+    mkBoard(leftLen, deskThick, wMinZ - leftMinZ, leftCX, topYc, (leftMinZ + wMinZ) / 2);
+  }
+  // South margin (+Z) — open face (no gutter)
+  if (leftMaxZ > wMaxZ + 0.01) {
+    mkBoard(leftLen, deskThick, leftMaxZ - wMaxZ, leftCX, topYc, (wMaxZ + leftMaxZ) / 2);
+  }
+  // West margin (-X)
+  if (wMinX > leftMinX + 0.01) {
+    mkBoard(wMinX - leftMinX, deskThick, wellHalf * 2, (leftMinX + wMinX) / 2, topYc, 0);
+  }
+  // East margin (+X)
+  if (leftMaxX > wMaxX + 0.01) {
+    mkBoard(leftMaxX - wMaxX, deskThick, wellHalf * 2, (wMaxX + leftMaxX) / 2, topYc, 0);
+  }
+
+  // Recessed well floor (channel bed)
+  const wellFloorMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.55 });
+  mkBoard(wellHalf * 2, 0.018, wellHalf * 2, 0, deskY - wellDepth - 0.009, 0, wellFloorMat);
+
+  // Mat pedestal — top flush with desk frame
+  mkBoard(L4_MAT_HALF * 2, wellDepth, L4_MAT_HALF * 2, 0, deskY - wellDepth / 2, 0);
+
+  // South flush bridge (no concave south channel); gaps at SW/SE for holes
+  {
+    const holeR0 = L4_HOLE_RADIUS;
+    const bridgeZ = L4_MAT_HALF + L4_CHANNEL_W * 0.5;
+    const bridgeW = Math.max(0.04, L4_MAT_HALF * 2 - holeR0 * 4.2);
+    if (bridgeW > 0.02) {
+      mkBoard(bridgeW, wellDepth, L4_CHANNEL_W, 0, deskY - wellDepth / 2, bridgeZ);
+    }
+  }
 
   // Corner / right wing
   const rightTop = new THREE.Mesh(
     new THREE.BoxGeometry(rightWidth, deskThick, rightLen),
     mahog,
   );
-  rightTop.position.set(0.55, deskY - deskThick / 2 - 0.002, 0.28);
+  rightTop.position.set(0.55, deskY - deskThick / 2, 0.28);
   rightTop.castShadow = true;
   rightTop.receiveShadow = true;
   root.add(rightTop);
 
-  // Desk legs (black metal)
-  const legH = 0.72;
+  // Desk legs (4 black metal) — floor → underside; slightly proud of top so they read from orbit
   const mkLeg = (x: number, z: number) => {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, legH, 0.04), metal);
-    leg.position.set(x, deskY - deskThick - legH / 2, z);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.055, legH, 0.055), metal);
+    leg.position.set(x, floorY + legH / 2, z);
     leg.castShadow = true;
+    leg.receiveShadow = true;
     root.add(leg);
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.014, 0.07), metal);
+    foot.position.set(x, floorY + 0.007, z);
+    root.add(foot);
   };
-  mkLeg(-0.7, -0.35);
-  mkLeg(-0.7, 0.4);
-  mkLeg(0.35, -0.3);
-  mkLeg(0.8, 0.55);
-  mkLeg(0.8, 0.05);
+  // Corners of the L footprint (just outside the top so posts are visible past the edge)
+  mkLeg(-0.78, -0.40);
+  mkLeg(-0.78, 0.48);
+  mkLeg(0.48, -0.32);
+  mkLeg(0.88, 0.62);
 
-  // ——— Playmat + channels (tilted group) ———
+  // Vertical apron / skirt under desk edge — reads as real table thickness from side angles
+  const apronH = 0.07;
+  const apronMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.6 });
+  const addApron = (w: number, d: number, x: number, z: number) => {
+    const a = new THREE.Mesh(new THREE.BoxGeometry(w, apronH, d), apronMat);
+    a.position.set(x, deskY - deskThick - apronH / 2, z);
+    a.castShadow = true;
+    root.add(a);
+  };
+  // Left wing apron ring (thin walls under perimeter)
+  addApron(leftLen, 0.03, -0.15, 0.05 - leftDepth / 2 + 0.015); // south of left
+  addApron(leftLen, 0.03, -0.15, 0.05 + leftDepth / 2 - 0.015); // north of left
+  addApron(0.03, leftDepth, -0.15 - leftLen / 2 + 0.015, 0.05); // west
+  addApron(0.03, leftDepth * 0.55, -0.15 + leftLen / 2 - 0.015, 0.05 - leftDepth * 0.2); // east stub
+  // Right wing apron
+  addApron(rightWidth, 0.03, 0.55, 0.28 - rightLen / 2 + 0.015);
+  addApron(rightWidth, 0.03, 0.55, 0.28 + rightLen / 2 - 0.015);
+  addApron(0.03, rightLen, 0.55 + rightWidth / 2 - 0.015, 0.28);
+
+  // Soft fill under the desk so black legs are not lost in shadow
+  const underFill = new THREE.PointLight(0xffe0b0, 0.55, 2.2, 2);
+  underFill.position.set(0.1, floorY + legH * 0.45, 0.1);
+  root.add(underFill);
+  const floorFill = new THREE.HemisphereLight(0xf0e8d8, 0x2a1810, 0.35);
+  floorFill.position.set(0, deskY, 0);
+  root.add(floorFill);
+
+  // ——— Playmat + U-channels (tilted group) ———
   const play = new THREE.Group();
   play.name = 'l4Play';
-  play.rotation.x = L4_TILT; // south (+Z) downhill
+  play.rotation.x = L4_TILT; // south (+Z) downhill toward holes
   play.position.set(0, deskY, 0);
   root.add(play);
 
@@ -224,8 +318,9 @@ export function buildOfficeDesk(
   const chW = L4_CHANNEL_W;
   const holeR = L4_HOLE_RADIUS;
   const outerHalf = matHalf + chW;
+  const gutterDepth = Math.max(MARBLE_RADIUS * 3.0, 0.022);
 
-  // Mat visual
+  // Mat visual — perfectly flush with mahogany desk top plane (y≈0 in play group)
   const matGeo = new THREE.PlaneGeometry(matHalf * 2, matHalf * 2);
   const matVis = new THREE.MeshStandardMaterial({
     color: 0x4a7a32,
@@ -234,93 +329,153 @@ export function buildOfficeDesk(
   });
   const matMesh = new THREE.Mesh(matGeo, matVis);
   matMesh.rotation.x = -Math.PI / 2;
-  matMesh.position.y = 0.0012;
+  matMesh.position.y = 0.0004;
   matMesh.receiveShadow = true;
   play.add(matMesh);
 
-  // Channel floor visuals (wood) — 4 sides + south corners with hole cutouts
+  // Channel wood (same mahogany family — carved gutters, not floating rails)
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
+  const lipMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.5 });
 
-  const addChan = (w: number, d: number, x: number, z: number) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.008, d), chMat);
-    m.position.set(x, -0.003, z);
-    m.receiveShadow = true;
-    play.add(m);
+  /** Concave gutter segment: sunken floor + inner/outer lips (U cross-section). */
+  const addTrough = (
+    length: number,
+    width: number,
+    cx: number,
+    cz: number,
+    alongX: boolean,
+  ) => {
+    const floorT = 0.007;
+    const lipT = 0.01;
+    const lipW = Math.min(0.006, width * 0.14);
+    const innerW = Math.max(width - lipW * 2, MARBLE_RADIUS * 2.4);
+    // Sunken floor
+    const fw = alongX ? length : innerW;
+    const fd = alongX ? innerW : length;
+    const floorM = new THREE.Mesh(new THREE.BoxGeometry(fw, floorT, fd), chMat);
+    floorM.position.set(cx, -gutterDepth + floorT / 2, cz);
+    floorM.receiveShadow = true;
+    play.add(floorM);
+    // Outer + inner lips (flush with desk / mat plane)
+    if (alongX) {
+      // length along X; width along Z — lips on ±Z edges
+      const lip = (zOff: number) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(length, lipT, lipW), lipMat);
+        m.position.set(cx, -lipT / 2 + 0.0002, cz + zOff);
+        m.castShadow = true;
+        play.add(m);
+      };
+      lip(-(width / 2 - lipW / 2));
+      lip(width / 2 - lipW / 2);
+    } else {
+      // length along Z; width along X — lips on ±X edges
+      const lip = (xOff: number) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(lipW, lipT, length), lipMat);
+        m.position.set(cx + xOff, -lipT / 2 + 0.0002, cz);
+        m.castShadow = true;
+        play.add(m);
+      };
+      lip(-(width / 2 - lipW / 2));
+      lip(width / 2 - lipW / 2);
+    }
   };
-  // North, East, West channels
-  addChan(matHalf * 2 + chW * 2, chW, 0, -(matHalf + chW / 2)); // north (-Z)
-  addChan(chW, matHalf * 2, -(matHalf + chW / 2), 0); // west
-  addChan(chW, matHalf * 2, matHalf + chW / 2, 0); // east
-  // South channel middle strip (between holes)
-  const southMidW = matHalf * 2 - holeR * 4;
-  if (southMidW > 0.02) {
-    addChan(southMidW, chW, 0, matHalf + chW / 2);
+
+  // U topology: West + North + East only (NO south gutter). Corners overlap so path connects.
+  // North (-Z)
+  addTrough(matHalf * 2 + chW * 2, chW, 0, -(matHalf + chW / 2), true);
+  // West / East: from north corner down to just above the hole (open terminus)
+  const holeClearVis = holeR * 2.1;
+  const weVisZ0 = -(matHalf + chW);
+  const weVisZ1 = matHalf - holeClearVis;
+  const weVisLen = weVisZ1 - weVisZ0;
+  const weVisCz = (weVisZ0 + weVisZ1) / 2;
+  if (weVisLen > 0.04) {
+    addTrough(weVisLen, chW, -(matHalf + chW / 2), weVisCz, false);
+    addTrough(weVisLen, chW, matHalf + chW / 2, weVisCz, false);
   }
 
-  // Hole visuals (dark pits)
+  // Holes at SW / SE termini of the U (where W/E channels meet the open south)
   const holeCentersLocal = [
-    { x: -(matHalf - holeR * 0.15), z: matHalf + chW * 0.35 },
-    { x: matHalf - holeR * 0.15, z: matHalf + chW * 0.35 },
+    { x: -(matHalf + chW / 2), z: matHalf - holeR * 0.15 },
+    { x: matHalf + chW / 2, z: matHalf - holeR * 0.15 },
   ];
   for (const h of holeCentersLocal) {
+    // Dark pit + short shaft so it reads as a real hole in the wood
     const pit = new THREE.Mesh(
-      new THREE.CircleGeometry(holeR, 24),
-      new THREE.MeshStandardMaterial({ color: 0x0a0604, roughness: 1, metalness: 0 }),
+      new THREE.CircleGeometry(holeR, 28),
+      new THREE.MeshStandardMaterial({ color: 0x050302, roughness: 1, metalness: 0 }),
     );
     pit.rotation.x = -Math.PI / 2;
-    pit.position.set(h.x, -0.006, h.z);
+    pit.position.set(h.x, -gutterDepth + 0.001, h.z);
     play.add(pit);
-    // Rim
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(holeR * 0.98, holeR * 1.05, 0.1, 20, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: 0x1a0c06,
+        roughness: 0.9,
+        side: THREE.DoubleSide,
+      }),
+    );
+    shaft.position.set(h.x, -gutterDepth - 0.05, h.z);
+    play.add(shaft);
     const rim = new THREE.Mesh(
-      new THREE.RingGeometry(holeR * 0.92, holeR * 1.12, 24),
+      new THREE.RingGeometry(holeR * 0.92, holeR * 1.15, 28),
       woodStandard(0x3a1a0c, { roughness: 0.55 }),
     );
     rim.rotation.x = -Math.PI / 2;
-    rim.position.set(h.x, -0.001, h.z);
+    rim.position.set(h.x, -0.0005, h.z);
     play.add(rim);
   }
 
-  // Physics: mat box (high friction)
+  // Physics: mat box (high friction) — top flush with desk / mat visual
   const matBody = new CANNON.Body({
     mass: 0,
     type: CANNON.Body.STATIC,
     material: matMat,
   });
-  // Approximate tilt with quaternion
   const qTilt = new CANNON.Quaternion();
   qTilt.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), L4_TILT);
   matBody.quaternion.copy(qTilt);
-  matBody.position.set(0, deskY - 0.004, 0);
+  matBody.position.set(0, deskY - 0.003, 0);
   matBody.addShape(
-    new CANNON.Box(new CANNON.Vec3(matHalf, 0.004, matHalf)),
+    new CANNON.Box(new CANNON.Vec3(matHalf, 0.003, matHalf)),
     new CANNON.Vec3(0, 0, 0),
   );
   bodies.push(matBody);
 
-  // Channel physics strips (lower friction wood) — leave holes open on south corners
-  const addChanBody = (hx: number, hz: number, ox: number, oz: number) => {
+  // Channel physics (lower friction wood) — U only; leave circular gaps at SW/SE holes
+  const addChanBody = (hx: number, hz: number, ox: number, oz: number, oy = -gutterDepth + 0.004) => {
     const b = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: woodMat,
     });
     b.quaternion.copy(qTilt);
-    b.position.set(0, deskY - 0.008, 0);
+    b.position.set(0, deskY, 0);
     b.addShape(
       new CANNON.Box(new CANNON.Vec3(hx, 0.004, hz)),
-      new CANNON.Vec3(ox, 0, oz),
+      new CANNON.Vec3(ox, oy, oz),
     );
     bodies.push(b);
   };
-  addChanBody(outerHalf, chW / 2, 0, -(matHalf + chW / 2)); // north
-  addChanBody(chW / 2, matHalf, -(matHalf + chW / 2), 0); // west
-  addChanBody(chW / 2, matHalf, matHalf + chW / 2, 0); // east
-  if (southMidW > 0.02) {
-    addChanBody(southMidW / 2, chW / 2, 0, matHalf + chW / 2);
+
+  // North full (includes NW/NE corner floors)
+  addChanBody(outerHalf, chW / 2, 0, -(matHalf + chW / 2));
+
+  // West / East: stop before hole so marbles fall in
+  const holeClear = holeR * 2.05;
+  const weZ0 = -(matHalf + chW); // north tip
+  const weZ1 = matHalf - holeClear; // just north of hole
+  const weHalfLen = (weZ1 - weZ0) / 2;
+  const weCz = (weZ0 + weZ1) / 2;
+  if (weHalfLen > 0.02) {
+    addChanBody(chW / 2, weHalfLen, -(matHalf + chW / 2), weCz);
+    addChanBody(chW / 2, weHalfLen, matHalf + chW / 2, weCz);
   }
-  // Outer retaining lips so marbles stay in channels
-  const lipH = 0.012;
+
+  // Outer retaining lips (N/W/E only — open south)
+  const lipH = 0.014;
   const addLip = (hx: number, hy: number, hz: number, ox: number, oy: number, oz: number) => {
     const b = new CANNON.Body({
       mass: 0,
@@ -332,25 +487,25 @@ export function buildOfficeDesk(
     b.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)), new CANNON.Vec3(ox, oy, oz));
     bodies.push(b);
   };
-  addLip(outerHalf + 0.01, lipH, 0.006, 0, lipH, -(outerHalf + 0.004));
-  addLip(0.006, lipH, outerHalf, -(outerHalf + 0.004), lipH, 0);
-  addLip(0.006, lipH, outerHalf, outerHalf + 0.004, lipH, 0);
-  // South lips with gaps at holes
-  addLip(Math.max(0.02, southMidW / 2), lipH, 0.006, 0, lipH, outerHalf + 0.004);
+  addLip(outerHalf + 0.01, lipH, 0.006, 0, lipH * 0.2, -(outerHalf + 0.004));
+  addLip(0.006, lipH, outerHalf, -(outerHalf + 0.004), lipH * 0.2, -chW * 0.15);
+  addLip(0.006, lipH, outerHalf, outerHalf + 0.004, lipH * 0.2, -chW * 0.15);
+  // Tiny outer cheek beside each hole (keeps marble in gutter → hole); no south mid gutter lip
+  addLip(0.006, lipH, holeR * 1.1, -(outerHalf + 0.004), lipH * 0.2, matHalf - holeR);
+  addLip(0.006, lipH, holeR * 1.1, outerHalf + 0.004, lipH * 0.2, matHalf - holeR);
 
-  // Catcher floors under holes (despawn / score when fallen)
+  // Catcher floors under holes
   for (const h of holeCentersLocal) {
     const catcher = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: woodMat,
     });
-    catcher.position.set(h.x, deskY - 0.12, h.z);
+    catcher.position.set(h.x, deskY - 0.14, h.z);
     catcher.addShape(new CANNON.Box(new CANNON.Vec3(holeR * 1.4, 0.01, holeR * 1.4)));
     bodies.push(catcher);
   }
 
-  // World-space hole centers (tilt is small — use local ≈ world XZ at desk height)
   const holeCenters = holeCentersLocal.map((h) => ({ x: h.x, z: h.z }));
 
   // ——— Right wing clutter ———
@@ -478,7 +633,8 @@ export function buildOfficeDesk(
     new THREE.CylinderGeometry(0.09, 0.08, 0.28, 14),
     new THREE.MeshStandardMaterial({ color: 0x333338, roughness: 0.55, metalness: 0.4 }),
   );
-  bin.position.set(0.35, deskY - deskThick - 0.35, 0.55);
+  const binH = 0.28;
+  bin.position.set(0.35, floorY + binH / 2, 0.55);
   bin.castShadow = true;
   root.add(bin);
   for (let i = 0; i < 4; i++) {
@@ -488,7 +644,7 @@ export function buildOfficeDesk(
     );
     scrap.position.set(
       0.35 + (i - 1.5) * 0.025,
-      deskY - deskThick - 0.22 + i * 0.01,
+      floorY + binH * 0.55 + i * 0.01,
       0.55 + (i % 2) * 0.02,
     );
     scrap.rotation.y = i * 0.5;
