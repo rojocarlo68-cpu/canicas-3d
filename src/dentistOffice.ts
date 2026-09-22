@@ -112,9 +112,11 @@ export function buildDentistOffice(
   overhead.position.set(-0.8, 2.2, 0.6);
   root.add(overhead);
 
-  // --- Dental chair (beside bowl) ---
+  // --- Dental chair (beside bowl) — scaled down vs cuspidor for proportions ---
   const chair = new THREE.Group();
-  chair.position.set(innerR + 0.42, 0, 0.05);
+  // Closer + smaller so it reads as furniture beside the spit bowl, not a giant
+  chair.position.set(innerR + 0.30, 0, 0.08);
+  chair.scale.setScalar(0.58);
   const chrome = mat(0xb0b8c0, { metalness: 0.85, roughness: 0.28 });
   const vinyl = mat(0x3d4550, { roughness: 0.65 });
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.08, 20), chrome);
@@ -333,27 +335,27 @@ export function buildDentistOffice(
   }
 
   // Key light mostly on the white spit bowl
-  const bowlKeyLight = new THREE.PointLight(0xfff8f0, 2.4, 1.6, 1.6);
+  const bowlKeyLight = new THREE.PointLight(0xfff8f0, 1.2, 1.6, 1.6);
   bowlKeyLight.position.set(0.05, floorY + wallH + 0.28, 0.08);
   bowlKeyLight.castShadow = true;
   bowlKeyLight.shadow.mapSize.set(512, 512);
   bowlKeyLight.shadow.bias = -0.0003;
   root.add(bowlKeyLight);
 
-  const bowlFill = new THREE.PointLight(0xddeeff, 0.55, 1.2, 2);
+  const bowlFill = new THREE.PointLight(0xddeeff, 0.28, 1.2, 2);
   bowlFill.position.set(-0.12, floorY + wallH + 0.15, -0.1);
   root.add(bowlFill);
 
   // Subtle under-glow on white ceramic
-  const bowlGlow = new THREE.PointLight(0xffffff, 0.35, 0.9, 2);
+  const bowlGlow = new THREE.PointLight(0xffffff, 0.18, 0.9, 2);
   bowlGlow.position.set(0, floorY + 0.04, 0);
   root.add(bowlGlow);
 
   let flickerT = 0;
   let nextFlicker = 2 + Math.random() * 4;
   let flickerBurst = 0;
-  const baseKey = 2.4;
-  const baseFill = 0.55;
+  const baseKey = 1.2;
+  const baseFill = 0.28;
 
   const build: DentistOfficeBuild = {
     root,
@@ -376,7 +378,7 @@ export function buildDentistOffice(
         if (flickerBurst <= 0) {
           bowlKeyLight.intensity = baseKey;
           bowlFill.intensity = baseFill;
-          bowlGlow.intensity = 0.35;
+          bowlGlow.intensity = 0.18;
           nextFlicker = 1.8 + Math.random() * 5.5;
           flickerT = 0;
         }

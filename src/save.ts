@@ -142,6 +142,22 @@ export function addToCollection(marble: CollectedMarble): SaveData {
   return s;
 }
 
+
+export function removeFromCollection(seed: string): SaveData {
+  const s = loadSave();
+  // Soft-lock: collaboration marble cannot be deleted
+  if (seed === COLLAB_MARBLE_SEED) return s;
+  const before = s.collection.length;
+  s.collection = s.collection.filter((c) => c.seed !== seed);
+  if (s.collection.length === before) return s;
+  if (s.equippedSkinSeed === seed) {
+    // Unequip to default procedural skin (null → createPlayerDesign)
+    s.equippedSkinSeed = null;
+  }
+  writeSave(s);
+  return s;
+}
+
 export function setEquippedSkin(seed: string | null): SaveData {
   const s = loadSave();
   s.equippedSkinSeed = seed;

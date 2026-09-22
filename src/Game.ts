@@ -574,7 +574,8 @@ export class Game {
   }
 
   private buildMarker(): void {
-    // Player hint: white ground ring only (no spike / arrow / beam)
+    // Player hint: white ground ring only (no spike / arrow / beam).
+    // Raised + polygonOffset so the FULL ring always draws (no half z-fight).
     const ringGeo = new THREE.RingGeometry(MARBLE_RADIUS * 2.4, MARBLE_RADIUS * 3.8, 40);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
@@ -582,9 +583,15 @@ export class Game {
       transparent: true,
       opacity: 0.95,
       depthWrite: false,
+      depthTest: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -8,
+      polygonOffsetUnits: -8,
     });
     this.markerRing = new THREE.Mesh(ringGeo, ringMat);
     this.markerRing.rotation.x = -Math.PI / 2;
+    this.markerRing.renderOrder = 30;
+    this.markerGroup.renderOrder = 30;
     this.markerGroup.add(this.markerRing);
 
   }
@@ -1296,7 +1303,7 @@ private spawnShootersInitial(): void {
 
   }
 
-  /** White silhouette outline that draws through rocks/props (X-ray findability). */
+  /** White silhouette — X-ray ONLY while occluded from camera (never when fully visible). */
   private attachPlayerOutline(player: MarbleEntity): void {
     this.clearPlayerOutline();
     const geo = new THREE.SphereGeometry(MARBLE_RADIUS * 1.16, 28, 22);
@@ -1305,12 +1312,13 @@ private spawnShootersInitial(): void {
       side: THREE.BackSide,
       transparent: true,
       opacity: 0.72,
-      depthTest: false, // draw through occluders
+      depthTest: false, // punch through occluders when shown
       depthWrite: false,
     });
     const outline = new THREE.Mesh(geo, mat);
     outline.renderOrder = 999;
     outline.frustumCulled = false;
+    outline.visible = false; // start hidden — beauty marble until occluded
     player.mesh.add(outline);
     this.playerOutline = outline;
   }
@@ -1323,10 +1331,66 @@ private spawnShootersInitial(): void {
     this.playerOutline = null;
   }
 
+  private readonly _outlineCam = new THREE.Vector3();
+  private readonly _outlineTarget = new THREE.Vector3();
+  private readonly _outlineDir = new THREE.Vector3();
+  private readonly _outlineRay = new THREE.Raycaster();
+
+  /** True if some scene mesh sits between the camera and the player marble. */
+  private isPlayerMarbleOccluded(): boolean {
+    if (!this.playerMarble?.active) return false;
+    const cam = this.camera.getWorldPosition(this._outlineCam);
+    const target = this.playerMarble.mesh.getWorldPosition(this._outlineTarget);
+    const dist = cam.distanceTo(target);
+    if (!(dist > MARBLE_RADIUS * 2)) return false;
+    this._outlineDir.subVectors(target, cam).normalize();
+    this._outlineRay.set(cam, this._outlineDir);
+    this._outlineRay.far = Math.max(0.001, dist - MARBLE_RADIUS * 0.9);
+    this._outlineRay.near = 0.01;
+    const hits = this._outlineRay.intersectObjects(this.scene.children, true);
+    const playerRoot = this.playerMarble.mesh;
+    for (const h of hits) {
+      let o: THREE.Object3D | null = h.object;
+      let skip = false;
+      while (o) {
+        if (o === playerRoot || o === this.playerOutline || o === this.markerGroup) {
+          skip = true;
+          break;
+        }
+        if (o === this.sky || o.name === 'stars') {
+          skip = true;
+          break;
+        }
+        o = o.parent;
+      }
+      if (skip) continue;
+      // Ignore pure overlay / non-solid helpers
+      const mat = (h.object as THREE.Mesh).material;
+      const mats = Array.isArray(mat) ? mat : mat ? [mat] : [];
+      if (
+        mats.length > 0 &&
+        mats.every(
+          (m) =>
+            m instanceof THREE.PointsMaterial ||
+            (m as THREE.Material).depthWrite === false &&
+              (m as THREE.Material).transparent === true &&
+              ((m as THREE.MeshBasicMaterial).opacity ?? 1) < 0.35,
+        )
+      ) {
+        continue;
+      }
+      if (h.distance < dist - MARBLE_RADIUS * 0.85) return true;
+    }
+    return false;
+  }
+
   private syncPlayerOutline(): void {
     if (!this.playerOutline || !this.playerMarble) return;
-    // Child of mesh — follows automatically; keep visible while player marble active
-    this.playerOutline.visible = this.playerMarble.active && this.playerMarble.mesh.visible;
+    if (!this.playerMarble.active || !this.playerMarble.mesh.visible) {
+      this.playerOutline.visible = false;
+      return;
+    }
+    this.playerOutline.visible = this.isPlayerMarbleOccluded();
   }
 
   private getActiveShooter(): MarbleEntity | null {
@@ -1415,7 +1479,7 @@ private spawnShootersInitial(): void {
     (this.markerRing.material as THREE.MeshBasicMaterial).opacity = 0.95;
     this.markerGroup.position.set(
       shooter.body.position.x,
-      PLAY_SURFACE_Y + 0.001,
+      PLAY_SURFACE_Y + 0.0045,
       shooter.body.position.z,
     );
     this.markerGroup.visible = true;
@@ -2888,6 +2952,7 @@ private spawnShootersInitial(): void {
       const shooter = this.getActiveShooter();
       if (shooter && (this.phase === 'playing' || this.phase === 'ai_thinking')) {
         this.markerGroup.position.x = shooter.body.position.x;
+        this.markerGroup.position.y = PLAY_SURFACE_Y + 0.0045;
         this.markerGroup.position.z = shooter.body.position.z;
       }
     }
@@ -3260,10 +3325,20 @@ private spawnShootersInitial(): void {
       const subject = this.aiMarble;
       if (!subject?.active) {
         d.toTarget.set(0, LOOK_MIN_Y, 0);
-        d.toPos.set(0.35, Math.max(CAM_MIN_Y, 0.4), 0.45);
+        // L3 default aim pose: open side of bowl (never over chair at +X)
+        if (this.sceneLevel === 3) {
+          d.toPos.set(-0.35, Math.max(CAM_MIN_Y, 0.42), 0.28);
+        } else {
+          d.toPos.set(0.35, Math.max(CAM_MIN_Y, 0.4), 0.45);
+        }
         clampCamAboveSurface(d.toPos, d.toTarget);
       } else {
-        frame = framingAIAim(subject, this.defaultCamAzimuth, portrait);
+        frame = framingAIAim(
+          subject,
+          this.defaultCamAzimuth,
+          portrait,
+          this.sceneLevel,
+        );
         d.toPos.copy(frame.pos);
         d.toTarget.copy(frame.target);
       }
@@ -3274,6 +3349,7 @@ private spawnShootersInitial(): void {
         this.defaultCamAzimuth,
         portrait,
         this._dirLook,
+        this.sceneLevel,
       );
       d.toPos.copy(frame.pos);
       d.toTarget.copy(frame.target);

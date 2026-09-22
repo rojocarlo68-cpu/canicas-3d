@@ -916,13 +916,14 @@ body {
 #options-overlay {
   position: fixed;
   inset: 0;
-  z-index: 110;
+  z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(4, 2, 1, 0.78);
   backdrop-filter: blur(6px);
   padding: 20px;
+  pointer-events: auto;
 }
 
 #level-pick.hidden,
@@ -960,6 +961,7 @@ body {
   position: absolute;
   top: 10px;
   right: 12px;
+  z-index: 5;
   width: 40px;
   height: 40px;
   border: none;
@@ -969,6 +971,10 @@ body {
   font-size: 28px;
   line-height: 1;
   cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .level-pick-actions {
@@ -1017,12 +1023,12 @@ body {
 }
 
 .gallery-card {
+  position: relative;
   appearance: none;
   border: 1px solid rgba(255, 224, 138, 0.22);
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.35);
   padding: 10px 8px;
-  cursor: pointer;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1036,7 +1042,23 @@ body {
   box-shadow: 0 0 16px rgba(255, 200, 80, 0.25);
 }
 
-.gallery-card:active {
+.gallery-equip {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  font: inherit;
+}
+
+.gallery-equip:active {
   transform: scale(0.97);
 }
 
@@ -1058,6 +1080,39 @@ body {
   text-transform: uppercase;
   color: #ffe08a;
   opacity: 0.85;
+}
+
+.gallery-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(180, 40, 40, 0.85);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gallery-delete:active {
+  transform: scale(0.92);
+  background: rgba(220, 50, 50, 1);
+}
+
+.gallery-locked {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9ad4ff;
+  opacity: 0.9;
 }
 
 /* Gacha overlay */

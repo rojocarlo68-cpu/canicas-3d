@@ -51,6 +51,7 @@ export function framingAIAim(
   subject: MarbleEntity,
   fallbackAz: number,
   portrait: boolean,
+  sceneLevel = 1,
 ): DirectorFraming {
   const p = subject.body.position;
   const px = Number.isFinite(p.x) ? p.x : 0;
@@ -59,6 +60,22 @@ export function framingAIAim(
     LOOK_MIN_Y,
     Number.isFinite(p.y) ? p.y : MARBLE_REST_Y,
   );
+
+  // L3: chair sits on +X of the cuspidor — never film from/over/through it.
+  // Prefer open (−X) side, elevated, looking at the AI marble + white bowl.
+  if (sceneLevel === 3) {
+    const up = portrait ? 0.36 : 0.44;
+    const pos = new THREE.Vector3(
+      Math.min(px, 0) - (portrait ? 0.28 : 0.36),
+      up,
+      pz + (portrait ? 0.18 : 0.24),
+    );
+    // Bias look slightly toward bowl center so ceramic rim stays readable
+    const target = new THREE.Vector3(px * 0.65, lookY, pz * 0.65);
+    clampCamAboveSurface(pos, target);
+    return { pos, target };
+  }
+
   const { dirX, dirZ } = radialBehind(px, pz, fallbackAz);
   // Perpendicular for a mild side offset (readable TV angle)
   const sx = -dirZ;
@@ -89,6 +106,7 @@ export function framingAIWide(
   fallbackAz: number,
   portrait: boolean,
   scratch: THREE.Vector3,
+  sceneLevel = 1,
 ): DirectorFraming {
   // Look toward circle center, biased by nearby active field marbles
   let lx = 0;
@@ -124,6 +142,24 @@ export function framingAIWide(
     scratch.set(0, LOOK_MIN_Y, 0);
   }
   if (scratch.y < LOOK_MIN_Y) scratch.y = LOOK_MIN_Y;
+
+  // L3 wide: elevated from open (−X / +Z) side looking down at bowl only —
+  // never pull back over the dentist chair (+X) which blacked out the view.
+  if (sceneLevel === 3) {
+    const elev = portrait ? 0.52 : 0.62;
+    const pos = new THREE.Vector3(
+      -0.48 + scratch.x * 0.15,
+      elev,
+      0.42 + scratch.z * 0.15,
+    );
+    const target = new THREE.Vector3(
+      scratch.x * 0.35,
+      Math.max(LOOK_MIN_Y, scratch.y),
+      scratch.z * 0.35,
+    );
+    clampCamAboveSurface(pos, target);
+    return { pos, target };
+  }
 
   const elev = portrait ? 0.58 : 0.72;
   const pull = portrait ? 0.78 : 0.98;

@@ -6,8 +6,10 @@ import {
   writeSave,
   hasSaveProgress,
   setEquippedSkin,
+  removeFromCollection,
   setSfxMute,
   setQuality,
+  COLLAB_MARBLE_SEED,
   type SaveData,
 } from './save';
 import { buildGameHref, buildMenuHref } from './levelSelect';
@@ -52,6 +54,7 @@ function refreshLoadButton(save: SaveData): void {
 }
 
 function renderGallery(save: SaveData): void {
+  ensureGalleryHandlers();
   const grid = $('gallery-grid');
   grid.innerHTML = '';
   if (save.collection.length === 0) {
@@ -59,8 +62,8 @@ function renderGallery(save: SaveData): void {
     return;
   }
   for (const item of save.collection) {
-    const card = document.createElement('button');
-    card.type = 'button';
+    const isCollab = item.seed === COLLAB_MARBLE_SEED;
+    const card = document.createElement('div');
     card.className = 'gallery-card' + (save.equippedSkinSeed === item.seed ? ' equipped' : '');
     card.title = item.description
       ? `${item.description} · Equipar como piel de tirador`
@@ -75,12 +78,40 @@ function renderGallery(save: SaveData): void {
     const badge = document.createElement('span');
     badge.className = 'gallery-badge';
     badge.textContent = save.equippedSkinSeed === item.seed ? 'Equipada' : 'Equipar';
-    card.append(canvas, name, badge);
-    card.addEventListener('click', () => {
+    const equipBtn = document.createElement('button');
+    equipBtn.type = 'button';
+    equipBtn.className = 'gallery-equip';
+    equipBtn.append(canvas, name, badge);
+    equipBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       const next = setEquippedSkin(item.seed);
       toast(`Equipada: ${item.name}`);
       renderGallery(next);
     });
+    card.appendChild(equipBtn);
+    if (isCollab) {
+      const lock = document.createElement('span');
+      lock.className = 'gallery-locked';
+      lock.textContent = 'Colab';
+      lock.title = 'Canica colaboración — no se puede eliminar';
+      card.appendChild(lock);
+    } else {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'gallery-delete';
+      del.setAttribute('aria-label', `Eliminar ${item.name}`);
+      del.title = 'Eliminar de la colección';
+      del.textContent = '×';
+      del.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const next = removeFromCollection(item.seed);
+        toast(`Eliminada: ${item.name}`);
+        renderGallery(next);
+      });
+      card.appendChild(del);
+    }
     grid.appendChild(card);
   }
 }
@@ -91,6 +122,27 @@ function syncOptions(save: SaveData): void {
   mute.checked = save.sfxMute;
   quality.value = save.quality;
   setMarbleAudioMuted(save.sfxMute);
+}
+
+
+/** Wire gallery close even when title menu is skipped (in-game / all levels). */
+let galleryHandlersBound = false;
+function ensureGalleryHandlers(): void {
+  if (galleryHandlersBound) return;
+  galleryHandlersBound = true;
+  const gallery = document.getElementById('gallery-overlay');
+  const btn = document.getElementById('btn-gallery-close');
+  if (!gallery || !btn) return;
+  const close = (e?: Event) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    gallery.classList.add('hidden');
+  };
+  btn.addEventListener('click', close);
+  // Backdrop click closes (same as pause overlay)
+  gallery.addEventListener('click', (e) => {
+    if (e.target === gallery) close(e);
+  });
 }
 
 export function initTitleMenu(): void {
@@ -152,7 +204,7 @@ export function initTitleMenu(): void {
     renderGallery(loadSave());
     gallery.classList.remove('hidden');
   });
-  $('btn-gallery-close').addEventListener('click', () => gallery.classList.add('hidden'));
+  ensureGalleryHandlers();
 
   $('btn-menu-options').addEventListener('click', () => {
     unlockMarbleAudio();
@@ -201,8 +253,10 @@ export function hideTitleMenu(): void {
 export function openGalleryFromGame(): void {
   const gallery = document.getElementById('gallery-overlay');
   if (!gallery) return;
+  ensureGalleryHandlers();
   renderGallery(loadSave());
   gallery.classList.remove('hidden');
+  gallery.setAttribute('aria-hidden', 'false');
 }
 
 export function applySaveAudio(): void {

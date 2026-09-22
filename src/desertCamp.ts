@@ -143,17 +143,18 @@ export function buildDesertCamp(
     mesh.receiveShadow = true;
     root.add(mesh);
 
-    // Solid mound ABOVE the pad — avoid deep underground spheres that wedge
-    // marbles under the ground box (AI sink / director digs underground).
-    const sr = Math.max(b.r * 1.05, b.h * 2.0 + 0.008);
+    // Solid mound: sphere matches flattened visual, sunk into pad so there is
+    // no undercut wedge against the ground plane (AI was embedding in props).
+    const yScale = 0.55 + (i % 3) * 0.12;
+    const sr = Math.max(b.r * 0.95, b.h * 1.6 + 0.006);
     const body = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stoneMat,
       shape: new CANNON.Sphere(sr),
     });
-    // Slight embed only (~28% of radius) so bottom stays near PLAY_SURFACE_Y
-    body.position.set(b.x, PLAY_SURFACE_Y + sr * 0.72, b.z);
+    // ~45% embed → bottom below PLAY_SURFACE_Y, contact face flush with pad
+    body.position.set(b.x, PLAY_SURFACE_Y + sr * (0.55 * yScale), b.z);
     bumpBodies.push(body);
   }
 
@@ -175,15 +176,15 @@ export function buildDesertCamp(
     dummy.updateMatrix();
     scat.setMatrixAt(si++, dummy.matrix);
 
-    const rockR = 0.12 * s * 0.85;
+    const rockR = 0.12 * s * 0.7;
     const body = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stoneMat,
       shape: new CANNON.Sphere(rockR),
     });
-    // Keep collider mostly above sand — prevents under-floor marble wedges
-    body.position.set(px, PLAY_SURFACE_Y + rockR * 0.72, pz);
+    // Embed into sand — no shelf for marbles to tunnel under
+    body.position.set(px, PLAY_SURFACE_Y + rockR * 0.45, pz);
     bumpBodies.push(body);
   }
   scat.count = si;
@@ -399,17 +400,17 @@ function buildCampfire(
     stone.castShadow = true;
     group.add(stone);
 
-    // Solid stone-ring collider (flames stay non-solid)
+    // Solid stone-ring collider (flames stay non-solid); embed to kill undercuts
     const stoneR = 0.055 + (i % 3) * 0.012;
     const body = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stonePhysMat,
-      shape: new CANNON.Sphere(stoneR * 0.95),
+      shape: new CANNON.Sphere(stoneR * 0.9),
     });
     body.position.set(
       x + Math.cos(a) * ringR,
-      PLAY_SURFACE_Y + stoneR * 0.72,
+      PLAY_SURFACE_Y + stoneR * 0.45,
       z + Math.sin(a) * ringR,
     );
     bumpBodies.push(body);
@@ -434,17 +435,17 @@ function buildCampfire(
     );
     group.add(log);
 
-    // Log collider (cylinder approximated as box along log axis)
+    // Log collider matches mesh (len 0.32, r≈0.03); embed so no ground wedge
     const logBody = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stonePhysMat,
-      shape: new CANNON.Box(new CANNON.Vec3(0.16, 0.028, 0.028)),
+      shape: new CANNON.Box(new CANNON.Vec3(0.16, 0.032, 0.032)),
     });
     const ang = (i / 3) * Math.PI + 0.2;
     logBody.position.set(
       x + Math.cos((i / 3) * Math.PI * 2) * 0.04,
-      PLAY_SURFACE_Y + 0.03,
+      PLAY_SURFACE_Y + 0.028,
       z + Math.sin((i / 3) * Math.PI * 2) * 0.04,
     );
     logBody.quaternion.setFromEuler(0, ang, 0);
@@ -618,14 +619,17 @@ function addCampSeating(
     log.receiveShadow = true;
     root.add(log);
 
-    // Log collider
+    // Log collider matches mesh (len 0.55, r≈0.075). Embed bottom below the
+    // sand so marbles cannot tunnel/wedge under the seating logs (AI stuck).
+    const halfLen = 0.28;
+    const halfR = 0.082;
     const logBody = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: stonePhysMat,
-      shape: new CANNON.Box(new CANNON.Vec3(0.275, 0.07, 0.07)),
+      shape: new CANNON.Box(new CANNON.Vec3(halfLen, halfR, halfR)),
     });
-    logBody.position.set(lx, PLAY_SURFACE_Y + 0.07, lz);
+    logBody.position.set(lx, PLAY_SURFACE_Y + halfR * 0.7, lz);
     logBody.quaternion.setFromEuler(0, s.ang + Math.PI / 2, 0);
     bumpBodies.push(logBody);
 
@@ -646,13 +650,15 @@ function addCampSeating(
       stone.castShadow = true;
       root.add(stone);
 
+      // Match flattened visual (scale.y 0.7) and embed into sand
+      const stoneR = 0.09;
       const stoneBody = new CANNON.Body({
         mass: 0,
         type: CANNON.Body.STATIC,
         material: stonePhysMat,
-        shape: new CANNON.Sphere(0.1),
+        shape: new CANNON.Sphere(stoneR),
       });
-      stoneBody.position.set(sx, PLAY_SURFACE_Y + 0.1 * 0.72, sz);
+      stoneBody.position.set(sx, PLAY_SURFACE_Y + stoneR * 0.45, sz);
       bumpBodies.push(stoneBody);
     }
   }
