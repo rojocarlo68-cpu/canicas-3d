@@ -71,8 +71,8 @@ import {
   createDesignFromSeed,
   randomMarbleSeed,
   paramsFromSeed,
-  paintSeedPreview,
 } from './proceduralMarble';
+import { MarbleShowcase } from './marbleShowcase';
 import { openGalleryFromGame } from './titleMenu';
 import {
   createAIDesign,
@@ -333,6 +333,14 @@ export class Game {
     endMessage: HTMLElement;
     endScore: HTMLElement;
     btnContinueLevel: HTMLButtonElement;
+    victoryOverlay: HTMLElement;
+    victoryWinner: HTMLElement;
+    victoryMoney: HTMLElement;
+    victoryMarbles: HTMLElement;
+    victoryMeta: HTMLElement;
+    victoryMarbleCanvas: HTMLCanvasElement;
+    btnVictoryMenu: HTMLButtonElement;
+    btnVictoryContinue: HTMLButtonElement;
     gachaOverlay: HTMLElement;
     gachaCase: HTMLElement;
     gachaReveal: HTMLElement;
@@ -366,6 +374,10 @@ export class Game {
 
   private playerDesign = createPlayerDesign();
   private aiDesign = createAIDesign();
+  private victoryShowcase: MarbleShowcase | null = null;
+  private gachaShowcase: MarbleShowcase | null = null;
+  /** Pending gacha seed while victory screen is up (generated on Continuar). */
+  private pendingGachaSeed: string | null = null;
   private fieldDesigns = createFieldDesigns(); // overwritten per scene in ctor
 
   private boundPointerDown: (e: PointerEvent) => void;
@@ -396,6 +408,14 @@ export class Game {
       endMessage: document.getElementById('end-message')!,
       endScore: document.getElementById('end-score')!,
       btnContinueLevel: document.getElementById('btn-continue-level') as HTMLButtonElement,
+      victoryOverlay: document.getElementById('victory-overlay')!,
+      victoryWinner: document.getElementById('victory-winner')!,
+      victoryMoney: document.getElementById('victory-money')!,
+      victoryMarbles: document.getElementById('victory-marbles')!,
+      victoryMeta: document.getElementById('victory-meta')!,
+      victoryMarbleCanvas: document.getElementById('victory-marble-canvas') as HTMLCanvasElement,
+      btnVictoryMenu: document.getElementById('btn-victory-menu') as HTMLButtonElement,
+      btnVictoryContinue: document.getElementById('btn-victory-continue') as HTMLButtonElement,
       gachaOverlay: document.getElementById('gacha-overlay')!,
       gachaCase: document.getElementById('gacha-case')!,
       gachaReveal: document.getElementById('gacha-reveal')!,
@@ -924,7 +944,15 @@ export class Game {
     this.els.btnReplay.addEventListener('click', () => this.startReplay());
     this.els.btnEndReplay.addEventListener('click', () => this.startReplay());
     this.els.btnContinueLevel.addEventListener('click', () => this.continueToNextLevel());
-    this.els.btnGachaContinue.addEventListener('click', () => this.finishGachaAndShowEnd());
+    this.els.btnVictoryMenu.addEventListener('click', () => {
+      this.hideVictoryScreen();
+      window.location.href = buildMenuHref();
+    });
+    this.els.btnVictoryContinue.addEventListener('click', () => {
+      this.hideVictoryScreen();
+      this.startVictoryGacha();
+    });
+    this.els.btnGachaContinue.addEventListener('click', () => this.finishGachaAndContinue());
     this.els.btnPauseGallery?.addEventListener('click', () => {
       openGalleryFromGame();
     });
@@ -1111,6 +1139,7 @@ export class Game {
     this.removeShooter('ai');
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
+    this.hideVictoryScreen();
     this.replay.clear();
     this.recording = true;
     this.camEase = null;
@@ -2467,8 +2496,8 @@ private spawnShootersInitial(): void {
     this.updateTurnHUD();
 
     if (won) {
-      // Victory gacha first, then end card + Continuar
-      this.startVictoryGacha();
+      // Victory UI first → Continuar opens gacha → then next level / menú
+      this.showVictoryScreen(p, a);
     } else {
       this.els.endScreen.classList.remove('hidden');
     }
@@ -2484,6 +2513,8 @@ private spawnShootersInitial(): void {
     this.commentator?.hide(); /* caster:restart */
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
+    this.hideVictoryScreen();
+    this.pendingGachaSeed = null;
     resetBriefcase(this.briefcase);
     this.clearFieldMarbles();
     this.removeShooter('player');
@@ -3801,8 +3832,39 @@ private spawnShootersInitial(): void {
     window.location.href = buildMenuHref();
   }
 
+  private showVictoryScreen(playerScore: number, aiScore: number): void {
+    this.els.endScreen.classList.add('hidden');
+    this.els.gachaOverlay.classList.add('hidden');
+    const aiMoney = aiScore * MONEY_PER_KNOCKOUT;
+    const scoringVerb =
+      this.sceneLevel === 3 ? 'Canicas al hoyo' : 'Canicas sacadas';
+    this.els.victoryWinner.textContent = '¡Ganaste el partido!';
+    this.els.victoryMoney.textContent =
+      `Dinero · Tú $${this.playerMoney} · ${this.opponentName} $${aiMoney}`;
+    this.els.victoryMarbles.textContent =
+      `${scoringVerb} · Tú ${playerScore} · ${this.opponentName} ${aiScore}`;
+    this.els.victoryMeta.textContent =
+      `${sceneLevelLabel(this.sceneLevel)} · Rival: ${this.opponentName}`;
+
+    this.els.victoryOverlay.classList.remove('hidden');
+    this.els.victoryOverlay.setAttribute('aria-hidden', 'false');
+
+    if (!this.victoryShowcase) {
+      this.victoryShowcase = new MarbleShowcase(this.els.victoryMarbleCanvas);
+    }
+    // Equipped shooter — battle materials, slow spin in the ring hole
+    this.victoryShowcase.show(this.playerDesign);
+  }
+
+  private hideVictoryScreen(): void {
+    this.els.victoryOverlay.classList.add('hidden');
+    this.els.victoryOverlay.setAttribute('aria-hidden', 'true');
+    this.victoryShowcase?.stop();
+  }
+
   private startVictoryGacha(): void {
     this.els.endScreen.classList.add('hidden');
+    this.hideVictoryScreen();
     this.els.gachaOverlay.classList.remove('hidden');
     this.els.gachaOverlay.setAttribute('aria-hidden', 'false');
     this.els.gachaReveal.classList.add('hidden');
@@ -3811,20 +3873,28 @@ private spawnShootersInitial(): void {
     this.els.gachaStatus.classList.remove('hidden');
     this.els.gachaStatus.textContent = 'Generando canica única…';
 
-    const seed = randomMarbleSeed(`L${this.sceneLevel}`);
+    const seed = this.pendingGachaSeed ?? randomMarbleSeed(`L${this.sceneLevel}`);
+    this.pendingGachaSeed = seed;
     const params = paramsFromSeed(seed);
+    const rewardDesign = createDesignFromSeed(seed);
 
     // Spin + lightning beat, then open
     window.setTimeout(() => {
+      if (this.els.gachaOverlay.classList.contains('hidden')) return;
       this.els.gachaStatus.textContent = 'Abriendo maletín…';
       this.els.gachaCase.classList.remove('spinning');
       this.els.gachaCase.classList.add('open');
     }, 1600);
 
     window.setTimeout(() => {
-      paintSeedPreview(this.els.gachaMarbleCanvas, seed);
+      if (this.els.gachaOverlay.classList.contains('hidden')) return;
+      if (!this.gachaShowcase) {
+        this.gachaShowcase = new MarbleShowcase(this.els.gachaMarbleCanvas);
+      }
+      this.gachaShowcase.show(rewardDesign);
       this.els.gachaMarbleName.textContent = params.name;
-      this.els.gachaMarbleSub.textContent = 'Añadida a tu colección · puedes equiparla en Galería';
+      this.els.gachaMarbleSub.textContent =
+        'Añadida a tu colección · puedes equiparla en Galería';
       this.els.gachaStatus.classList.add('hidden');
       this.els.gachaReveal.classList.remove('hidden');
       addToCollection({
@@ -3834,13 +3904,16 @@ private spawnShootersInitial(): void {
         fromLevel: this.sceneLevel,
       });
       // Auto-equip the new marble as shooter skin
-      this.playerDesign = createDesignFromSeed(seed);
+      this.playerDesign = rewardDesign;
+      this.pendingGachaSeed = null;
     }, 2300);
   }
 
-  private finishGachaAndShowEnd(): void {
+  private finishGachaAndContinue(): void {
     this.els.gachaOverlay.classList.add('hidden');
     this.els.gachaOverlay.setAttribute('aria-hidden', 'true');
-    this.els.endScreen.classList.remove('hidden');
+    this.gachaShowcase?.stop();
+    // After reward, advance (next level or title) — victory already showed the match card
+    this.continueToNextLevel();
   }
 }

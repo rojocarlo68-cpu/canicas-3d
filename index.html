@@ -111,6 +111,28 @@
         </div>
       </div>
 
+
+      <!-- Victory screen (before gacha) -->
+      <div id="victory-overlay" class="hidden" aria-hidden="true">
+        <div id="victory-bg" aria-hidden="true"></div>
+        <div id="victory-content">
+          <h1 id="victory-title" class="victoria-fire" aria-label="Victoria">VICTORIA</h1>
+          <div id="victory-ring-slot">
+            <canvas id="victory-marble-canvas" width="320" height="320" aria-label="Canica equipada"></canvas>
+          </div>
+          <div id="victory-summary">
+            <p id="victory-winner"></p>
+            <p id="victory-money"></p>
+            <p id="victory-marbles"></p>
+            <p id="victory-meta"></p>
+          </div>
+          <div id="victory-actions">
+            <button id="btn-victory-menu" class="premium-btn victory-btn" type="button">Menú</button>
+            <button id="btn-victory-continue" class="premium-btn victory-btn" type="button">Continuar</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Victory gacha -->
       <div id="gacha-overlay" class="hidden" aria-hidden="true">
         <div id="gacha-stage">
@@ -122,7 +144,7 @@
           </div>
           <div id="gacha-reveal" class="hidden">
             <div id="gacha-pad">
-              <canvas id="gacha-marble-canvas" width="220" height="220"></canvas>
+              <canvas id="gacha-marble-canvas" width="320" height="320"></canvas>
             </div>
             <h2 id="gacha-marble-name">Canica única</h2>
             <p id="gacha-marble-sub">Añadida a tu colección</p>

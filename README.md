@@ -26,9 +26,11 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 | Zoom | Rueda / pellizca |
 | Soltar canicas | Botón maletín (Drop) |
 
-### Gacha / colección
+### Victoria → Gacha / colección
 
-Al ganar un nivel se abre un maletín con VFX eléctrico; se genera una canica única (seed procedural) que entra en la **Galería**. Desde Galería puedes equiparla como piel del tirador. Progreso en `localStorage` (niveles, colección, skin, mute).
+Al ganar un nivel: **pantalla de Victoria** (fondo jardín japonés, canica 3D equipada girando en el anillo, texto VICTORIA, resumen del partido, Menú / Continuar) → **Continuar** abre el maletín gacha con la recompensa como **canica 3D** (mismos materiales de batalla) → colección / siguiente nivel. Desde Galería puedes equipar skins. Progreso en `localStorage`.
+
+IA: suelo de competencia elevado en todos los niveles, con progresión clara L1 < L2 < L3 (puntería, potencia, consistencia).
 
 
 ## Escenas / niveles de mapa

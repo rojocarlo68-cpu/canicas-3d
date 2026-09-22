@@ -14,10 +14,11 @@ export type AIArenaMode = 'circle_out' | 'hole_in';
  * L1 easier → L2 better → L3 strongest aim / power / consistency.
  */
 function skillForLevel(level: number): number {
+  // Raised floor so L1 is a fair challenge (not incompetent), still L1 < L2 < L3.
   const lv = Math.max(1, Math.min(3, Math.floor(level)));
-  if (lv <= 1) return 0.18;
-  if (lv === 2) return 0.58;
-  return 0.92;
+  if (lv <= 1) return 0.44;
+  if (lv === 2) return 0.70;
+  return 0.94;
 }
 
 /**
@@ -33,7 +34,7 @@ export function planAIShot(
   holeRadius = MARBLE_RADIUS,
 ): AIShotPlan {
   const skill = skillForLevel(level);
-  const noiseAmp = Math.max(0.03, 0.62 - skill * 0.58);
+  const noiseAmp = Math.max(0.028, 0.42 - skill * 0.42);
 
   const candidates: { m: MarbleEntity; score: number; tx: number; tz: number }[] = [];
   for (const m of field) {
@@ -119,7 +120,7 @@ export function planAIShot(
   const ideal =
     0.32 + Math.min(0.58, distShot / (CIRCLE_RADIUS * 2.2));
   // Higher skill → less power noise, slight bias toward ideal+
-  const powerNoise = (Math.random() * 2 - 1) * (0.3 - skill * 0.26);
+  const powerNoise = (Math.random() * 2 - 1) * (0.2 - skill * 0.17);
   const powerBoost = skill * 0.08;
   const power01 = Math.max(0.12, Math.min(1, ideal + powerNoise + powerBoost));
 

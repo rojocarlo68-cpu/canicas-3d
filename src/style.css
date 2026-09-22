@@ -1115,6 +1115,194 @@ body {
   opacity: 0.9;
 }
 
+
+/* ——— Victory screen (before gacha) ——— */
+#victory-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 34;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+#victory-overlay.hidden {
+  display: none;
+}
+
+#victory-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    url('/canicas-3d/ui/victory-bg.png') center center / cover no-repeat,
+    #050308;
+  filter: saturate(1.05) brightness(0.95);
+}
+
+#victory-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding:
+    max(12px, env(safe-area-inset-top))
+    16px
+    max(16px, env(safe-area-inset-bottom));
+  box-sizing: border-box;
+  text-align: center;
+  color: #fff6d8;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+}
+
+#victory-title.victoria-fire {
+  margin: clamp(8px, 3vh, 28px) 0 0;
+  font-size: clamp(42px, 12vw, 78px);
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  background: linear-gradient(
+    180deg,
+    #fff8dc 0%,
+    #ffe08a 22%,
+    #ffb300 48%,
+    #ff6a00 78%,
+    #ff3d00 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter:
+    drop-shadow(0 0 10px rgba(255, 160, 40, 0.85))
+    drop-shadow(0 0 28px rgba(255, 90, 0, 0.55))
+    drop-shadow(0 4px 2px rgba(80, 20, 0, 0.65));
+  animation: victoria-shimmer 2.4s ease-in-out infinite;
+  position: relative;
+  z-index: 3;
+}
+
+@keyframes victoria-shimmer {
+  0%, 100% {
+    filter:
+      drop-shadow(0 0 8px rgba(255, 180, 60, 0.75))
+      drop-shadow(0 0 22px rgba(255, 80, 0, 0.45))
+      drop-shadow(0 4px 2px rgba(80, 20, 0, 0.65));
+    transform: scale(1);
+  }
+  50% {
+    filter:
+      drop-shadow(0 0 16px rgba(255, 220, 120, 1))
+      drop-shadow(0 0 36px rgba(255, 120, 0, 0.75))
+      drop-shadow(0 0 48px rgba(255, 60, 0, 0.4))
+      drop-shadow(0 4px 2px rgba(80, 20, 0, 0.65));
+    transform: scale(1.03);
+  }
+}
+
+/* Sit the 3D marble in the glowing ring hole of victory-bg.png */
+#victory-ring-slot {
+  position: absolute;
+  left: 50%;
+  top: 46.5%;
+  transform: translate(-50%, -50%);
+  width: min(34vw, 28vh, 220px);
+  height: min(34vw, 28vh, 220px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#victory-marble-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 50%;
+  background: transparent;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.75))
+    drop-shadow(0 0 18px rgba(255, 200, 100, 0.35));
+}
+
+#victory-summary {
+  position: absolute;
+  left: 50%;
+  top: 68%;
+  transform: translateX(-50%);
+  width: min(92vw, 420px);
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: rgba(8, 4, 2, 0.55);
+  border: 1px solid rgba(255, 210, 120, 0.35);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 3;
+}
+
+#victory-summary p {
+  margin: 4px 0;
+  font-size: clamp(13px, 3.2vw, 16px);
+  line-height: 1.4;
+}
+
+#victory-winner {
+  font-size: clamp(16px, 4vw, 20px) !important;
+  font-weight: 800;
+  color: #ffe08a;
+}
+
+#victory-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 18px;
+  gap: 12px;
+  z-index: 4;
+}
+
+.victory-btn {
+  min-width: 120px;
+}
+
+#btn-victory-menu {
+  background: linear-gradient(180deg, #90caf9, #42a5f5);
+  color: #0d2137;
+}
+
+#btn-victory-continue {
+  margin-left: auto;
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  #victory-title.victoria-fire {
+    font-size: clamp(28px, 8vh, 48px);
+    margin-top: 4px;
+  }
+  #victory-ring-slot {
+    width: min(26vw, 42vh, 180px);
+    height: min(26vw, 42vh, 180px);
+    top: 48%;
+  }
+  #victory-summary {
+    top: auto;
+    bottom: 64px;
+    padding: 8px 12px;
+  }
+  #victory-summary p {
+    font-size: 12px;
+    margin: 2px 0;
+  }
+}
+
 /* Gacha overlay */
 #gacha-overlay {
   position: absolute;
@@ -1256,18 +1444,13 @@ body {
 }
 
 #gacha-marble-canvas {
-  width: 180px;
-  height: 180px;
+  width: 200px;
+  height: 200px;
   border-radius: 50%;
-  animation: marble-showcase-spin 6s linear infinite;
   filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.7))
     drop-shadow(-8px -4px 16px rgba(255, 220, 160, 0.35));
-  background: #000;
-}
-
-@keyframes marble-showcase-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  background: transparent;
+  display: block;
 }
 
 #gacha-marble-name {
