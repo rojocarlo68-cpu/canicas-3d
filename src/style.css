@@ -1641,3 +1641,167 @@ body {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ——— Gallery apply / import-export ——— */
+.gallery-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 8px 0 12px;
+}
+.gallery-toolbar-bottom {
+  margin-top: 14px;
+  margin-bottom: 4px;
+}
+.gallery-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  accent-color: #5eead4;
+}
+.gallery-card {
+  position: relative;
+}
+.gallery-card.selected {
+  outline: 2px solid #5eead4;
+  box-shadow: 0 0 14px rgba(94, 234, 212, 0.45);
+}
+
+/* ——— Title FX ——— */
+#title-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+}
+.title-sparkle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff9c4 0%, #ffd54f 45%, transparent 70%);
+  box-shadow: 0 0 8px rgba(255, 213, 79, 0.9);
+  animation: title-sparkle-twinkle ease-in-out infinite;
+  opacity: 0;
+}
+@keyframes title-sparkle-twinkle {
+  0%, 100% { opacity: 0; transform: scale(0.4); }
+  40% { opacity: 1; transform: scale(1.2); }
+  70% { opacity: 0.35; transform: scale(0.8); }
+}
+.title-ghost-marble {
+  position: absolute;
+  width: clamp(28px, 8vw, 48px);
+  height: clamp(28px, 8vw, 48px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.55), transparent 42%),
+    radial-gradient(circle at 50% 50%, var(--gm-color), rgba(0,0,0,0.35));
+  opacity: 0.28;
+  filter: blur(0.3px);
+  animation: title-ghost-drift linear infinite;
+  box-shadow: inset 0 0 12px rgba(255,255,255,0.25);
+}
+@keyframes title-ghost-drift {
+  0% { transform: translate(0, 0) scale(1); opacity: 0.18; }
+  35% { transform: translate(18px, -28px) scale(1.08); opacity: 0.32; }
+  70% { transform: translate(-12px, -48px) scale(0.95); opacity: 0.22; }
+  100% { transform: translate(8px, -72px) scale(1.05); opacity: 0.05; }
+}
+
+/* ——— Victory glitter ——— */
+#victory-confetti {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+.victory-glitter {
+  position: absolute;
+  top: -12px;
+  border-radius: 2px;
+  opacity: 0.9;
+  box-shadow: 0 0 6px rgba(255, 215, 0, 0.7);
+  animation: victory-fall linear infinite;
+}
+@keyframes victory-fall {
+  0% { transform: translateY(0) rotate(0deg); opacity: 0; }
+  8% { opacity: 1; }
+  100% { transform: translateY(110vh) rotate(420deg); opacity: 0.15; }
+}
+
+/* ——— L4 Personalizar ——— */
+.l4-personalizar {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  /* Sit just left of the circular action cluster (top-right), not under it */
+  right: max(86px, calc(env(safe-area-inset-right) + 76px));
+  z-index: 22;
+  font-size: 13px;
+  padding: 8px 12px;
+  pointer-events: auto;
+}
+#l4-mat-menu {
+  position: absolute;
+  inset: 0;
+  z-index: 36;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: max(48px, env(safe-area-inset-top)) 12px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+#l4-mat-menu.hidden {
+  display: none;
+}
+.l4-mat-card {
+  background: rgba(12, 8, 6, 0.92);
+  border: 1px solid rgba(255, 200, 120, 0.35);
+  border-radius: 12px;
+  padding: 14px;
+  width: min(280px, 92vw);
+  color: #f5e6c8;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.l4-mat-card h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+#l4-mat-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.l4-mat-preset {
+  appearance: none;
+  border: 1px solid rgba(255, 200, 120, 0.3);
+  background: rgba(40, 24, 12, 0.8);
+  color: #ffe8c0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.l4-mat-preset.active {
+  border-color: #5eead4;
+  box-shadow: 0 0 10px rgba(94, 234, 212, 0.35);
+}
+.l4-mat-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  opacity: 0.9;
+}
+.l4-mat-upload input {
+  font-size: 12px;
+}

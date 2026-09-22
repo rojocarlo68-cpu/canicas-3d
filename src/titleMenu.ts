@@ -11,11 +11,13 @@ import {
   setSfxMute,
   setQuality,
   setPlayerName,
+  exportCollectionJSON,
+  importCollectionJSON,
   DEFAULT_PLAYER_NAME,
   COLLAB_MARBLE_SEED,
   type SaveData,
 } from './save';
-import { buildGameHref, buildMenuHref } from './levelSelect';
+import { buildGameHref, buildMenuHref, type SceneLevel } from './levelSelect';
 import { resolveControlMode } from './controlMode';
 import { paintSeedPreview, paramsFromSeed } from './proceduralMarble';
 import { setMarbleAudioMuted, unlockMarbleAudio } from './marbleSounds';
@@ -38,7 +40,18 @@ function toast(msg: string): void {
   }, 2200);
 }
 
-function navigateToLevel(level: 1 | 2 | 3, opts?: { load?: boolean }): void {
+/** Optional live apply when gallery opened mid-match. */
+let onApplySkinLive: ((seed: string) => void) | null = null;
+let pendingSelectSeed: string | null = null;
+let justApplied = false;
+
+export function setGalleryLiveApplyHandler(
+  handler: ((seed: string) => void) | null,
+): void {
+  onApplySkinLive = handler;
+}
+
+function navigateToLevel(level: SceneLevel, opts?: { load?: boolean }): void {
   const control = resolveControlMode();
   let href = buildGameHref(control, level);
   if (opts?.load) {
@@ -67,21 +80,107 @@ function refreshLoadButton(save: SaveData): void {
   }
 }
 
+function syncApplyButtons(): void {
+  const hasPending =
+    !!pendingSelectSeed &&
+    pendingSelectSeed !== loadSave().equippedSkinSeed &&
+    !justApplied;
+  const label = hasPending ? 'Aplicar' : 'Cerrar';
+  for (const id of ['btn-gallery-apply-top', 'btn-gallery-apply-bottom']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (!btn) continue;
+    btn.textContent = label;
+    btn.dataset.mode = hasPending ? 'apply' : 'close';
+  }
+}
+
+function closeGallery(): void {
+  const gallery = document.getElementById('gallery-overlay');
+  gallery?.classList.add('hidden');
+  gallery?.setAttribute('aria-hidden', 'true');
+  pendingSelectSeed = null;
+  justApplied = false;
+  syncApplyButtons();
+}
+
+function applyPendingSkin(): boolean {
+  const seed = pendingSelectSeed;
+  if (!seed) return false;
+  const next = setEquippedSkin(seed);
+  onApplySkinLive?.(seed);
+  const name =
+    next.collection.find((c) => c.seed === seed)?.name ||
+    paramsFromSeed(seed).name;
+  toast(`Aplicada: ${name}`);
+  justApplied = true;
+  pendingSelectSeed = seed;
+  renderGallery(next);
+  syncApplyButtons();
+  return true;
+}
+
+function onApplyOrCloseClick(e: Event): void {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget as HTMLButtonElement;
+  if (btn.dataset.mode === 'apply') {
+    applyPendingSkin();
+  } else {
+    closeGallery();
+  }
+}
+
+function downloadCollection(seeds: string[] | null): void {
+  const json = exportCollectionJSON(seeds);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tama-collection-${new Date().toISOString().slice(0, 10)}.tama-collection.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Exportado · .tama-collection.json');
+}
+
+function selectedSeedsFromUI(): string[] {
+  const boxes = document.querySelectorAll<HTMLInputElement>(
+    '#gallery-grid input.gallery-check:checked',
+  );
+  return [...boxes].map((b) => b.value).filter(Boolean);
+}
+
 function renderGallery(save: SaveData): void {
   ensureGalleryHandlers();
   const grid = $('gallery-grid');
   grid.innerHTML = '';
   if (save.collection.length === 0) {
-    grid.innerHTML = '<p class="gallery-empty">Aún no tienes canicas únicas. Gana un nivel para abrir el maletín gacha.</p>';
+    grid.innerHTML =
+      '<p class="gallery-empty">Aún no tienes canicas únicas. Gana un nivel para abrir el maletín gacha.</p>';
+    syncApplyButtons();
     return;
   }
   for (const item of save.collection) {
     const isCollab = item.seed === COLLAB_MARBLE_SEED;
+    const selected = pendingSelectSeed === item.seed;
+    const equipped = save.equippedSkinSeed === item.seed;
     const card = document.createElement('div');
-    card.className = 'gallery-card' + (save.equippedSkinSeed === item.seed ? ' equipped' : '');
+    card.className =
+      'gallery-card' +
+      (equipped ? ' equipped' : '') +
+      (selected ? ' selected' : '');
     card.title = item.description
-      ? `${item.description} · Equipar como piel de tirador`
-      : 'Equipar como piel de tirador';
+      ? `${item.description} · Seleccionar piel`
+      : 'Seleccionar como piel de tirador';
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'gallery-check';
+    check.value = item.seed;
+    check.title = 'Seleccionar para exportar';
+    check.addEventListener('click', (e) => e.stopPropagation());
+
     const canvas = document.createElement('canvas');
     canvas.width = 96;
     canvas.height = 96;
@@ -91,7 +190,7 @@ function renderGallery(save: SaveData): void {
     name.textContent = item.name || paramsFromSeed(item.seed).name;
     const badge = document.createElement('span');
     badge.className = 'gallery-badge';
-    badge.textContent = save.equippedSkinSeed === item.seed ? 'Equipada' : 'Equipar';
+    badge.textContent = equipped ? 'Equipada' : selected ? 'Elegida' : 'Elegir';
     const equipBtn = document.createElement('button');
     equipBtn.type = 'button';
     equipBtn.className = 'gallery-equip';
@@ -99,11 +198,12 @@ function renderGallery(save: SaveData): void {
     equipBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const next = setEquippedSkin(item.seed);
-      toast(`Equipada: ${item.name}`);
-      renderGallery(next);
+      pendingSelectSeed = item.seed;
+      justApplied = false;
+      renderGallery(loadSave());
+      syncApplyButtons();
     });
-    card.appendChild(equipBtn);
+    card.append(check, equipBtn);
     if (isCollab) {
       const lock = document.createElement('span');
       lock.className = 'gallery-locked';
@@ -120,14 +220,21 @@ function renderGallery(save: SaveData): void {
       del.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        const ok = window.confirm(
+          `¿Eliminar «${item.name}» de la colección?\nEsta acción no se puede deshacer.`,
+        );
+        if (!ok) return;
         const next = removeFromCollection(item.seed);
+        if (pendingSelectSeed === item.seed) pendingSelectSeed = null;
         toast(`Eliminada: ${item.name}`);
         renderGallery(next);
+        syncApplyButtons();
       });
       card.appendChild(del);
     }
     grid.appendChild(card);
   }
+  syncApplyButtons();
 }
 
 function syncOptions(save: SaveData): void {
@@ -149,12 +256,61 @@ function ensureGalleryHandlers(): void {
   const close = (e?: Event) => {
     e?.preventDefault();
     e?.stopPropagation();
-    gallery.classList.add('hidden');
+    closeGallery();
   };
   btn.addEventListener('click', close);
-  // Backdrop click closes (same as pause overlay)
   gallery.addEventListener('click', (e) => {
     if (e.target === gallery) close(e);
+  });
+
+  for (const id of ['btn-gallery-apply-top', 'btn-gallery-apply-bottom']) {
+    document.getElementById(id)?.addEventListener('click', onApplyOrCloseClick);
+  }
+
+  document.getElementById('btn-gallery-select-all')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const boxes = document.querySelectorAll<HTMLInputElement>(
+      '#gallery-grid input.gallery-check',
+    );
+    const allOn = [...boxes].every((b) => b.checked);
+    boxes.forEach((b) => {
+      b.checked = !allOn;
+    });
+  });
+
+  document.getElementById('btn-gallery-export')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const selected = selectedSeedsFromUI();
+    if (selected.length === 0) {
+      const all = loadSave().collection.map((c) => c.seed);
+      if (!window.confirm('No hay casillas marcadas. ¿Exportar toda la colección?')) {
+        return;
+      }
+      downloadCollection(all);
+    } else {
+      downloadCollection(selected);
+    }
+  });
+
+  const importInput = document.getElementById(
+    'gallery-import-file',
+  ) as HTMLInputElement | null;
+  document.getElementById('btn-gallery-import')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    importInput?.click();
+  });
+  importInput?.addEventListener('change', async () => {
+    const file = importInput.files?.[0];
+    importInput.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const { added, skipped, save } = importCollectionJSON(text);
+      toast(`Importadas ${added} · omitidas ${skipped}`);
+      renderGallery(save);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Error al importar');
+    }
   });
 }
 
@@ -198,6 +354,73 @@ function openNamePrompt(onDone: (name: string) => void): void {
   }, 30);
 }
 
+/** Title sparkles + translucent ghost marbles over the art. */
+function startTitleFX(): void {
+  const wrap = document.getElementById('title-art-wrap');
+  if (!wrap || wrap.dataset.fxReady === '1') return;
+  wrap.dataset.fxReady = '1';
+
+  const fx = document.createElement('div');
+  fx.id = 'title-fx';
+  fx.setAttribute('aria-hidden', 'true');
+  wrap.appendChild(fx);
+
+  // Sparkles
+  for (let i = 0; i < 28; i++) {
+    const s = document.createElement('span');
+    s.className = 'title-sparkle';
+    s.style.left = `${8 + Math.random() * 84}%`;
+    s.style.top = `${5 + Math.random() * 55}%`;
+    s.style.animationDelay = `${Math.random() * 3}s`;
+    s.style.animationDuration = `${1.8 + Math.random() * 2.4}s`;
+    fx.appendChild(s);
+  }
+
+  // Ghost marbles
+  const colors = ['#4fc3f7', '#ce93d8', '#ef5350', '#66bb6a', '#ffd54f', '#eceff1', '#212121'];
+  for (let i = 0; i < 7; i++) {
+    const g = document.createElement('span');
+    g.className = 'title-ghost-marble';
+    g.style.setProperty('--gm-color', colors[i]!);
+    g.style.left = `${10 + i * 12}%`;
+    g.style.top = `${48 + (i % 3) * 8}%`;
+    g.style.animationDelay = `${i * 0.55}s`;
+    g.style.animationDuration = `${7 + (i % 4)}s`;
+    fx.appendChild(g);
+  }
+}
+
+/** Golden glitter confetti on victory overlay. */
+export function startVictoryConfetti(): void {
+  const overlay = document.getElementById('victory-overlay');
+  if (!overlay) return;
+  let layer = document.getElementById('victory-confetti');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = 'victory-confetti';
+    layer.setAttribute('aria-hidden', 'true');
+    overlay.appendChild(layer);
+  }
+  layer.innerHTML = '';
+  const colors = ['#ffd700', '#ffe082', '#fff8e1', '#ffb300', '#ffecb3', '#ff8f00'];
+  for (let i = 0; i < 60; i++) {
+    const p = document.createElement('span');
+    p.className = 'victory-glitter';
+    p.style.left = `${Math.random() * 100}%`;
+    p.style.background = colors[i % colors.length]!;
+    p.style.animationDelay = `${Math.random() * 2.5}s`;
+    p.style.animationDuration = `${2.8 + Math.random() * 2.5}s`;
+    p.style.width = `${4 + Math.random() * 6}px`;
+    p.style.height = `${4 + Math.random() * 8}px`;
+    layer.appendChild(p);
+  }
+}
+
+export function stopVictoryConfetti(): void {
+  const layer = document.getElementById('victory-confetti');
+  if (layer) layer.innerHTML = '';
+}
+
 export function initTitleMenu(): void {
   const title = $('title-screen');
   const levelPick = $('level-pick');
@@ -207,6 +430,7 @@ export function initTitleMenu(): void {
   const save = loadSave();
   refreshLoadButton(save);
   syncOptions(save);
+  startTitleFX();
 
   $('btn-menu-new').addEventListener('click', () => {
     unlockMarbleAudio();
@@ -237,21 +461,36 @@ export function initTitleMenu(): void {
     }
     navigateToLevel(3);
   });
+  $('btn-level-4').addEventListener('click', () => {
+    unlockMarbleAudio();
+    const s = loadSave();
+    if (!s.unlockedLevels.includes(4)) {
+      toast('Nivel 4 bloqueado — gana el Nivel 3');
+      return;
+    }
+    navigateToLevel(4);
+  });
   $('btn-level-pick-close').addEventListener('click', () => levelPick.classList.add('hidden'));
 
   $('btn-menu-load').addEventListener('click', () => {
     unlockMarbleAudio();
     const s = loadSave();
     if (s.matchSnapshot) {
-      navigateToLevel(s.matchSnapshot.sceneLevel as 1 | 2 | 3, { load: true });
+      navigateToLevel(s.matchSnapshot.sceneLevel as SceneLevel, { load: true });
       return;
     }
     if (!hasSaveProgress() && s.unlockedLevels.length <= 1 && s.collection.length === 0) {
       toast('No hay partida guardada');
       return;
     }
-    const lvl = s.unlockedLevels.includes(3) ? 3 : s.unlockedLevels.includes(2) ? 2 : 1;
-    navigateToLevel(lvl as 1 | 2 | 3);
+    const lvl = s.unlockedLevels.includes(4)
+      ? 4
+      : s.unlockedLevels.includes(3)
+        ? 3
+        : s.unlockedLevels.includes(2)
+          ? 2
+          : 1;
+    navigateToLevel(lvl as SceneLevel);
   });
 
   $('btn-menu-multi').addEventListener('click', () => {
@@ -260,8 +499,11 @@ export function initTitleMenu(): void {
 
   $('btn-menu-gallery').addEventListener('click', () => {
     unlockMarbleAudio();
+    pendingSelectSeed = loadSave().equippedSkinSeed;
+    justApplied = true; // already equipped → Cerrar
     renderGallery(loadSave());
     gallery.classList.remove('hidden');
+    syncApplyButtons();
   });
   ensureGalleryHandlers();
 
@@ -284,18 +526,17 @@ export function initTitleMenu(): void {
   });
 
   // Update lock badges
-  const l2 = $('btn-level-2');
-  if (!save.unlockedLevels.includes(2)) {
-    l2.classList.add('locked');
-    const sub = l2.querySelector('.menu-sub');
-    if (sub) sub.textContent = 'Bloqueado';
-  }
-  const l3 = $('btn-level-3');
-  if (!save.unlockedLevels.includes(3)) {
-    l3.classList.add('locked');
-    const sub = l3.querySelector('.menu-sub');
-    if (sub) sub.textContent = 'Bloqueado';
-  }
+  const lockLevel = (id: string, unlocked: boolean) => {
+    const el = $(id);
+    if (!unlocked) {
+      el.classList.add('locked');
+      const sub = el.querySelector('.menu-sub');
+      if (sub) sub.textContent = 'Bloqueado';
+    }
+  };
+  lockLevel('btn-level-2', save.unlockedLevels.includes(2));
+  lockLevel('btn-level-3', save.unlockedLevels.includes(3));
+  lockLevel('btn-level-4', save.unlockedLevels.includes(4));
 
   title.classList.remove('hidden');
 }
@@ -314,9 +555,12 @@ export function openGalleryFromGame(): void {
   const gallery = document.getElementById('gallery-overlay');
   if (!gallery) return;
   ensureGalleryHandlers();
+  pendingSelectSeed = loadSave().equippedSkinSeed;
+  justApplied = true;
   renderGallery(loadSave());
   gallery.classList.remove('hidden');
   gallery.setAttribute('aria-hidden', 'false');
+  syncApplyButtons();
 }
 
 export function applySaveAudio(): void {

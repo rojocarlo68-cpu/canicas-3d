@@ -32,6 +32,18 @@
           </div>
         </div>
 
+        <button id="btn-l4-personalizar" class="hidden premium-btn l4-personalizar" type="button" title="Personalizar playmat">Personalizar</button>
+        <div id="l4-mat-menu" class="hidden" role="dialog" aria-label="Playmat">
+          <div class="l4-mat-card">
+            <h3>Playmat</h3>
+            <div id="l4-mat-presets"></div>
+            <label class="l4-mat-upload">
+              Subir imagen
+              <input id="l4-mat-file" type="file" accept="image/*" />
+            </label>
+            <button id="btn-l4-mat-close" type="button" class="premium-btn secondary">Cerrar</button>
+          </div>
+        </div>
         <div id="ui-actions" aria-label="Acciones">
           <button id="btn-drop" class="ui-img-btn" type="button" title="Soltar canicas" aria-label="Soltar canicas">
             <img src="ui/btn-drop.png" alt="" draggable="false" />
@@ -118,6 +130,7 @@
       <!-- Victory screen (before gacha) -->
       <div id="victory-overlay" class="hidden" aria-hidden="true">
         <div id="victory-bg" aria-hidden="true"></div>
+        <div id="victory-confetti" aria-hidden="true"></div>
         <div id="victory-content">
           <h1 id="victory-title" class="victoria-fire" aria-label="Victoria">VICTORIA</h1>
           <div id="victory-ring-slot">
@@ -221,6 +234,10 @@
             Nivel 3 · Consultorio
             <span class="menu-sub">Dentist cuspidor</span>
           </button>
+          <button id="btn-level-4" type="button" class="premium-btn secondary">
+            Nivel 4 · Escritorio
+            <span class="menu-sub">Mahogany desk</span>
+          </button>
         </div>
       </div>
     </div>
@@ -229,8 +246,18 @@
       <div class="modal-card gallery-card-wrap">
         <button id="btn-gallery-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
         <h2 class="neon-text">Galería</h2>
-        <p class="modal-hint">Toca una canica para equiparla. La × elimina de la colección (colab protegida).</p>
+        <p class="modal-hint">Elige una canica → <strong>Aplicar</strong> cambia solo la piel del tirador. Casillas + Exportar/Importar (.tama-collection.json). Colab protegida.</p>
+        <div class="gallery-toolbar">
+          <button id="btn-gallery-apply-top" type="button" class="premium-btn" data-mode="close">Cerrar</button>
+          <button id="btn-gallery-select-all" type="button" class="premium-btn secondary">Seleccionar todas</button>
+          <button id="btn-gallery-export" type="button" class="premium-btn secondary">Exportar</button>
+          <button id="btn-gallery-import" type="button" class="premium-btn secondary">Importar</button>
+          <input id="gallery-import-file" type="file" accept=".json,.tama-collection.json,application/json" hidden />
+        </div>
         <div id="gallery-grid"></div>
+        <div class="gallery-toolbar gallery-toolbar-bottom">
+          <button id="btn-gallery-apply-bottom" type="button" class="premium-btn" data-mode="close">Cerrar</button>
+        </div>
       </div>
     </div>
 

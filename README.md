@@ -15,6 +15,7 @@ Juego de canicas en 3D: **Jugador vs IA**, física con cannon-es, cámara tácti
 - Nivel 1: https://rojocarlo68-cpu.github.io/canicas-3d/?level=1
 - Nivel 2: https://rojocarlo68-cpu.github.io/canicas-3d/?level=2
 - Nivel 3: https://rojocarlo68-cpu.github.io/canicas-3d/?level=3
+- Nivel 4: https://rojocarlo68-cpu.github.io/canicas-3d/?level=4
 
 ### Controles (PC)
 
@@ -38,6 +39,7 @@ IA: suelo de competencia elevado en todos los niveles, con progresión clara L1 
 - **Nivel 1 (Parque):** `?level=1` — parque día/noche (ciclo 30 min).
 - **Nivel 2 (Campamento):** `?level=2` — desierto de noche con fogata, montañas y círculo imperfecto en arena.
 - **Nivel 3 (Consultorio):** `?level=3` — dentist office; play vessel = white cuspidor/spit bowl. After drop settle, center opens as a hole. Score = field marbles into the hole. Personal marble into hole or out of bowl = lose that marble / match. AI skill L1 < L2 < L3.
+- **Nivel 4 (Escritorio):** `?level=4` — L-shaped mahogany desk (messy office). Playmat on left wing with carved wood gutters on all 4 sides leading to two south-corner holes; subtle south tilt. **Interim scoring:** field marbles that fall into the corner holes count like L1 knockouts (HUD: “hoyos de esquina”). **Personalizar** (top-right) swaps playmat presets (avocado / neon / candy / checker) or upload custom image. Same core turn/camera/save as prior levels.
 
 ### Canica colaboración
 **Lazo Marblus–Carlo** — en la Galería por defecto (equipable). Diseño: doble hélice cian (Marblus) + ámbar (Carlo) fusionadas en vidrio.
@@ -155,3 +157,23 @@ npm run preview
 ## Licencia
 
 Proyecto de demostración.
+
+
+## Colección · import / export
+
+Desde **Galería**:
+1. Marca casillas (o **Seleccionar todas**).
+2. **Exportar** descarga `tama-collection-YYYY-MM-DD.tama-collection.json` (JSON portable con `seed`, `name`, metadata). Ideal para pasar por Telegram teléfono→PC.
+3. **Importar** abre un file picker y **fusiona** canicas nuevas (omite duplicados por `seed`).
+
+Formato mínimo:
+```json
+{
+  "format": "tama-collection",
+  "version": 1,
+  "exportedAt": 0,
+  "marbles": [{ "seed": "...", "name": "...", "createdAt": 0 }]
+}
+```
+
+**Aplicar / Cerrar:** elige una canica → **Aplicar** (arriba y abajo) cambia solo la piel del tirador en la partida actual; luego el botón pasa a **Cerrar**.

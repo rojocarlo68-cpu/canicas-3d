@@ -58,6 +58,7 @@ import {
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
 import { buildDentistOffice, type DentistOfficeBuild, L3_BOWL_INNER_R } from './dentistOffice';
+import { buildOfficeDesk, type OfficeDeskBuild } from './officeDesk';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
   createSpyBriefcase,
@@ -82,7 +83,12 @@ import {
   paramsFromSeed,
 } from './proceduralMarble';
 import { MarbleShowcase } from './marbleShowcase';
-import { openGalleryFromGame } from './titleMenu';
+import {
+  openGalleryFromGame,
+  setGalleryLiveApplyHandler,
+  startVictoryConfetti,
+  stopVictoryConfetti,
+} from './titleMenu';
 import {
   createAIDesign,
   createFieldDesigns,
@@ -150,9 +156,10 @@ export class Game {
   private parkLife: ParkLife | null = null;
   private desertCamp: DesertCampBuild | null = null;
   private dentistOffice: DentistOfficeBuild | null = null;
+  private officeDesk: OfficeDeskBuild | null = null;
   /** Player marble X-ray outline (visible through occluders). */
   private playerOutline: THREE.Mesh | null = null;
-  /** Map / scene from URL (?level=1 park, ?level=2 desert, ?level=3 dentist). */
+  /** Map / scene from URL (?level=1..4). */
   private sceneLevel: SceneLevel = requireSceneLevel(1);
   private sunDir = new THREE.Vector3();
   /** Elapsed seconds for the 30-min day/night cycle (independent of match reset). */
@@ -478,8 +485,12 @@ export class Game {
       this.sceneLevel === 3 ? createLevel3FieldDesigns() : createFieldDesigns();
     // AI skill tier follows map level (L1 easy → L3 strongest)
     this.level = this.sceneLevel;
+    this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
     this.updateScoreHUD();
     this.applyControlModeUI();
+    if (this.sceneLevel === 4) {
+      document.getElementById('btn-l4-personalizar')?.classList.remove('hidden');
+    }
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -692,11 +703,13 @@ export class Game {
     const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 64, 64);
     const groundMat3 = new THREE.MeshStandardMaterial({
       color:
-        this.sceneLevel === 3
-          ? '#2a2e32'
-          : this.sceneLevel === 2
-            ? '#c4a574'
-            : '#5a7a42',
+        this.sceneLevel === 4
+          ? '#b8a888'
+          : this.sceneLevel === 3
+            ? '#2a2e32'
+            : this.sceneLevel === 2
+              ? '#c4a574'
+              : '#5a7a42',
       roughness: 0.95,
       metalness: 0.0,
     });
@@ -812,6 +825,7 @@ export class Game {
       // Night desert camp (mountains, sand, campfire) — same gameplay
       this.desertCamp = buildDesertCamp(this.scene, this.groundMat);
       this.dentistOffice = null;
+      this.officeDesk = null;
       for (const b of this.desertCamp.bumpBodies) {
         this.world.addBody(b);
       }
@@ -836,6 +850,7 @@ export class Game {
       this.desertCamp = null;
       this.parkLife = null;
       this.streetLamps = [];
+      this.officeDesk = null;
       this.dentistOffice = buildDentistOffice(this.scene, this.groundMat);
       for (const b of this.dentistOffice.bodies) {
         this.world.addBody(b);
@@ -857,12 +872,48 @@ export class Game {
       this.sunLight.intensity = 0.12;
       this.scene.fog = new THREE.FogExp2(0x0a0c10, 0.045);
       if (this.sky) this.sky.visible = false;
+    } else if (this.sceneLevel === 4) {
+      this.desertCamp = null;
+      this.dentistOffice = null;
+      this.parkLife = null;
+      this.streetLamps = [];
+      this.officeDesk = buildOfficeDesk(this.scene, this.groundMat);
+      for (const b of this.officeDesk.bodies) {
+        this.world.addBody(b);
+      }
+      // Mat: higher friction / harder texture — slower roll than wood channels
+      this.world.addContactMaterial(
+        new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
+          friction: 0.82,
+          restitution: 0.22,
+          contactEquationStiffness: 1e7,
+          contactEquationRelaxation: 3,
+        }),
+      );
+      this.world.addContactMaterial(
+        new CANNON.ContactMaterial(this.officeDesk.woodMat, getMarbleCannonMaterial(), {
+          friction: 0.28,
+          restitution: 0.36,
+          contactEquationStiffness: 1e7,
+          contactEquationRelaxation: 3,
+        }),
+      );
+      this.dayNightTime = DAY_CYCLE_SECONDS * 0.35;
+      this.playFillLight.intensity = 0.08;
+      this.playFillLight.distance = 1.4;
+      this.playFillLight.color.setHex(0xffd0a0);
+      this.hemiLight.intensity = 0.35;
+      this.sunLight.intensity = 0.45;
+      this.scene.fog = new THREE.FogExp2(0xd8c8b0, 0.02);
+      if (this.sky) this.sky.visible = false;
+      this.groundMesh.visible = false;
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
       this.parkLife = new ParkLife(this.scene);
       this.desertCamp = null;
       this.dentistOffice = null;
+      this.officeDesk = null;
       this.dayNightTime = DAY_CYCLE_SECONDS * 0.18; // late morning
     }
     this.syncDayNight();
@@ -879,6 +930,15 @@ export class Game {
       this.hemiLight.intensity = 0.16;
       this.playFillLight.intensity = 0.03;
       this.renderer.toneMappingExposure = 0.85;
+      return;
+    }
+    if (this.sceneLevel === 4) {
+      fog.color.setHex(0xd8c8b0);
+      fog.density = 0.018;
+      this.sunLight.intensity = 0.4;
+      this.hemiLight.intensity = 0.32;
+      this.playFillLight.intensity = 0.06;
+      this.renderer.toneMappingExposure = 1.05;
       return;
     }
     applyDayNight(this.dayNightTime, {
@@ -987,6 +1047,8 @@ export class Game {
     this.els.btnPauseGallery?.addEventListener('click', () => {
       openGalleryFromGame();
     });
+    setGalleryLiveApplyHandler((seed) => this.applyPlayerSkinLive(seed));
+    this.bindL4Personalizar();
     this.els.btnPauseSave?.addEventListener('click', () => {
       unlockMarbleAudio();
       this.saveMatchCheckpoint();
@@ -1083,7 +1145,9 @@ export class Game {
       this.els.instructions.textContent =
         this.sceneLevel === 3
           ? `L3 Escupidera: mete canicas de campo al HOYO. Tu canica al hoyo o fuera del bowl = pierdes. IA L3.`
-          : `Pulsa el botón de soltar (~10 cm). Luego turnos ${this.playerName} ↔ ${this.opponentName}.`;
+          : this.sceneLevel === 4
+            ? `L4 Escritorio: saca canicas al canal → hoyos SO/SE (cuentan como KO). Personalizar = playmat.`
+            : `Pulsa el botón de soltar (~10 cm). Luego turnos ${this.playerName} ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent =
         this.sceneLevel === 3
@@ -1094,7 +1158,9 @@ export class Game {
         this.turn === 'player'
           ? this.sceneLevel === 3
             ? `${modeHint} · Meta: hoyo · No caigas al hoyo ni fuera del bowl`
-            : modeHint
+            : this.sceneLevel === 4
+              ? `${modeHint} · Meta: hoyos de esquina (canales)`
+              : modeHint
           : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
       this.els.instructions.textContent =
@@ -2362,6 +2428,7 @@ private spawnShootersInitial(): void {
     }
 
     const l3 = this.sceneLevel === 3;
+    const l4 = this.sceneLevel === 4;
     const holeOpen = l3 && !!this.dentistOffice?.holeOpen;
 
     // L3: personal marble into hole OR out of bowl = loss of that marble / match
@@ -2374,10 +2441,13 @@ private spawnShootersInitial(): void {
       if (!m.active) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
       const fallen = m.body.position.y < -0.05;
-      // L1/L2: out of chalk circle. L3: into the center hole (or fallen through).
+      const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
+      // L1/L2: out of chalk circle. L3: into the center hole. L4: corner channel holes.
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
-        : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
+        : l4
+          ? inL4Hole || fallen
+          : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
       // L3 also despawn if they somehow leave the bowl
       const leftBowl = l3 && dist > CIRCLE_RADIUS + OUT_MARGIN * 4;
 
@@ -2517,11 +2587,15 @@ private spawnShootersInitial(): void {
     const beatMsg =
       this.sceneLevel === 3
         ? `Metiste más canicas al hoyo que ${this.opponentName}.`
-        : `Sacaste más canicas del círculo que ${this.opponentName}.`;
+        : this.sceneLevel === 4
+          ? `Metiste más canicas a los hoyos del escritorio que ${this.opponentName}.`
+          : `Sacaste más canicas del círculo que ${this.opponentName}.`;
     const loseMsg =
       this.sceneLevel === 3
         ? `${this.opponentName} metió más canicas al hoyo. ¡Inténtalo de nuevo!`
-        : `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
+        : this.sceneLevel === 4
+          ? `${this.opponentName} metió más canicas a los hoyos. ¡Inténtalo de nuevo!`
+          : `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
 
     if (won) {
       this.commentator?.say('win', { force: true, preferLower: false }); /* caster:win */
@@ -2530,7 +2604,7 @@ private spawnShootersInitial(): void {
         this.forcedWinner === 'player'
           ? `La canica rival salió del bowl / cayó al hoyo. ${beatMsg}`
           : beatMsg;
-      // Unlock next map: L1→L2→L3
+      // Unlock next map: L1→L2→L3→L4
       if (this.sceneLevel === 1) {
         unlockLevel(2);
         this.pendingContinueLevel = 2;
@@ -2541,8 +2615,13 @@ private spawnShootersInitial(): void {
         this.pendingContinueLevel = 3;
         this.els.btnContinueLevel.textContent = 'Continuar · Nivel 3';
         this.els.btnContinueLevel.classList.remove('hidden');
+      } else if (this.sceneLevel === 3) {
+        unlockLevel(4);
+        this.pendingContinueLevel = 4;
+        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 4';
+        this.els.btnContinueLevel.classList.remove('hidden');
       } else {
-        unlockLevel(3);
+        unlockLevel(4);
         this.els.btnContinueLevel.textContent = 'Menú título';
         this.els.btnContinueLevel.classList.remove('hidden');
         this.pendingContinueLevel = null;
@@ -2559,7 +2638,9 @@ private spawnShootersInitial(): void {
       this.els.endMessage.textContent =
         this.sceneLevel === 3
           ? 'Misma cantidad de canicas en el hoyo. ¡Casi!'
-          : 'Misma cantidad de canicas fuera. ¡Casi!';
+          : this.sceneLevel === 4
+            ? 'Misma cantidad de canicas en los hoyos. ¡Casi!'
+            : 'Misma cantidad de canicas fuera. ¡Casi!';
     }
     this.els.endScore.textContent =
       `${this.playerName} ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA L${this.sceneLevel})`;
@@ -3547,6 +3628,9 @@ private spawnShootersInitial(): void {
     if (this.dentistOffice) {
       this.dentistOffice.update(dt);
     }
+    if (this.officeDesk) {
+      this.officeDesk.update(dt);
+    }
     this.syncPlayerOutline();
 
     if (this.phase === 'replay') {
@@ -3934,6 +4018,7 @@ private spawnShootersInitial(): void {
    */
   private cullExitsWithoutScore(): void {
     const l3 = this.sceneLevel === 3;
+    const l4 = this.sceneLevel === 4;
     const holeOpen = l3 && !!this.dentistOffice?.holeOpen;
 
     for (const m of this.fieldMarbles) {
@@ -3941,9 +4026,12 @@ private spawnShootersInitial(): void {
       if (!this.scoringMarbles.has(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
       const fallen = m.body.position.y < -0.05;
+      const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
-        : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
+        : l4
+          ? inL4Hole || fallen
+          : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
       const leftBowl = l3 && dist > CIRCLE_RADIUS + OUT_MARGIN * 4;
       if (!(scored || leftBowl || fallen)) continue;
 
@@ -4299,6 +4387,96 @@ private spawnShootersInitial(): void {
     this.updateTurnHUD();
   }
 
+
+  /** L4 interim: marble in either south-corner channel hole (or fallen into pit). */
+  private isInL4Hole(x: number, y: number, z: number): boolean {
+    const desk = this.officeDesk;
+    if (!desk) return false;
+    if (y < PLAY_SURFACE_Y - 0.04) {
+      // Fallen below desk near a hole
+      for (const h of desk.holeCenters) {
+        if (Math.hypot(x - h.x, z - h.z) < desk.holeRadius * 2.2) return true;
+      }
+    }
+    for (const h of desk.holeCenters) {
+      if (Math.hypot(x - h.x, z - h.z) < desk.holeRadius + OUT_MARGIN) {
+        // Must be at/near channel height or below mat
+        if (y < PLAY_SURFACE_Y + MARBLE_RADIUS * 1.5) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Mid-match: swap only the player shooter mesh/material; keep pose & match state. */
+  private applyPlayerSkinLive(seed: string): void {
+    try {
+      const design = createDesignFromSeed(seed);
+      this.playerDesign = design;
+      const player = this.playerMarble;
+      if (!player) return;
+      const old = player.mesh.material;
+      player.mesh.material = design.material.clone();
+      player.design = design;
+      if (Array.isArray(old)) old.forEach((m) => m.dispose());
+      else old.dispose();
+      // Re-attach outline if it was a child (material swap keeps children)
+      if (!this.playerOutline || this.playerOutline.parent !== player.mesh) {
+        this.attachPlayerOutline(player);
+      }
+    } catch {
+      /* ignore bad seed */
+    }
+  }
+
+  private bindL4Personalizar(): void {
+    const btn = document.getElementById('btn-l4-personalizar');
+    const menu = document.getElementById('l4-mat-menu');
+    const presetsEl = document.getElementById('l4-mat-presets');
+    const file = document.getElementById('l4-mat-file') as HTMLInputElement | null;
+    const closeBtn = document.getElementById('btn-l4-mat-close');
+    if (!btn || !menu || !presetsEl) return;
+
+    const refreshPresets = () => {
+      const desk = this.officeDesk;
+      presetsEl.innerHTML = '';
+      if (!desk) return;
+      for (const p of desk.getMatPresets()) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className =
+          'l4-mat-preset' + (desk.currentMatId === p.id ? ' active' : '');
+        b.textContent = p.label;
+        b.addEventListener('click', () => {
+          desk.setMatPreset(p.id);
+          refreshPresets();
+        });
+        presetsEl.appendChild(b);
+      }
+    };
+
+    btn.addEventListener('click', () => {
+      if (this.sceneLevel !== 4 || !this.officeDesk) return;
+      refreshPresets();
+      menu.classList.remove('hidden');
+    });
+    closeBtn?.addEventListener('click', () => menu.classList.add('hidden'));
+    menu.addEventListener('click', (e) => {
+      if (e.target === menu) menu.classList.add('hidden');
+    });
+    file?.addEventListener('change', () => {
+      const f = file.files?.[0];
+      file.value = '';
+      if (!f || !this.officeDesk) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result || '');
+        if (url) this.officeDesk?.setMatFromDataUrl(url);
+        refreshPresets();
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+
   private applyEquippedSkinFromSave(): void {
     const save = loadSave();
     if (save.equippedSkinSeed) {
@@ -4331,11 +4509,15 @@ private spawnShootersInitial(): void {
 
   private continueToNextLevel(): void {
     const control = resolveControlMode();
-    if (this.pendingContinueLevel === 2 || this.pendingContinueLevel === 3) {
+    if (
+      this.pendingContinueLevel === 2 ||
+      this.pendingContinueLevel === 3 ||
+      this.pendingContinueLevel === 4
+    ) {
       window.location.href = buildGameHref(control, this.pendingContinueLevel);
       return;
     }
-    // L3 victory or no next → title
+    // L4 victory or no next → title
     window.location.href = buildMenuHref();
   }
 
@@ -4344,7 +4526,11 @@ private spawnShootersInitial(): void {
     this.els.gachaOverlay.classList.add('hidden');
     const aiMoney = aiScore * MONEY_PER_KNOCKOUT;
     const scoringVerb =
-      this.sceneLevel === 3 ? 'Canicas al hoyo' : 'Canicas sacadas';
+      this.sceneLevel === 3
+        ? 'Canicas al hoyo'
+        : this.sceneLevel === 4
+          ? 'Canicas a hoyos de esquina'
+          : 'Canicas sacadas';
     this.els.victoryWinner.textContent = '¡Ganaste el partido!';
     this.els.victoryMoney.textContent =
       `Dinero · ${this.playerName} $${this.playerMoney} · ${this.opponentName} $${aiMoney}`;
@@ -4355,6 +4541,7 @@ private spawnShootersInitial(): void {
 
     this.els.victoryOverlay.classList.remove('hidden');
     this.els.victoryOverlay.setAttribute('aria-hidden', 'false');
+    startVictoryConfetti();
 
     if (!this.victoryShowcase) {
       this.victoryShowcase = new MarbleShowcase(this.els.victoryMarbleCanvas);
@@ -4366,6 +4553,7 @@ private spawnShootersInitial(): void {
   private hideVictoryScreen(): void {
     this.els.victoryOverlay.classList.add('hidden');
     this.els.victoryOverlay.setAttribute('aria-hidden', 'true');
+    stopVictoryConfetti();
     this.victoryShowcase?.stop();
   }
 

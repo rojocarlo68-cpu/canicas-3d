@@ -35,7 +35,7 @@ export type MarbleBodySnap = {
 export type MatchSnapshot = {
   version: 1;
   savedAt: number;
-  sceneLevel: 1 | 2 | 3;
+  sceneLevel: 1 | 2 | 3 | 4;
   phase:
     | 'ready'
     | 'dropping'
@@ -122,7 +122,7 @@ function ensureCollab(collection: CollectedMarble[]): CollectedMarble[] {
 }
 
 function normalizeLevels(levels: number[]): number[] {
-  const allowed = levels.filter((n) => n === 1 || n === 2 || n === 3);
+  const allowed = levels.filter((n) => n === 1 || n === 2 || n === 3 || n === 4);
   const set = new Set(allowed.length ? allowed : [1]);
   if (!set.has(1)) set.add(1);
   return [...set].sort((a, b) => a - b);
@@ -307,6 +307,7 @@ export function hasSaveProgress(): boolean {
     s.collection.length > 1 ||
     s.unlockedLevels.includes(2) ||
     s.unlockedLevels.includes(3) ||
+    s.unlockedLevels.includes(4) ||
     (!!s.equippedSkinSeed && s.equippedSkinSeed !== COLLAB_MARBLE_SEED) ||
     s.playerMoney > 0 ||
     (s.playerName !== DEFAULT_PLAYER_NAME && s.playerName.length > 0)
@@ -324,4 +325,77 @@ export function formatSaveToast(snap: MatchSnapshot): string {
   const nombre = snap.playerName || DEFAULT_PLAYER_NAME;
   const label = snap.label ? ` ${snap.label}` : '';
   return `Guardado. [${nivel}, ${fecha}. ${nombre}]${label}`;
+}
+
+
+/** Portable collection file format (Telegram phone↔PC friendly). */
+export type CollectionExport = {
+  format: 'tama-collection';
+  version: 1;
+  exportedAt: number;
+  marbles: CollectedMarble[];
+};
+
+export function exportCollectionJSON(seeds?: string[] | null): string {
+  const s = loadSave();
+  const set = seeds && seeds.length ? new Set(seeds) : null;
+  const marbles = set
+    ? s.collection.filter((c) => set.has(c.seed))
+    : [...s.collection];
+  const payload: CollectionExport = {
+    format: 'tama-collection',
+    version: 1,
+    exportedAt: Date.now(),
+    marbles,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+/** Merge imported marbles; skip dupes by seed. Returns count added. */
+export function importCollectionJSON(raw: string): { added: number; skipped: number; save: SaveData } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('JSON inválido');
+  }
+  const list: CollectedMarble[] = [];
+  if (parsed && typeof parsed === 'object') {
+    const o = parsed as Record<string, unknown>;
+    const arr = Array.isArray(o.marbles)
+      ? o.marbles
+      : Array.isArray(o.collection)
+        ? o.collection
+        : Array.isArray(parsed)
+          ? parsed
+          : [];
+    for (const item of arr) {
+      if (!item || typeof item !== 'object') continue;
+      const m = item as Record<string, unknown>;
+      if (typeof m.seed !== 'string' || !m.seed) continue;
+      list.push({
+        seed: m.seed,
+        name: typeof m.name === 'string' && m.name ? m.name : 'Canica',
+        createdAt: typeof m.createdAt === 'number' ? m.createdAt : Date.now(),
+        fromLevel: typeof m.fromLevel === 'number' ? m.fromLevel : undefined,
+        description: typeof m.description === 'string' ? m.description : undefined,
+      });
+    }
+  }
+  const s = loadSave();
+  const have = new Set(s.collection.map((c) => c.seed));
+  let added = 0;
+  let skipped = 0;
+  for (const m of list) {
+    if (have.has(m.seed)) {
+      skipped++;
+      continue;
+    }
+    s.collection.push(m);
+    have.add(m.seed);
+    added++;
+  }
+  s.collection = ensureCollab(s.collection);
+  writeSave(s);
+  return { added, skipped, save: s };
 }
