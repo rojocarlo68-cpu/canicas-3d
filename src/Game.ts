@@ -66,7 +66,16 @@ import {
   updateBriefcase,
   type SpyBriefcase,
 } from './briefcase';
-import { loadSave, unlockLevel, addToCollection } from './save';
+import {
+  loadSave,
+  unlockLevel,
+  addToCollection,
+  writeMatchSnapshot,
+  formatSaveToast,
+  DEFAULT_PLAYER_NAME,
+  type MatchSnapshot,
+  type MarbleBodySnap,
+} from './save';
 import {
   createDesignFromSeed,
   randomMarbleSeed,
@@ -251,7 +260,12 @@ export class Game {
 
   /** Running player balance ($2 per knockout). */
   private playerMoney = 0;
+  /** Display name from save / name prompt (default Jugador1). */
+  private playerName = DEFAULT_PLAYER_NAME;
   private commentator: SportsCommentator | null = null;
+  /** Pairs that already contacted during the current shot (near-miss bookkeeping). */
+  private shotContactPairs = new Set<string>();
+  private nearMissCooldownUntil = 0;
 
   /** Field marbles still inside the circle after the post-drop freeze (scoring set). */
   private scoringMarbles = new Set<MarbleEntity>();
@@ -319,6 +333,7 @@ export class Game {
     btnReplay: HTMLButtonElement;
     btnEndReplay: HTMLButtonElement;
     scorePlayer: HTMLElement;
+    scorePlayerName: HTMLElement;
     scoreAI: HTMLElement;
     scoreAIName: HTMLElement;
     scoreMoney: HTMLElement;
@@ -350,6 +365,8 @@ export class Game {
     gachaMarbleSub: HTMLElement;
     btnGachaContinue: HTMLButtonElement;
     btnPauseGallery: HTMLButtonElement | null;
+    btnPauseSave: HTMLButtonElement | null;
+    btnPauseLoad: HTMLButtonElement | null;
     btnPauseMenu: HTMLButtonElement | null;
     settleBanner: HTMLElement;
     instructions: HTMLElement;
@@ -368,6 +385,7 @@ export class Game {
     replayScrub: HTMLInputElement;
     replaySpeed: HTMLSelectElement;
     moneyToast: HTMLElement;
+    gameToast: HTMLElement | null;
     punchOverlay: HTMLElement;
     gameRoot: HTMLElement;
   };
@@ -394,6 +412,7 @@ export class Game {
       btnReplay: document.getElementById('btn-replay') as HTMLButtonElement,
       btnEndReplay: document.getElementById('btn-end-replay') as HTMLButtonElement,
       scorePlayer: document.getElementById('score-player')!,
+      scorePlayerName: document.getElementById('score-player-name')!,
       scoreAI: document.getElementById('score-ai')!,
       scoreAIName: document.getElementById('score-ai-name')!,
       scoreMoney: document.getElementById('score-money')!,
@@ -425,6 +444,8 @@ export class Game {
       gachaMarbleSub: document.getElementById('gacha-marble-sub')!,
       btnGachaContinue: document.getElementById('btn-gacha-continue') as HTMLButtonElement,
       btnPauseGallery: document.getElementById('btn-pause-gallery') as HTMLButtonElement | null,
+      btnPauseSave: document.getElementById('btn-pause-save') as HTMLButtonElement | null,
+      btnPauseLoad: document.getElementById('btn-pause-load') as HTMLButtonElement | null,
       btnPauseMenu: document.getElementById('btn-pause-menu') as HTMLButtonElement | null,
       settleBanner: document.getElementById('settle-banner')!,
       instructions: document.getElementById('instructions')!,
@@ -443,6 +464,7 @@ export class Game {
       replayScrub: document.getElementById('replay-scrub') as HTMLInputElement,
       replaySpeed: document.getElementById('replay-speed') as HTMLSelectElement,
       moneyToast: document.getElementById('money-toast')!,
+      gameToast: document.getElementById('game-toast'),
       punchOverlay: document.getElementById('punch-overlay')!,
       gameRoot: document.getElementById('game-root')!,
     };
@@ -451,6 +473,7 @@ export class Game {
 
     this.rollOpponentName();
     this.applyEquippedSkinFromSave();
+    this.loadPlayerIdentityFromSave();
     this.fieldDesigns =
       this.sceneLevel === 3 ? createLevel3FieldDesigns() : createFieldDesigns();
     // AI skill tier follows map level (L1 easy → L3 strongest)
@@ -569,6 +592,14 @@ export class Game {
     window.addEventListener('orientationchange', this.boundOrient);
 
     this.setPhase('ready');
+    // Restore mid-match if title/pause Cargar requested (?load=1)
+    if (this.shouldRestoreMatchOnBoot()) {
+      try {
+        this.restoreMatchFromSave();
+      } catch (err) {
+        console.warn('No se pudo restaurar la partida', err);
+      }
+    }
   }
 
   start(): void {
@@ -956,6 +987,14 @@ export class Game {
     this.els.btnPauseGallery?.addEventListener('click', () => {
       openGalleryFromGame();
     });
+    this.els.btnPauseSave?.addEventListener('click', () => {
+      unlockMarbleAudio();
+      this.saveMatchCheckpoint();
+    });
+    this.els.btnPauseLoad?.addEventListener('click', () => {
+      unlockMarbleAudio();
+      this.loadMatchCheckpointFromPause();
+    });
     this.els.btnPauseMenu?.addEventListener('click', () => {
       window.location.href = buildMenuHref();
     });
@@ -1044,7 +1083,7 @@ export class Game {
       this.els.instructions.textContent =
         this.sceneLevel === 3
           ? `L3 Escupidera: mete canicas de campo al HOYO. Tu canica al hoyo o fuera del bowl = pierdes. IA L3.`
-          : `Pulsa el botón de soltar (~10 cm). Luego turnos Jugador ↔ ${this.opponentName}.`;
+          : `Pulsa el botón de soltar (~10 cm). Luego turnos ${this.playerName} ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent =
         this.sceneLevel === 3
@@ -1075,19 +1114,19 @@ export class Game {
     // Control / level toggles removed from HUD — URL query only (?control=&level=).
   }
 
-  private updateTurnHUD(): void {
+    private updateTurnHUD(): void {
     const turnText =
       this.turn === 'player'
-        ? 'Turno: Jugador'
+        ? `Turno: ${this.playerName}`
         : `Turno: ${this.opponentName}`;
     this.els.turnLabel.textContent = turnText;
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
     this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
-    this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
   }
 
-  private updateScoreHUD(): void {
+    private updateScoreHUD(): void {
     this.els.scorePlayer.textContent = String(this.playerScore);
+    this.els.scorePlayerName.textContent = this.playerName;
     this.els.scoreAI.textContent = String(this.aiScore);
     this.els.scoreAIName.textContent = this.opponentName;
     this.els.scoreMoney.textContent = `$${this.playerMoney}`;
@@ -1435,16 +1474,33 @@ private spawnShootersInitial(): void {
     // Player turn: classic aim cam. AI turn: 2-phase aim → wide overview.
     if (side === 'player') this.stopAIDirector();
 
+    // Scoring window closed while aiming — residual exits never credit anyone
+    this.scoringEnabled = false;
+    this.shotContactPairs.clear();
+    this.cullExitsWithoutScore();
+    this.softSleepSlowFieldMarbles();
+
     // Clamp shooter onto ground / finite coords before framing camera
     this.sanitizeShooterPose(shooter);
 
-    // Freeze shooter until shot
+    // Freeze ONLY the active shooter until they fire (aim stability).
+    // The opposing shooter stays DYNAMIC so it can be struck like a field marble.
     shooter.body.velocity.setZero();
     shooter.body.angularVelocity.setZero();
     shooter.body.type = CANNON.Body.KINEMATIC;
-    this.scoringEnabled = false;
     this.snapMarblePhysics(shooter, true);
     this.syncOneMesh(shooter);
+
+    const other = side === 'player' ? this.aiMarble : this.playerMarble;
+    if (other && other.active) {
+      other.body.type = CANNON.Body.DYNAMIC;
+      other.body.velocity.setZero();
+      other.body.angularVelocity.setZero();
+      this.snapMarblePhysics(other, true);
+      this.syncOneMesh(other);
+      // Sleep at rest but remain dynamic — collisions wake it
+      other.body.sleep();
+    }
 
     this.showLocationMarker(shooter, side);
     this.easeCameraToward(shooter);
@@ -1452,8 +1508,9 @@ private spawnShootersInitial(): void {
     if (side === 'player') {
       this.setPhase('playing');
       this.canPlayerShoot = true;
-      this.flashLocationBanner('Aquí está tu canica', 'banner-player', 2200);
+      this.flashLocationBanner(`Aquí está la canica de ${this.playerName}`, 'banner-player', 2200);
       this.armPlayerIdleHint();
+      this.commentator?.say('playerPlay', { side: 'player', preferLower: true });
     } else {
       this.canPlayerShoot = false;
       this.disarmPlayerIdleHint();
@@ -1474,6 +1531,7 @@ private spawnShootersInitial(): void {
       // Thinking pause ~2s before shooting
       this.aiThinkUntil = performance.now() + AI_THINK_MS + Math.random() * 250;
       this.setPhase('ai_thinking');
+      this.commentator?.say('aiPlay', { side: 'ai', preferLower: true });
     }
   }
 
@@ -2205,6 +2263,8 @@ private spawnShootersInitial(): void {
     this.shotSettleTimer = performance.now();
     this.lastScorer = side;
     this.scoringEnabled = true;
+    this.shotContactPairs.clear();
+    this.nearMissCooldownUntil = 0;
     // Big shots: high power flick or strong push
     const pushSp =
       push && push.pushVx !== undefined && push.pushVz !== undefined
@@ -2223,8 +2283,19 @@ private spawnShootersInitial(): void {
       pending.side === 'player' ? this.playerMarble : this.aiMarble;
     if (!shooter) return;
 
+    // Both personal marbles must be DYNAMIC so they share field-marble physics
+    // (can be struck / moved by any marble, including each other).
+    for (const m of [this.playerMarble, this.aiMarble]) {
+      if (!m || !m.active) continue;
+      m.body.type = CANNON.Body.DYNAMIC;
+      if (!Number.isFinite(m.body.position.y) || m.body.position.y < MARBLE_REST_Y) {
+        m.body.position.y = MARBLE_REST_Y;
+      }
+      m.body.previousPosition.y = Math.max(m.body.previousPosition.y, MARBLE_REST_Y);
+      m.body.wakeUp();
+    }
+
     const body = shooter.body;
-    body.type = CANNON.Body.DYNAMIC;
     // Resync onto surface before impulse — kinematic→dynamic can inherit sink
     if (!Number.isFinite(body.position.y) || body.position.y < MARBLE_REST_Y) {
       body.position.y = MARBLE_REST_Y;
@@ -2396,7 +2467,7 @@ private spawnShootersInitial(): void {
       const why = inHole ? 'cayó al hoyo' : 'salió del bowl';
       if (side === 'player') {
         this.flashLocationBanner(
-          `Tu canica ${why} — pierdes la canica`,
+          `Canica de ${this.playerName} ${why} — pierdes la canica`,
           'banner-player',
           2800,
         );
@@ -2481,7 +2552,7 @@ private spawnShootersInitial(): void {
       this.els.endTitle.textContent = 'Derrota';
       this.els.endMessage.textContent =
         this.forcedWinner === 'ai'
-          ? 'Tu canica cayó al hoyo o salió del bowl. Pierdes la canica.'
+          ? `La canica de ${this.playerName} cayó al hoyo o salió del bowl. Pierdes la canica.`
           : loseMsg;
     } else {
       this.els.endTitle.textContent = 'Empate';
@@ -2491,7 +2562,7 @@ private spawnShootersInitial(): void {
           : 'Misma cantidad de canicas fuera. ¡Casi!';
     }
     this.els.endScore.textContent =
-      `Jugador ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA L${this.sceneLevel})`;
+      `${this.playerName} ${p} ($${this.playerMoney}) · ${this.opponentName} ${a}  (${sceneLevelLabel(this.sceneLevel)} · IA L${this.sceneLevel})`;
     this.forcedWinner = null;
     this.updateTurnHUD();
 
@@ -2786,13 +2857,17 @@ private spawnShootersInitial(): void {
     this.exitSlowMo(true);
     this.stopAIDirector();
     this.scoringEnabled = false;
+    // Final cull of any residual exits without awarding (window closed)
+    this.cullExitsWithoutScore();
 
-    // Keep shooters where they stopped (dynamic → freeze for next turn)
+    // Keep shooters where they stopped — stay DYNAMIC (sleep) so the next
+    // shot can collide with them like field marbles. beginTurn will only
+    // kinematic-freeze the active aimer.
     for (const m of [this.playerMarble, this.aiMarble]) {
       if (!m) continue;
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
-      m.body.type = CANNON.Body.KINEMATIC;
+      m.body.type = CANNON.Body.DYNAMIC;
       this.snapMarblePhysics(m, true);
       this.syncOneMesh(m);
       if (m.body.position.y < MARBLE_REST_Y) {
@@ -2806,9 +2881,11 @@ private spawnShootersInitial(): void {
         const x = m.owner === 'player' ? sideDist : -sideDist;
         m.body.position.set(x, MARBLE_REST_Y, 0);
       }
+      m.body.sleep();
     }
 
-    if (this.updateScoreAndWin()) return;
+    // cullExitsWithoutScore may have ended the match
+    if (this.phase !== 'shot_flying') return;
 
     this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */
 
@@ -2901,8 +2978,14 @@ private spawnShootersInitial(): void {
           const followEnt = this.entityFromBody(followBody);
           if (followEnt) this.enterSlowMo(followEnt);
         }
+        // Bookkeeping for near-miss (pairs that actually touched this shot)
+        const pairKey = this.contactPairKey(bi, bj);
+        this.shotContactPairs.add(pairKey);
+
         if (impact >= 0.42) {
           this.commentator?.say('hit', { side: this.turn }); /* caster:hit */
+        } else if (impact >= 0.18) {
+          this.commentator?.say('softTap', { side: this.turn, preferLower: true });
         }
       }
 
@@ -3524,11 +3607,13 @@ private spawnShootersInitial(): void {
 
     if (this.phase === 'shot_flying') {
       this.updateScoreAndWin();
+      this.processNearMisses();
       this.tryFinishShotTurn();
     }
 
-    if (this.phase === 'playing') {
-      this.updateScoreAndWin();
+    // Aim / think: never award — only strip leftover exits from the scoring set
+    if (this.phase === 'playing' || this.phase === 'ai_thinking') {
+      this.cullExitsWithoutScore();
     }
 
     this.updatePlayerIdleHint(dt);
@@ -3792,6 +3877,428 @@ private spawnShootersInitial(): void {
     this.fitCameraToArena(false);
   }
 
+
+  private loadPlayerIdentityFromSave(): void {
+    const save = loadSave();
+    this.playerName = save.playerName || DEFAULT_PLAYER_NAME;
+    this.playerMoney = save.playerMoney || 0;
+    this.commentator?.setPlayerName(this.playerName);
+    this.updateScoreHUD();
+    this.updateTurnHUD();
+  }
+
+  private showGameToast(msg: string, ms = 2600): void {
+    const el = this.els.gameToast;
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    el.classList.add('show');
+    window.clearTimeout((this.showGameToast as unknown as { _t?: number })._t);
+    (this.showGameToast as unknown as { _t?: number })._t = window.setTimeout(() => {
+      el.classList.add('hidden');
+      el.classList.remove('show');
+    }, ms);
+  }
+
+  private contactPairKey(a: CANNON.Body, b: CANNON.Body): string {
+    const ia = (a as unknown as { id?: number }).id ?? 0;
+    const ib = (b as unknown as { id?: number }).id ?? 0;
+    return ia < ib ? `${ia}:${ib}` : `${ib}:${ia}`;
+  }
+
+  /**
+   * Soft-sleep very slow leftovers when entering aim so residual momentum
+   * rarely causes late exits during the next player's aiming window.
+   */
+  private softSleepSlowFieldMarbles(): void {
+    const list: MarbleEntity[] = [...this.fieldMarbles];
+    if (this.playerMarble) list.push(this.playerMarble);
+    if (this.aiMarble) list.push(this.aiMarble);
+    for (const m of list) {
+      if (!m.active) continue;
+      if (m.body.type === CANNON.Body.KINEMATIC) continue;
+      const v = m.body.velocity.length();
+      const w = m.body.angularVelocity.length();
+      if (v < SETTLE_SPEED * 2.5 && w < SETTLE_SPEED * 80) {
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.sleep();
+      }
+    }
+  }
+
+  /**
+   * During aim / after scoring window closes: if a field marble has already
+   * left the circle / fallen in the hole, remove it from the scoring set
+   * WITHOUT awarding anyone. Fixes residual-momentum wrong attribution.
+   */
+  private cullExitsWithoutScore(): void {
+    const l3 = this.sceneLevel === 3;
+    const holeOpen = l3 && !!this.dentistOffice?.holeOpen;
+
+    for (const m of this.fieldMarbles) {
+      if (!m.active) continue;
+      if (!this.scoringMarbles.has(m)) continue;
+      const dist = Math.hypot(m.body.position.x, m.body.position.z);
+      const fallen = m.body.position.y < -0.05;
+      const scored = l3
+        ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
+        : dist > CIRCLE_RADIUS + OUT_MARGIN || fallen;
+      const leftBowl = l3 && dist > CIRCLE_RADIUS + OUT_MARGIN * 4;
+      if (!(scored || leftBowl || fallen)) continue;
+
+      // No points — strip eligibility only
+      this.scoringMarbles.delete(m);
+      this.commentator?.say('badLuck', {
+        side: this.turn,
+        preferLower: true,
+      });
+
+      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl))) {
+        m.active = false;
+        m.mesh.visible = false;
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.position.y = -1;
+        m.body.type = CANNON.Body.STATIC;
+      } else {
+        // Outside circle but still visible — freeze inert
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.sleep();
+      }
+    }
+
+    // Match can end if cull emptied the set (rare; don't award)
+    if (
+      this.scoringMarbles.size === 0 &&
+      this.fieldMarbles.length > 0 &&
+      this.phase !== 'ended' &&
+      this.phase !== 'ready' &&
+      this.phase !== 'dropping' &&
+      this.phase !== 'settling'
+    ) {
+      this.endGame();
+    }
+  }
+
+  /** Fast marble passes very close to another without contact → near-miss line. */
+  private processNearMisses(): void {
+    if (this.phase !== 'shot_flying' || !this.scoringEnabled) return;
+    const now = performance.now();
+    if (now < this.nearMissCooldownUntil) return;
+
+    const list: MarbleEntity[] = [];
+    for (const m of this.fieldMarbles) if (m.active) list.push(m);
+    if (this.playerMarble?.active) list.push(this.playerMarble);
+    if (this.aiMarble?.active) list.push(this.aiMarble);
+
+    const nearDist = MARBLE_RADIUS * 2.55;
+    const minFast = 0.55;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i]!;
+      const va = a.body.velocity.length();
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j]!;
+        const vb = b.body.velocity.length();
+        if (Math.max(va, vb) < minFast) continue;
+        const dx = a.body.position.x - b.body.position.x;
+        const dy = a.body.position.y - b.body.position.y;
+        const dz = a.body.position.z - b.body.position.z;
+        const dist = Math.hypot(dx, dy, dz);
+        if (dist > nearDist || dist < MARBLE_RADIUS * 2.02) continue;
+        const key = this.contactPairKey(a.body, b.body);
+        if (this.shotContactPairs.has(key)) continue;
+        // Closing or grazing: relative approach along separation
+        const rvx = a.body.velocity.x - b.body.velocity.x;
+        const rvz = a.body.velocity.z - b.body.velocity.z;
+        const closing = dx * rvx + dz * rvz;
+        // Allow both approaching and just-passed (small positive) near-misses
+        if (closing > Math.max(va, vb) * nearDist * 0.35) continue;
+
+        if (
+          this.commentator?.say('nearMiss', {
+            side: this.turn,
+            preferLower: true,
+          })
+        ) {
+          this.nearMissCooldownUntil = now + 1800;
+          return;
+        }
+      }
+    }
+  }
+
+  private shouldRestoreMatchOnBoot(): boolean {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('load') !== '1') return false;
+      const save = loadSave();
+      return !!save.matchSnapshot && save.matchSnapshot.sceneLevel === this.sceneLevel;
+    } catch {
+      return false;
+    }
+  }
+
+  private bodyTypeFromSnap(t: MarbleBodySnap['bodyType']): CANNON.Body['type'] {
+    if (t === 'kinematic') return CANNON.Body.KINEMATIC as CANNON.Body['type'];
+    if (t === 'static') return CANNON.Body.STATIC as CANNON.Body['type'];
+    return CANNON.Body.DYNAMIC as CANNON.Body['type'];
+  }
+
+  private snapBodyType(body: CANNON.Body): MarbleBodySnap['bodyType'] {
+    if (body.type === CANNON.Body.KINEMATIC) return 'kinematic';
+    if (body.type === CANNON.Body.STATIC) return 'static';
+    return 'dynamic';
+  }
+
+  private captureMarbleSnap(m: MarbleEntity): MarbleBodySnap {
+    const knockedBy = this.playerKnocked.has(m)
+      ? 'player'
+      : this.aiKnocked.has(m)
+        ? 'ai'
+        : null;
+    return {
+      designId: m.design.id,
+      owner: m.owner,
+      active: m.active,
+      visible: m.mesh.visible,
+      inScoring: this.scoringMarbles.has(m),
+      knockedBy,
+      x: m.body.position.x,
+      y: m.body.position.y,
+      z: m.body.position.z,
+      qx: m.body.quaternion.x,
+      qy: m.body.quaternion.y,
+      qz: m.body.quaternion.z,
+      qw: m.body.quaternion.w,
+      vx: m.body.velocity.x,
+      vy: m.body.velocity.y,
+      vz: m.body.velocity.z,
+      wx: m.body.angularVelocity.x,
+      wy: m.body.angularVelocity.y,
+      wz: m.body.angularVelocity.z,
+      bodyType: this.snapBodyType(m.body),
+    };
+  }
+
+  private applyMarbleSnap(m: MarbleEntity, snap: MarbleBodySnap): void {
+    m.active = snap.active;
+    m.mesh.visible = snap.visible;
+    m.body.position.set(snap.x, snap.y, snap.z);
+    m.body.previousPosition.set(snap.x, snap.y, snap.z);
+    m.body.quaternion.set(snap.qx, snap.qy, snap.qz, snap.qw);
+    m.body.velocity.set(snap.vx, snap.vy, snap.vz);
+    m.body.angularVelocity.set(snap.wx, snap.wy, snap.wz);
+    m.body.type = this.bodyTypeFromSnap(snap.bodyType);
+    if (snap.active && snap.bodyType === 'dynamic') {
+      const speed = Math.hypot(snap.vx, snap.vy, snap.vz);
+      if (speed < SETTLE_SPEED * 2) m.body.sleep();
+      else m.body.wakeUp();
+    } else if (!snap.active) {
+      m.body.type = CANNON.Body.STATIC;
+    }
+    this.syncOneMesh(m);
+  }
+
+  private designForFieldId(id: string) {
+    return (
+      this.fieldDesigns.find((d) => d.id === id) ??
+      this.fieldDesigns[0] ??
+      createFieldDesigns()[0]!
+    );
+  }
+
+  private captureMatchSnapshot(): MatchSnapshot {
+    const phase =
+      this.phase === 'replay'
+        ? 'playing'
+        : (this.phase as MatchSnapshot['phase']);
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      sceneLevel: this.sceneLevel,
+      phase,
+      turn: this.turn,
+      playerName: this.playerName,
+      opponentName: this.opponentName,
+      playerScore: this.playerScore,
+      aiScore: this.aiScore,
+      playerMoney: this.playerMoney,
+      lastScorer: this.lastScorer,
+      scoringEnabled: false, // always resume in a safe non-scoring window
+      holeOpen: !!this.dentistOffice?.holeOpen,
+      field: this.fieldMarbles.map((m) => this.captureMarbleSnap(m)),
+      player: this.playerMarble ? this.captureMarbleSnap(this.playerMarble) : null,
+      ai: this.aiMarble ? this.captureMarbleSnap(this.aiMarble) : null,
+      camX: this.camera.position.x,
+      camY: this.camera.position.y,
+      camZ: this.camera.position.z,
+      targetX: this.controls.target.x,
+      targetY: this.controls.target.y,
+      targetZ: this.controls.target.z,
+    };
+  }
+
+  private saveMatchCheckpoint(): void {
+    if (this.phase === 'ready' || this.phase === 'dropping' || this.phase === 'settling') {
+      this.showGameToast('Aún no hay partida para guardar — suelta las canicas primero.');
+      return;
+    }
+    if (this.phase === 'replay') {
+      this.showGameToast('Sal de la repetición para guardar.');
+      return;
+    }
+    const snap = this.captureMatchSnapshot();
+    writeMatchSnapshot(snap);
+    this.showGameToast(formatSaveToast(snap));
+  }
+
+  private loadMatchCheckpointFromPause(): void {
+    const save = loadSave();
+    const snap = save.matchSnapshot;
+    if (!snap) {
+      this.showGameToast('No hay partida guardada.');
+      return;
+    }
+    if (snap.sceneLevel !== this.sceneLevel) {
+      const control = resolveControlMode();
+      window.location.href =
+        buildGameHref(control, snap.sceneLevel) +
+        (buildGameHref(control, snap.sceneLevel).includes('?') ? '&' : '?') +
+        'load=1';
+      return;
+    }
+    try {
+      this.restoreMatchFromSave();
+      this.setPaused(false);
+      this.showGameToast('Partida cargada.');
+    } catch (err) {
+      console.warn(err);
+      this.showGameToast('No se pudo cargar la partida.');
+    }
+  }
+
+  private restoreMatchFromSave(): void {
+    const save = loadSave();
+    const snap = save.matchSnapshot;
+    if (!snap || snap.sceneLevel !== this.sceneLevel) {
+      throw new Error('snapshot missing or wrong level');
+    }
+
+    this.forcedWinner = null;
+    this.commentator?.hide();
+    this.els.endScreen.classList.add('hidden');
+    this.els.gachaOverlay.classList.add('hidden');
+    this.hideVictoryScreen();
+    this.cancelAimGesture(true);
+    this.els.powerWrap.classList.add('hidden');
+    this.camEase = null;
+    this.clearKnockoutCamPunch(false);
+    this.stopAIDirector();
+    this.throwPendingImpulse = null;
+    this.particles?.clear();
+    this.dirtCooldown.clear();
+    this.disarmPlayerIdleHint();
+    this.hideLocationBanner();
+    this.markerGroup.visible = false;
+    this.recording = true;
+    this.replay.clear();
+
+    this.playerName = snap.playerName || DEFAULT_PLAYER_NAME;
+    this.opponentName = snap.opponentName || this.opponentName;
+    this.commentator?.setPlayerName(this.playerName);
+    this.playerScore = snap.playerScore;
+    this.aiScore = snap.aiScore;
+    this.playerMoney = snap.playerMoney;
+    this.lastScorer = snap.lastScorer;
+    this.scoringEnabled = false;
+    this.turn = snap.turn;
+    this.level = this.sceneLevel;
+
+    if (this.sceneLevel === 3 && this.dentistOffice && snap.holeOpen) {
+      this.dentistOffice.openCenterHole(this.world);
+    }
+
+    this.clearFieldMarbles();
+    this.removeShooter('player');
+    this.removeShooter('ai');
+
+    // Restore field (do not wipe scores again — clearFieldMarbles zeroed them)
+    this.playerScore = snap.playerScore;
+    this.aiScore = snap.aiScore;
+    this.playerMoney = snap.playerMoney;
+    this.playerKnocked.clear();
+    this.aiKnocked.clear();
+    this.scoringMarbles.clear();
+
+    for (const fs of snap.field) {
+      const design = this.designForFieldId(fs.designId);
+      const ent = createMarbleEntity(
+        design,
+        new CANNON.Vec3(fs.x, fs.y, fs.z),
+        'field',
+      );
+      this.scene.add(ent.mesh);
+      this.world.addBody(ent.body);
+      this.fieldMarbles.push(ent);
+      this.applyMarbleSnap(ent, fs);
+      if (fs.inScoring && ent.active) this.scoringMarbles.add(ent);
+      if (fs.knockedBy === 'player') this.playerKnocked.add(ent);
+      if (fs.knockedBy === 'ai') this.aiKnocked.add(ent);
+    }
+
+    if (snap.player) {
+      const player = createMarbleEntity(
+        this.playerDesign,
+        new CANNON.Vec3(snap.player.x, snap.player.y, snap.player.z),
+        'player',
+      );
+      this.scene.add(player.mesh);
+      this.world.addBody(player.body);
+      this.playerMarble = player;
+      this.applyMarbleSnap(player, snap.player);
+      this.attachPlayerOutline(player);
+    }
+    if (snap.ai) {
+      const ai = createMarbleEntity(
+        this.aiDesign,
+        new CANNON.Vec3(snap.ai.x, snap.ai.y, snap.ai.z),
+        'ai',
+      );
+      this.scene.add(ai.mesh);
+      this.world.addBody(ai.body);
+      this.aiMarble = ai;
+      this.applyMarbleSnap(ai, snap.ai);
+    }
+
+    this.camera.position.set(snap.camX, snap.camY, snap.camZ);
+    this.controls.target.set(snap.targetX, snap.targetY, snap.targetZ);
+    this.controls.update();
+
+    // Resume in a safe phase: if was mid-shot, treat as settled handoff to current turn
+    let phase = snap.phase;
+    if (phase === 'shot_flying' || phase === 'dropping' || phase === 'settling') {
+      phase = snap.turn === 'ai' ? 'ai_thinking' : 'playing';
+    }
+    if (phase === 'ended') {
+      this.setPhase('ended');
+      this.updateScoreHUD();
+      this.updateTurnHUD();
+      return;
+    }
+
+    // Re-enter turn framing without resetting marble poses
+    this.scoringEnabled = false;
+    if (phase === 'playing' || phase === 'ai_thinking') {
+      this.beginTurn(snap.turn);
+    } else {
+      this.setPhase(phase);
+    }
+    this.updateScoreHUD();
+    this.updateTurnHUD();
+  }
+
   private applyEquippedSkinFromSave(): void {
     const save = loadSave();
     if (save.equippedSkinSeed) {
@@ -3840,9 +4347,9 @@ private spawnShootersInitial(): void {
       this.sceneLevel === 3 ? 'Canicas al hoyo' : 'Canicas sacadas';
     this.els.victoryWinner.textContent = '¡Ganaste el partido!';
     this.els.victoryMoney.textContent =
-      `Dinero · Tú $${this.playerMoney} · ${this.opponentName} $${aiMoney}`;
+      `Dinero · ${this.playerName} $${this.playerMoney} · ${this.opponentName} $${aiMoney}`;
     this.els.victoryMarbles.textContent =
-      `${scoringVerb} · Tú ${playerScore} · ${this.opponentName} ${aiScore}`;
+      `${scoringVerb} · ${this.playerName} ${playerScore} · ${this.opponentName} ${aiScore}`;
     this.els.victoryMeta.textContent =
       `${sceneLevelLabel(this.sceneLevel)} · Rival: ${this.opponentName}`;
 

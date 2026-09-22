@@ -16,7 +16,7 @@
         <div id="top-bar">
           <div id="score-panel">
             <span class="score-side player" id="score-player-side">
-              <span class="score-name">Jugador</span>
+              <span class="score-name" id="score-player-name">Jugador1</span>
               <span id="score-player">0</span>
               <span class="score-money" id="score-money">$0</span>
             </span>
@@ -64,6 +64,8 @@
           <h2 id="pause-title">Pausa</h2>
           <p>El juego está en pausa.</p>
           <div class="pause-extra">
+            <button id="btn-pause-save" type="button" class="premium-btn">Guardar</button>
+            <button id="btn-pause-load" type="button" class="premium-btn">Cargar</button>
             <button id="btn-pause-gallery" type="button" class="premium-btn">Galería</button>
             <button id="btn-pause-menu" type="button" class="premium-btn secondary">Menú título</button>
           </div>
@@ -92,6 +94,7 @@
       </div>
 
       <div id="money-toast" class="hidden">+$2</div>
+      <div id="game-toast" class="hidden" role="status"></div>
       <div id="caster-toast" class="hidden caster-top" aria-live="polite">
         <span class="caster-tag"></span>
         <span class="caster-text"></span>
@@ -185,6 +188,20 @@
         </div>
       </div>
       <div id="menu-toast" class="hidden"></div>
+    </div>
+
+
+    <div id="name-prompt" class="hidden" role="dialog" aria-modal="true" aria-labelledby="name-prompt-title">
+      <div class="modal-card name-prompt-card">
+        <h2 id="name-prompt-title" class="neon-text">Tu nombre</h2>
+        <p class="modal-hint">¿Cómo te llamamos en el marcador?</p>
+        <label class="name-prompt-label" for="name-prompt-input">Nombre</label>
+        <input id="name-prompt-input" type="text" maxlength="24" value="Jugador1" autocomplete="nickname" />
+        <div class="name-prompt-actions">
+          <button id="btn-name-cancel" type="button" class="premium-btn secondary">Cancelar</button>
+          <button id="btn-name-ok" type="button" class="premium-btn">OK</button>
+        </div>
+      </div>
     </div>
 
     <div id="level-pick" class="hidden" role="dialog" aria-modal="true">

@@ -5,10 +5,13 @@ import {
   loadSave,
   writeSave,
   hasSaveProgress,
+  hasMatchSnapshot,
   setEquippedSkin,
   removeFromCollection,
   setSfxMute,
   setQuality,
+  setPlayerName,
+  DEFAULT_PLAYER_NAME,
   COLLAB_MARBLE_SEED,
   type SaveData,
 } from './save';
@@ -35,21 +38,32 @@ function toast(msg: string): void {
   }, 2200);
 }
 
-function navigateToLevel(level: 1 | 2 | 3): void {
+function navigateToLevel(level: 1 | 2 | 3, opts?: { load?: boolean }): void {
   const control = resolveControlMode();
-  window.location.href = buildGameHref(control, level);
+  let href = buildGameHref(control, level);
+  if (opts?.load) {
+    href += href.includes('?') ? '&load=1' : '?load=1';
+  }
+  window.location.href = href;
 }
 
 function refreshLoadButton(save: SaveData): void {
   const btn = $('btn-menu-load') as HTMLButtonElement;
-  if (hasSaveProgress() || save.unlockedLevels.length > 1 || save.collection.length > 0) {
+  if (hasMatchSnapshot() || hasSaveProgress()) {
     btn.disabled = false;
     btn.classList.remove('is-disabled');
-    btn.querySelector('.menu-sub')!.textContent = 'Continuar';
+    const snap = save.matchSnapshot;
+    if (snap) {
+      const d = new Date(snap.savedAt);
+      btn.querySelector('.menu-sub')!.textContent =
+        `N${snap.sceneLevel} · ${snap.playerName} · ${d.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })}`;
+    } else {
+      btn.querySelector('.menu-sub')!.textContent = 'Continuar';
+    }
   } else {
     btn.disabled = true;
     btn.classList.add('is-disabled');
-    btn.querySelector('.menu-sub')!.textContent = 'Próximamente';
+    btn.querySelector('.menu-sub')!.textContent = 'Sin partida';
   }
 }
 
@@ -124,7 +138,6 @@ function syncOptions(save: SaveData): void {
   setMarbleAudioMuted(save.sfxMute);
 }
 
-
 /** Wire gallery close even when title menu is skipped (in-game / all levels). */
 let galleryHandlersBound = false;
 function ensureGalleryHandlers(): void {
@@ -145,6 +158,46 @@ function ensureGalleryHandlers(): void {
   });
 }
 
+function openNamePrompt(onDone: (name: string) => void): void {
+  const overlay = $('name-prompt');
+  const input = $('name-prompt-input') as HTMLInputElement;
+  const save = loadSave();
+  input.value = save.playerName || DEFAULT_PLAYER_NAME;
+  overlay.classList.remove('hidden');
+
+  const finish = (name: string) => {
+    overlay.classList.add('hidden');
+    const cleaned = name.trim() || DEFAULT_PLAYER_NAME;
+    setPlayerName(cleaned);
+    btnOk.removeEventListener('click', onOk);
+    btnCancel.removeEventListener('click', onCancel);
+    input.removeEventListener('keydown', onKey);
+    onDone(cleaned);
+  };
+
+  const onOk = () => finish(input.value);
+  const onCancel = () => finish(DEFAULT_PLAYER_NAME);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      onOk();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+
+  const btnOk = $('btn-name-ok');
+  const btnCancel = $('btn-name-cancel');
+  btnOk.addEventListener('click', onOk);
+  btnCancel.addEventListener('click', onCancel);
+  input.addEventListener('keydown', onKey);
+  window.setTimeout(() => {
+    input.focus();
+    input.select();
+  }, 30);
+}
+
 export function initTitleMenu(): void {
   const title = $('title-screen');
   const levelPick = $('level-pick');
@@ -157,7 +210,9 @@ export function initTitleMenu(): void {
 
   $('btn-menu-new').addEventListener('click', () => {
     unlockMarbleAudio();
-    levelPick.classList.remove('hidden');
+    openNamePrompt(() => {
+      levelPick.classList.remove('hidden');
+    });
   });
 
   $('btn-level-1').addEventListener('click', () => {
@@ -187,8 +242,12 @@ export function initTitleMenu(): void {
   $('btn-menu-load').addEventListener('click', () => {
     unlockMarbleAudio();
     const s = loadSave();
+    if (s.matchSnapshot) {
+      navigateToLevel(s.matchSnapshot.sceneLevel as 1 | 2 | 3, { load: true });
+      return;
+    }
     if (!hasSaveProgress() && s.unlockedLevels.length <= 1 && s.collection.length === 0) {
-      toast('Próximamente');
+      toast('No hay partida guardada');
       return;
     }
     const lvl = s.unlockedLevels.includes(3) ? 3 : s.unlockedLevels.includes(2) ? 2 : 1;
@@ -247,6 +306,7 @@ export function hideTitleMenu(): void {
   document.getElementById('level-pick')?.classList.add('hidden');
   document.getElementById('gallery-overlay')?.classList.add('hidden');
   document.getElementById('options-overlay')?.classList.add('hidden');
+  document.getElementById('name-prompt')?.classList.add('hidden');
 }
 
 /** In-game access to gallery (e.g. from pause). */

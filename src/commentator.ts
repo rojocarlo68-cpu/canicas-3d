@@ -1,17 +1,22 @@
 /**
- * Spontaneous Spanish sports-caster banners during play (Memo / Lalo).
+ * Spontaneous Spanish sports-caster banners during play (no name tags).
  * Not shown on the title screen — Game only mounts when ?level= is set.
  */
 
 export type CasterEvent =
   | 'drop'
   | 'hit'
+  | 'softTap'
+  | 'nearMiss'
   | 'knockout'
   | 'bigShot'
   | 'clutch'
+  | 'badLuck'
   | 'endTurn'
   | 'win'
-  | 'lose';
+  | 'lose'
+  | 'aiPlay'
+  | 'playerPlay';
 
 export type CasterSide = 'player' | 'ai';
 
@@ -50,6 +55,31 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Chispas, polvo y drama! ¡Me encanta!',
     '¡Ese choque merecía cámara lenta!',
     '¡Canica contra canica… y gana la física!',
+    '¡Hard hit! ¡Esa dolió hasta en las gradas!',
+    '¡Trompo y chispas! ¡Contacto de élite!',
+    '¡Qué pelea de mármoles! ¡Sin frenos!',
+  ],
+  softTap: [
+    '¡Toquecito de seda! ¡Casi un susurro!',
+    '¡Contacto suave… pero con intención!',
+    '¡Un besito de cristal! ¡Qué delicadeza!',
+    '¡Tap tap! ¡Suficiente para mover el tablero!',
+    '¡Roce técnico! ¡Cirugía de precisión!',
+    '¡Suave pero firmeee! ¡Ajá!',
+    '¡Nada de cañón… puro billar fino!',
+    '¡Ese toque lo firmaría un relojero!',
+  ],
+  nearMiss: [
+    '¡Esa canica solo se despeinó con el viento!',
+    '¡Por un pelo! ¡Casi hay contacto!',
+    '¡Raspó el aire y nada más! ¡Qué susto!',
+    '¡Millímetros! ¡El público se agarra la cabeza!',
+    '¡Pasó rozando… y el drama también!',
+    '¡Casi! ¡Esa se salvó de milagro!',
+    '¡Viento de canica! ¡Pero no hubo choque!',
+    '¡Tan cerca que se oyó el silbido!',
+    '¡Falló por un suspiro! ¡Qué tensión!',
+    '¡La física dijo: hoy no, amiguito!',
   ],
   knockout: [
     '¡FUERA DEL CÍRCULO! ¡Qué despedida!',
@@ -68,6 +98,8 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Boom y fuera! ¡Esto es deporte puro!',
     '¡Una menos adentro! ¡La emoción sube!',
     '¡Esa salida merece ovación de pie!',
+    '¡Al hoyo / afuera! ¡Punto en el marcador!',
+    '¡Se la llevó la corriente! ¡Adiós!',
   ],
   bigShot: [
     '¡CAÑONAZO! ¡Esa potencia asusta!',
@@ -94,6 +126,16 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Últimas fichas en el tablero! ¡Drama puro!',
     '¡Situación de campeonato! ¡Concentración total!',
     '¡Uno contra uno en el alma del círculo!',
+    '¡Clutch time! ¡{jugador} no puede fallar!',
+  ],
+  badLuck: [
+    '¡Ay, qué mala suerte! ¡El rebote traicionó!',
+    '¡Eso no estaba en el libreto! ¡Mala pata!',
+    '¡La física hoy cobró peaje! ¡Uff!',
+    '¡Canica rebelde! ¡No escuchó el plan!',
+    '¡Casi… y se escapó! ¡Destino cruel!',
+    '¡Hoy el círculo tiene humor negro!',
+    '¡Esa jugada merecía mejor suerte!',
   ],
   endTurn: [
     '¡Se detiene el polvo! ¡Cambio de turno!',
@@ -109,16 +151,32 @@ const PHRASES: Record<CasterEvent, string[]> = {
     '¡Qué ronda! ¡Esto no se puede perder!',
   ],
   win: [
-    '¡VICTORIA! ¡El jugador se lleva la noche!',
-    '¡Campeón del círculo! ¡Qué cierre!',
-    '¡Gana el humano! ¡La tribuna enloquece!',
-    '¡Triunfo total! ¡Canicas y gloria!',
+    '¡VICTORIA! ¡{jugador} se lleva la noche!',
+    '¡Campeón del círculo! ¡Qué cierre, {jugador}!',
+    '¡Gana {jugador}! ¡La tribuna enloquece!',
+    '¡Triunfo total! ¡Canicas y gloria para {jugador}!',
+    '¡{jugador} firma la hazaña! ¡Qué partido!',
   ],
   lose: [
-    '¡El rival se lleva el botín! ¡Qué pelea!',
-    '¡Derrota amarga… pero qué partido!',
-    '¡Hoy gana el oponente! ¡Revancha segura!',
-    '¡Se escapó la victoria! ¡Qué drama!',
+    '¡El rival se lleva el botín! ¡Qué pelea, {jugador}!',
+    '¡Derrota amarga para {jugador}… pero qué partido!',
+    '¡Hoy gana el oponente! ¡Revancha segura, {jugador}!',
+    '¡Se escapó la victoria de {jugador}! ¡Qué drama!',
+    '¡La IA (bueno, el rival) se impone! ¡Ánimo, {jugador}!',
+  ],
+  aiPlay: [
+    '¡Responde el rival! ¡Qué frío con la mira!',
+    '¡Turno del oponente! ¡No subestimen esa canica!',
+    '¡La otra esquina del círculo contraataca!',
+    '¡El rival calcula… y suelta el cañón!',
+    '¡Duelo personal: rival vs {jugador}!',
+  ],
+  playerPlay: [
+    '¡Con la mira {jugador}! ¡A cobrar!',
+    '¡Turno de {jugador}! ¡El círculo espera magia!',
+    '¡Ahora {jugador} mueve el tablero!',
+    '¡{jugador} al frente! ¡Sin miedo al choque!',
+    '¡La canica de {jugador} pide pista!',
   ],
 };
 
@@ -138,6 +196,7 @@ export class SportsCommentator {
   private readyAt = 0;
   private lastPhrase = '';
   private enabled = true;
+  private playerName = 'Jugador1';
 
   constructor(el: HTMLElement) {
     this.el = el;
@@ -153,6 +212,11 @@ export class SportsCommentator {
     this.textEl = text;
     this.el.classList.add('hidden');
     this.el.setAttribute('aria-live', 'polite');
+  }
+
+  setPlayerName(name: string): void {
+    const t = name.trim();
+    this.playerName = t.length ? t : 'Jugador1';
   }
 
   setEnabled(on: boolean): void {
@@ -174,7 +238,8 @@ export class SportsCommentator {
       event === 'win' ||
       event === 'lose' ||
       event === 'drop' ||
-      event === 'clutch'
+      event === 'clutch' ||
+      event === 'nearMiss'
         ? this.readyAt - 1600
         : this.readyAt;
     if (!force && now < softGate) return false;
@@ -187,9 +252,10 @@ export class SportsCommentator {
         phrase = pick(pool);
       }
     }
+    phrase = phrase.replace(/\{jugador\}/gi, this.playerName);
     this.lastPhrase = phrase;
 
-    // Name tags (Memo/Lalo) removed — show comment text only
+    // Name tags removed — show comment text only
     this.tagEl.textContent = '';
     this.tagEl.style.display = 'none';
     this.textEl.textContent = phrase;
