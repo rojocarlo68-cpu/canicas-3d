@@ -79,9 +79,10 @@ import {
 } from './save';
 import {
   createDesignFromSeed,
-  randomMarbleSeed,
   paramsFromSeed,
+  generateUniqueMarbleSeed,
 } from './proceduralMarble';
+import { t, setLang, applyI18n, isLang } from './i18n';
 import { MarbleShowcase } from './marbleShowcase';
 import {
   openGalleryFromGame,
@@ -1076,6 +1077,11 @@ export class Game {
     });
     // Unlock audio on first interaction with UI / canvas (gesture-gated AudioContext)
     installMarbleAudioUnlock();
+    {
+      const s = loadSave();
+      if (isLang(s.language)) setLang(s.language);
+      applyI18n(document);
+    }
     for (const b of [this.els.btnDrop, this.els.btnReplay, this.els.btnPause, this.els.btnHudRestart]) {
       b.addEventListener('pointerdown', () => unlockMarbleAudio(), { once: true });
     }
@@ -1180,12 +1186,9 @@ export class Game {
     // Control / level toggles removed from HUD — URL query only (?control=&level=).
   }
 
-    private updateTurnHUD(): void {
-    const turnText =
-      this.turn === 'player'
-        ? `Turno: ${this.playerName}`
-        : `Turno: ${this.opponentName}`;
-    this.els.turnLabel.textContent = turnText;
+  private updateTurnHUD(): void {
+    const name = this.turn === 'player' ? this.playerName : this.opponentName;
+    this.els.turnLabel.textContent = t('hud.turn.player', { name });
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
     this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
   }
@@ -1889,6 +1892,11 @@ private spawnShootersInitial(): void {
     }
     // Push mode: no aim line (or extremely minimal — we hide).
     if (this.controlMode === 'push') {
+      this.aimLineGroup.visible = false;
+      return;
+    }
+    // Options → aim guide off: hide visual, aiming/firing still works.
+    if (loadSave().aimGuide === false) {
       this.aimLineGroup.visible = false;
       return;
     }
@@ -2599,7 +2607,7 @@ private spawnShootersInitial(): void {
 
     if (won) {
       this.commentator?.say('win', { force: true, preferLower: false }); /* caster:win */
-      this.els.endTitle.textContent = '¡Victoria!';
+      this.els.endTitle.textContent = t('end.victory');
       this.els.endMessage.textContent =
         this.forcedWinner === 'player'
           ? `La canica rival salió del bowl / cayó al hoyo. ${beatMsg}`
@@ -2608,33 +2616,33 @@ private spawnShootersInitial(): void {
       if (this.sceneLevel === 1) {
         unlockLevel(2);
         this.pendingContinueLevel = 2;
-        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 2';
+        this.els.btnContinueLevel.textContent = t('end.continue.n', { n: 2 });
         this.els.btnContinueLevel.classList.remove('hidden');
       } else if (this.sceneLevel === 2) {
         unlockLevel(3);
         this.pendingContinueLevel = 3;
-        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 3';
+        this.els.btnContinueLevel.textContent = t('end.continue.n', { n: 3 });
         this.els.btnContinueLevel.classList.remove('hidden');
       } else if (this.sceneLevel === 3) {
         unlockLevel(4);
         this.pendingContinueLevel = 4;
-        this.els.btnContinueLevel.textContent = 'Continuar · Nivel 4';
+        this.els.btnContinueLevel.textContent = t('end.continue.n', { n: 4 });
         this.els.btnContinueLevel.classList.remove('hidden');
       } else {
         unlockLevel(4);
-        this.els.btnContinueLevel.textContent = 'Menú título';
+        this.els.btnContinueLevel.textContent = t('end.menu');
         this.els.btnContinueLevel.classList.remove('hidden');
         this.pendingContinueLevel = null;
       }
     } else if (lost) {
       this.commentator?.say('lose', { force: true, preferLower: false }); /* caster:lose */
-      this.els.endTitle.textContent = 'Derrota';
+      this.els.endTitle.textContent = t('end.defeat');
       this.els.endMessage.textContent =
         this.forcedWinner === 'ai'
           ? `La canica de ${this.playerName} cayó al hoyo o salió del bowl. Pierdes la canica.`
           : loseMsg;
     } else {
-      this.els.endTitle.textContent = 'Empate';
+      this.els.endTitle.textContent = t('end.draw');
       this.els.endMessage.textContent =
         this.sceneLevel === 3
           ? 'Misma cantidad de canicas en el hoyo. ¡Casi!'
@@ -4531,7 +4539,7 @@ private spawnShootersInitial(): void {
         : this.sceneLevel === 4
           ? 'Canicas a hoyos de esquina'
           : 'Canicas sacadas';
-    this.els.victoryWinner.textContent = '¡Ganaste el partido!';
+    this.els.victoryWinner.textContent = t('victory.winner');
     this.els.victoryMoney.textContent =
       `Dinero · ${this.playerName} $${this.playerMoney} · ${this.opponentName} $${aiMoney}`;
     this.els.victoryMarbles.textContent =
@@ -4566,17 +4574,23 @@ private spawnShootersInitial(): void {
     this.els.gachaCase.classList.add('spinning');
     this.els.gachaCase.classList.remove('open');
     this.els.gachaStatus.classList.remove('hidden');
-    this.els.gachaStatus.textContent = 'Generando canica única…';
+    this.els.gachaStatus.textContent = t('gacha.status.gen');
 
-    const seed = this.pendingGachaSeed ?? randomMarbleSeed(`L${this.sceneLevel}`);
-    this.pendingGachaSeed = seed;
+    if (!this.pendingGachaSeed) {
+      const existing = loadSave().collection.map((c) => c.seed);
+      this.pendingGachaSeed = generateUniqueMarbleSeed(
+        existing,
+        `L${this.sceneLevel}`,
+      );
+    }
+    const seed = this.pendingGachaSeed;
     const params = paramsFromSeed(seed);
     const rewardDesign = createDesignFromSeed(seed);
 
     // Spin + lightning beat, then open
     window.setTimeout(() => {
       if (this.els.gachaOverlay.classList.contains('hidden')) return;
-      this.els.gachaStatus.textContent = 'Abriendo maletín…';
+      this.els.gachaStatus.textContent = t('gacha.status.open');
       this.els.gachaCase.classList.remove('spinning');
       this.els.gachaCase.classList.add('open');
     }, 1600);
@@ -4588,8 +4602,7 @@ private spawnShootersInitial(): void {
       }
       this.gachaShowcase.show(rewardDesign);
       this.els.gachaMarbleName.textContent = params.name;
-      this.els.gachaMarbleSub.textContent =
-        'Añadida a tu colección · puedes equiparla en Galería';
+      this.els.gachaMarbleSub.textContent = t('gacha.sub');
       this.els.gachaStatus.classList.add('hidden');
       this.els.gachaReveal.classList.remove('hidden');
       addToCollection({

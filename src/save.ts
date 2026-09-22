@@ -66,7 +66,7 @@ export type MatchSnapshot = {
 };
 
 export type SaveData = {
-  version: 2;
+  version: 3;
   unlockedLevels: number[];
   collection: CollectedMarble[];
   equippedSkinSeed: string | null;
@@ -75,6 +75,10 @@ export type SaveData = {
   playerName: string;
   playerMoney: number;
   matchSnapshot: MatchSnapshot | null;
+  /** UI language */
+  language: 'es' | 'en' | 'ja' | 'zh';
+  /** Show 3D aim guide while aiming */
+  aimGuide: boolean;
 };
 
 const KEY = 'tama-project-save-v1';
@@ -95,7 +99,7 @@ const COLLAB_ENTRY: CollectedMarble = {
 };
 
 const DEFAULT: SaveData = {
-  version: 2,
+  version: 3,
   unlockedLevels: [1],
   collection: [{ ...COLLAB_ENTRY }],
   equippedSkinSeed: COLLAB_MARBLE_SEED,
@@ -104,6 +108,8 @@ const DEFAULT: SaveData = {
   playerName: DEFAULT_PLAYER_NAME,
   playerMoney: 0,
   matchSnapshot: null,
+  language: 'es',
+  aimGuide: true,
 };
 
 function ensureCollab(collection: CollectedMarble[]): CollectedMarble[] {
@@ -159,8 +165,17 @@ export function loadSave(): SaveData {
           )
         : [],
     );
+    const langRaw = (parsed as { language?: unknown }).language;
+    const language: SaveData['language'] =
+      langRaw === 'es' || langRaw === 'en' || langRaw === 'ja' || langRaw === 'zh'
+        ? langRaw
+        : 'es';
+    const aimGuide =
+      typeof (parsed as { aimGuide?: unknown }).aimGuide === 'boolean'
+        ? !!(parsed as { aimGuide: boolean }).aimGuide
+        : true;
     const data: SaveData = {
-      version: 2,
+      version: 3,
       unlockedLevels: Array.isArray(parsed.unlockedLevels)
         ? normalizeLevels(parsed.unlockedLevels)
         : [1],
@@ -183,7 +198,17 @@ export function loadSave(): SaveData {
         parsed.matchSnapshot && typeof parsed.matchSnapshot === 'object'
           ? (parsed.matchSnapshot as MatchSnapshot)
           : null,
+      language,
+      aimGuide,
     };
+    // Migrate older saves missing new fields
+    if (
+      (parsed as { version?: number }).version !== 3 ||
+      typeof (parsed as { language?: unknown }).language !== 'string' ||
+      typeof (parsed as { aimGuide?: unknown }).aimGuide !== 'boolean'
+    ) {
+      writeSave(data);
+    }
     // Persist collab injection if it was missing
     if (!raw.includes(COLLAB_MARBLE_SEED)) writeSave(data);
     return data;
@@ -327,6 +352,21 @@ export function formatSaveToast(snap: MatchSnapshot): string {
   return `Guardado. [${nivel}, ${fecha}. ${nombre}]${label}`;
 }
 
+
+
+export function setLanguage(language: SaveData['language']): SaveData {
+  const s = loadSave();
+  s.language = language;
+  writeSave(s);
+  return s;
+}
+
+export function setAimGuide(aimGuide: boolean): SaveData {
+  const s = loadSave();
+  s.aimGuide = aimGuide;
+  writeSave(s);
+  return s;
+}
 
 /** Portable collection file format (Telegram phone↔PC friendly). */
 export type CollectionExport = {

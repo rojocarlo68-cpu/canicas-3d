@@ -913,7 +913,8 @@ body {
 /* Shared modals */
 #level-pick,
 #gallery-overlay,
-#options-overlay {
+#options-overlay,
+#factory-overlay {
   position: fixed;
   inset: 0;
   z-index: 200;
@@ -928,7 +929,8 @@ body {
 
 #level-pick.hidden,
 #gallery-overlay.hidden,
-#options-overlay.hidden {
+#options-overlay.hidden,
+#factory-overlay.hidden {
   display: none;
 }
 
@@ -1805,3 +1807,57 @@ body {
 .l4-mat-upload input {
   font-size: 12px;
 }
+
+
+/* Marble Factory workshop */
+.factory-card {
+  width: min(440px, 96vw);
+}
+.factory-preview-wrap {
+  margin: 8px auto 12px;
+  width: min(280px, 70vw);
+  height: min(280px, 70vw);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255,255,255,0.12), transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(20, 12, 6, 0.9), rgba(4, 2, 1, 0.95));
+  border: 2px solid rgba(126, 249, 255, 0.35);
+  box-shadow:
+    0 0 24px rgba(0, 229, 255, 0.25),
+    inset 0 0 40px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+#factory-preview {
+  width: 92%;
+  height: 92%;
+  display: block;
+}
+.factory-name {
+  font-family: "Times New Roman", Times, Georgia, serif;
+  font-size: clamp(18px, 4.5vw, 24px);
+  color: #7ef9ff;
+  text-shadow:
+    0 0 8px rgba(0, 229, 255, 0.7),
+    0 2px 4px rgba(0, 0, 0, 0.7);
+  margin: 4px 0 2px;
+}
+.factory-style {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b8f0ff;
+  opacity: 0.85;
+  margin-bottom: 14px;
+}
+.factory-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.factory-actions .premium-btn {
+  width: 100%;
+}
+

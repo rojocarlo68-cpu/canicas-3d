@@ -4,6 +4,7 @@ import { resolveSceneLevel } from './levelSelect';
 import { initTitleMenu, hideTitleMenu, applySaveAudio } from './titleMenu';
 import { loadSave } from './save';
 import { setMarbleAudioMuted, installMarbleAudioUnlock, unlockMarbleAudio } from './marbleSounds';
+import { setLang, applyI18n, isLang } from './i18n';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 if (!canvas) {
@@ -12,6 +13,11 @@ if (!canvas) {
 
 document.title = 'TAMA Project';
 applySaveAudio();
+{
+  const s = loadSave();
+  if (isLang(s.language)) setLang(s.language);
+  applyI18n(document);
+}
 installMarbleAudioUnlock();
 
 const level = resolveSceneLevel();
