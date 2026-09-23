@@ -2,15 +2,16 @@
  * Level 4 — lived-in L-shaped mahogany office desk.
  *
  * CRITICAL layout:
- * - ONE tilted desk assembly (mat + wood + channels + props + legs share L4_TILT).
+ * - ONE tilted desk assembly (mat + wood + half-pipe ring + props + legs share L4_TILT).
  * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
- * - Concave U channels W/N/E only; NO south gutter; NO raised lip between mat and channel.
- * - Real through-holes at BOTH SW and SE channel termini.
+ * - Continuous HALF-PIPE channel ring on ALL four sides (N/S/E/W) with rounded corners.
+ * - ONE scoring through-hole only (south-center of the ring). No second SW/SE hole.
  * - Tiny south tilt (L4_TILT ≈ 0.001°) for balance; do not retune lightly.
- * - Open mat→channel mouths (no corner muritos); continuous south wood except scoring holes.
+ * - Open mat→channel lips (rounded); no square 90° trough corners (no wedging).
  * - Solid Cannon bodies on clutter props.
- * - Invisible shooter-only lids over channels + holes (collision groups) so field marbles
- *   still fall in / score, while player+AI shooters roll across as if the desk were solid.
+ * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
+ *   marbles fall into the trough / score via the single hole, while player+AI shooters
+ *   roll across the channel onto outer wood as if a bridge spanned the gap.
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
@@ -23,14 +24,16 @@ import {
 /** Half-size of the square playmat (matches chalk diameter). */
 export const L4_MAT_HALF = CIRCLE_RADIUS;
 /** Channel width carved around the mat. */
-export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2;
+export const L4_CHANNEL_W = MARBLE_RADIUS * 3.6; // ~1.8× diameter — one marble rolls freely
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Desk assembly tilt (rad). 0 = fully flat / straight. */
 export const L4_TILT = (0.001 * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
-export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
+export const L4_GUTTER_DEPTH = L4_CHANNEL_W / 2; // true half-pipe radius
+/** Half-pipe cross-section radius (= channel half-width). */
+export const L4_PIPE_R = L4_CHANNEL_W / 2;
 
 /** Room floor Y relative to desk top assembly (legs). */
 export const L4_ROOM_FLOOR_Y = -0.74;
@@ -61,36 +64,66 @@ export const L4_DESK_BOUNDS = {
  * Local desk-top Y of the collider under (x, z), or null if open air / hole.
  * Desk top = 0; channel trough = −L4_GUTTER_DEPTH. World Y ≈ PLAY_SURFACE_Y + local − sin(tilt)·z.
  */
+/** Single L4 scoring hole — south-center of the half-pipe ring. */
+export function l4HoleCentersLocal(): { x: number; z: number }[] {
+  const mh = L4_MAT_HALF;
+  const r = L4_PIPE_R;
+  return [{ x: 0, z: mh + r }];
+}
+
+/**
+ * Signed lateral offset from the rounded-rect channel centerline.
+ * 0 = centerline (trough bottom); ±L4_PIPE_R = lips at desk top.
+ * null = not in the channel band (mat interior or outside the ring).
+ */
+export function l4ChannelLateral(x: number, z: number): number | null {
+  const mh = L4_MAT_HALF;
+  const R = L4_PIPE_R;
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  // Interior of mat — not in channel
+  if (ax <= mh && az <= mh) return null;
+  // Outside the outer lip of the ring
+  const outer = mh + 2 * R;
+  if (ax > outer + 1e-6 || az > outer + 1e-6) return null;
+  if (ax <= mh) {
+    // North / south straight: centerline at |z| = mh + R
+    return az - (mh + R);
+  }
+  if (az <= mh) {
+    // West / east straight: centerline at |x| = mh + R
+    return ax - (mh + R);
+  }
+  // Corner quarter-circle centerline centered at (±mh, ±mh) with radius R
+  const dist = Math.hypot(ax - mh, az - mh);
+  // Outside outer corner lip
+  if (dist > 2 * R + 1e-6) return null;
+  return dist - R;
+}
+
+/**
+ * Local desk-top Y of the collider under (x, z), or null if open air / hole.
+ * Desk top = 0; half-pipe floor = −sqrt(R² − lat²). World Y ≈ PLAY_SURFACE_Y + local − sin(tilt)·z.
+ */
 export function l4SupportLocalY(x: number, z: number): number | null {
   const mh = L4_MAT_HALF;
-  const cw = L4_CHANNEL_W;
+  const R = L4_PIPE_R;
   const hr = L4_HOLE_RADIUS;
-  const outer = mh + cw;
-  const trough = -L4_GUTTER_DEPTH;
+  const outer = mh + 2 * R;
 
-  // Scoring holes — open (fall through)
-  const holes = [
-    { x: -(mh + cw / 2), z: mh + cw / 2 },
-    { x: mh + cw / 2, z: mh + cw / 2 },
-  ];
-  for (const h of holes) {
+  // Single scoring hole — open (fall through)
+  for (const h of l4HoleCentersLocal()) {
     if (Math.hypot(x - h.x, z - h.z) < hr) return null;
   }
 
   // Playmat top
   if (Math.abs(x) <= mh && Math.abs(z) <= mh) return 0;
 
-  // Concave channels W / N / E (trough floor)
-  if (z >= -outer && z <= -mh && Math.abs(x) <= outer) return trough; // north
-  if (x >= -outer && x <= -mh && z >= -outer && z <= outer) return trough; // west
-  if (x >= mh && x <= outer && z >= -outer && z <= outer) return trough; // east
-
-  // South-of-mat: center wood bridge (desk top); SW/SE mouths open into side troughs
-  if (z > mh && z <= outer && Math.abs(x) <= outer) {
-    const cornerOpen = cw * 0.95;
-    const bridgeHalf = Math.max(0.04, mh - cornerOpen);
-    if (Math.abs(x) <= bridgeHalf) return 0;
-    return trough;
+  // Half-pipe ring (straights + rounded corners)
+  const lat = l4ChannelLateral(x, z);
+  if (lat !== null && Math.abs(lat) <= R + 1e-6) {
+    const clamped = Math.max(-R, Math.min(R, lat));
+    return -Math.sqrt(Math.max(0, R * R - clamped * clamped));
   }
 
   // Left desk slab wood margins (outside the play well)
@@ -99,7 +132,10 @@ export function l4SupportLocalY(x: number, z: number): number | null {
   const leftMinZ = -0.425;
   const leftMaxZ = 0.525;
   if (x >= leftMinX && x <= leftMaxX && z >= leftMinZ && z <= leftMaxZ) {
-    return 0;
+    // Outside the channel outer lip → desk top wood
+    if (Math.abs(x) >= outer - 1e-6 || Math.abs(z) >= outer - 1e-6 || lat === null) {
+      return 0;
+    }
   }
 
   // Right wing
@@ -116,6 +152,11 @@ export function l4SupportLocalY(x: number, z: number): number | null {
     return 0;
   }
 
+  // Outer wood ring just beyond the half-pipe (within left slab footprint)
+  if (x >= leftMinX && x <= leftMaxX && z >= leftMinZ && z <= leftMaxZ) {
+    return 0;
+  }
+
   return null;
 }
 
@@ -123,44 +164,37 @@ export function l4SupportLocalY(x: number, z: number): number | null {
 export function l4MarbleRestY(x: number, z: number): number | null {
   const local = l4SupportLocalY(x, z);
   if (local === null) return null;
-  // Match existing tilt convention used elsewhere in Game.ts
   return PLAY_SURFACE_Y + local - Math.sin(L4_TILT) * z + MARBLE_RADIUS;
 }
 
 /**
- * Shooter support: channels + scoring holes act as desk-top (lids).
- * Returns local Y (=0 on play well / wood) or null if off the desk entirely.
+ * Shooter support: invisible bridges span the half-pipe ring + hole at desk-top height.
+ * Returns local Y (=0 on play well / wood / bridges) or null if off the desk entirely.
  */
 export function l4ShooterSupportLocalY(x: number, z: number): number | null {
   const mh = L4_MAT_HALF;
-  const cw = L4_CHANNEL_W;
-  const outer = mh + cw;
-  // Entire play well (mat + W/N/E channels + SW/SE holes) is solid for shooters
+  const R = L4_PIPE_R;
+  const outer = mh + 2 * R;
+  // Entire play well (mat + full half-pipe ring + single hole) is solid for shooters
   if (Math.abs(x) <= outer + 1e-4 && Math.abs(z) <= outer + 1e-4) return 0;
   return l4SupportLocalY(x, z);
 }
 
-/** World rest Y for shooters (lids over channels/holes). */
+/** World rest Y for shooters (bridges over channels/hole). */
 export function l4ShooterMarbleRestY(x: number, z: number): number | null {
   const local = l4ShooterSupportLocalY(x, z);
   if (local === null) return null;
   return PLAY_SURFACE_Y + local - Math.sin(L4_TILT) * z + MARBLE_RADIUS;
 }
 
-/** True if XZ is over a recessed channel trough or a scoring-hole opening. */
+/** True if XZ is over the recessed half-pipe trough or the scoring-hole opening. */
 export function l4IsChannelOrHoleXZ(x: number, z: number): boolean {
-  const mh = L4_MAT_HALF;
-  const cw = L4_CHANNEL_W;
   const hr = L4_HOLE_RADIUS;
-  const holes = [
-    { x: -(mh + cw / 2), z: mh + cw / 2 },
-    { x: mh + cw / 2, z: mh + cw / 2 },
-  ];
-  for (const h of holes) {
+  for (const h of l4HoleCentersLocal()) {
     if (Math.hypot(x - h.x, z - h.z) < hr) return true;
   }
-  const local = l4SupportLocalY(x, z);
-  return local !== null && local < -1e-4;
+  const lat = l4ChannelLateral(x, z);
+  return lat !== null && Math.abs(lat) <= L4_PIPE_R + 1e-6;
 }
 
 const MAT_PRESETS: { id: string; label: string; url: string | null }[] = [
@@ -361,11 +395,9 @@ export function buildOfficeDesk(
   const gutterDepth = L4_GUTTER_DEPTH;
   const outerHalf = matHalf + chW;
 
-  // Holes at SW / SE ends of side channels (channel centerline X, south channel Z)
-  const holeCentersLocal = [
-    { x: -(matHalf + chW / 2), z: matHalf + chW / 2 },
-    { x: matHalf + chW / 2, z: matHalf + chW / 2 },
-  ];
+  // Single scoring hole — south-center of the half-pipe ring
+  const holeCentersLocal = l4HoleCentersLocal();
+  const pipeR = L4_PIPE_R;
 
   const mkBoard = (
     w: number,
@@ -432,7 +464,7 @@ export function buildOfficeDesk(
     addFrameBox(w / 2, deskThick / 2, outerHalf, cx, topYc, 0);
   }
 
-  // Solid underplate under the left desk with tight openings only at scoring holes.
+  // Solid underplate under the left desk with a tight opening only at the single south hole.
   // Stops light floor showing through channel cracks / L-voids.
   {
     const plateH = 0.045;
@@ -446,77 +478,42 @@ export function buildOfficeDesk(
         new CANNON.Vec3(cx, plateCy, cz),
       );
     };
+    const hole = holeCentersLocal[0]!;
     const gap = holeR * 2.05;
-    const sw = holeCentersLocal[0]!.x;
-    const se = holeCentersLocal[1]!.x;
-    const hz = holeCentersLocal[0]!.z;
-    // North of holes — full width
+    // North of hole — full width
     {
-      const z1 = hz - gap / 2;
+      const z1 = hole.z - gap / 2;
       const d = z1 - leftMinZ;
       if (d > 0.02) addPlate(leftLen, d, leftCX, (leftMinZ + z1) / 2);
     }
-    // South of holes — full width
+    // South of hole — full width
     {
-      const z0 = hz + gap / 2;
+      const z0 = hole.z + gap / 2;
       const d = leftMaxZ - z0;
       if (d > 0.02) addPlate(leftLen, d, leftCX, (z0 + leftMaxZ) / 2);
     }
-    // Mid band (hole row) — three segments around SW/SE holes
+    // Mid band (hole row) — two segments left/right of the single south hole
     {
       const d = gap;
-      const cz = hz;
-      addPlate(Math.max(0.02, sw - gap / 2 - leftMinX), d, (leftMinX + (sw - gap / 2)) / 2, cz);
-      addPlate(Math.max(0.02, (se - gap / 2) - (sw + gap / 2)), d, ((sw + gap / 2) + (se - gap / 2)) / 2, cz);
-      addPlate(Math.max(0.02, leftMaxX - (se + gap / 2)), d, ((se + gap / 2) + leftMaxX) / 2, cz);
+      const cz = hole.z;
+      const hx = hole.x;
+      addPlate(Math.max(0.02, hx - gap / 2 - leftMinX), d, (leftMinX + (hx - gap / 2)) / 2, cz);
+      addPlate(Math.max(0.02, leftMaxX - (hx + gap / 2)), d, ((hx + gap / 2) + leftMaxX) / 2, cz);
     }
   }
 
-  // Mat pedestal — top flush with desk (Y=0).
-  // Chamfer SW/SE corners so no vertical "murito" post blocks mat → W/E channel mouths.
+  // Mat pedestal — top flush with desk (Y=0). Full rectangle; all four sides open into the half-pipe.
   {
     const pedH = gutterDepth;
     const pedCy = -pedH / 2;
     const inset = 0.001;
-    const chamfer = chW * 0.95; // open corner into side channels
     const full = matHalf * 2 - inset * 2;
-    // Main body shortened in Z so SW/SE corners are open; north stays full width
-    const mainD = full - chamfer;
-    const mainCz = -chamfer / 2; // shift north
-    mkBoard(full, pedH, mainD, 0, pedCy, mainCz);
-    // South-center tongue (between chamfers) keeps south mat supported
-    const tongueW = full - chamfer * 2;
-    if (tongueW > 0.04) {
-      mkBoard(tongueW, pedH, chamfer, 0, pedCy, matHalf - inset - chamfer / 2);
-    }
+    mkBoard(full, pedH, full, 0, pedCy, 0);
     const ped = mkStatic(woodMat);
     ped.addShape(
-      new CANNON.Box(new CANNON.Vec3(full / 2, pedH / 2, mainD / 2)),
-      new CANNON.Vec3(0, pedCy, mainCz),
+      new CANNON.Box(new CANNON.Vec3(full / 2, pedH / 2, full / 2)),
+      new CANNON.Vec3(0, pedCy, 0),
     );
-    if (tongueW > 0.04) {
-      ped.addShape(
-        new CANNON.Box(new CANNON.Vec3(tongueW / 2, pedH / 2, chamfer / 2)),
-        new CANNON.Vec3(0, pedCy, matHalf - inset - chamfer / 2),
-      );
-    }
-  }
-
-  // Trough pads under chamfered SW/SE mat corners (land marbles into channel)
-  {
-    const chamfer = chW * 0.95;
-    const padT = 0.008;
-    const padCy = -gutterDepth + padT / 2;
-    const padBody = mkStatic(woodMat);
-    for (const side of [-1, 1] as const) {
-      const cx = side * (matHalf - chamfer / 2);
-      const cz = matHalf - chamfer / 2;
-      mkBoard(chamfer * 0.98, padT, chamfer * 0.98, cx, padCy, cz);
-      padBody.addShape(
-        new CANNON.Box(new CANNON.Vec3((chamfer * 0.98) / 2, padT / 2, (chamfer * 0.98) / 2)),
-        new CANNON.Vec3(cx, padCy, cz),
-      );
-    }
   }
 
   // Playmat visual — coplanar with desk top (tiny epsilon above Y=0)
@@ -546,18 +543,11 @@ export function buildOfficeDesk(
     );
   }
 
-  // ——— Concave U channels (W/N/E) + L-corner fills + holes flush with trough ———
+  // ——— Continuous half-pipe ring (N/S/E/W + rounded corners) + single south hole ———
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
   const lipMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.5 });
   const channelBody = mkStatic(woodMat);
-
-  /** Visual/physics trough floor top (marble rests at troughY + radius). */
-  const troughY = -gutterDepth;
-  const floorT = 0.007;
-  const floorW = chW * 0.4;
-  const bankW = (chW - floorW) * 0.5;
-  const bankAng = 0.5; // ~29° banks → readable concave U
 
   const addShapeBox = (
     body: CANNON.Body,
@@ -575,229 +565,207 @@ export function buildOfficeDesk(
     else body.addShape(shape, new CANNON.Vec3(ox, oy, oz));
   };
 
-  /** Concave U segment. alongX=true → runs along X (north gutter). outerSign: lip on +/− side.
-   *  INNER edge (toward mat) is OPEN — no murito / stub wall — so marbles roll off mat into trough.
-   *  Only the OUTER lip + outer bank keep marbles from falling off the desk. */
-  const addUChannel = (
+  /**
+   * Half-pipe cross-section: semicircle of radius pipeR, lips at local Y=0.
+   * Visual = Lathe-like ribbon; physics = N box facets along the arc.
+   * `alongX` → pipe runs along X (north/south). Otherwise along Z (west/east).
+   * Skip a hole gap when |along-axis center| falls inside hole disk.
+   */
+  const SEGS = 10;
+  const addHalfPipeStraight = (
     length: number,
     cx: number,
     cz: number,
     alongX: boolean,
-    outerSign: number,
+    holeSkip?: { x: number; z: number; r: number },
   ) => {
-    if (length < 0.03) return;
-    const fw = alongX ? length : floorW;
-    const fd = alongX ? floorW : length;
-    const floorCy = troughY + floorT / 2;
-    const floorM = new THREE.Mesh(new THREE.BoxGeometry(fw, floorT, fd), chMat);
-    floorM.position.set(cx, floorCy, cz);
-    floorM.receiveShadow = true;
-    desk.add(floorM);
-    addShapeBox(channelBody, fw / 2, floorT / 2, fd / 2, cx, floorCy, cz);
-
-    // Outer concave bank only (visual). No inner bank — that was the corner "murito".
-    {
-      const side = outerSign as -1 | 1;
-      const bankDepth = bankW * 1.05;
-      const bankThick = 0.01;
-      const bank = alongX
-        ? new THREE.Mesh(new THREE.BoxGeometry(length, bankThick, bankDepth), lipMat)
-        : new THREE.Mesh(new THREE.BoxGeometry(bankDepth, bankThick, length), lipMat);
-      const mid = floorW / 2 + bankW * 0.45;
-      const ox = alongX ? 0 : side * mid;
-      const oz = alongX ? side * mid : 0;
-      const by = troughY + gutterDepth * 0.42;
-      bank.position.set(cx + ox, by, cz + oz);
-      if (alongX) bank.rotation.x = -side * bankAng;
-      else bank.rotation.z = side * bankAng;
-      bank.castShadow = true;
-      bank.receiveShadow = true;
-      desk.add(bank);
+    if (length < 0.02) return;
+    // Optionally split around the scoring hole
+    const spans: { len: number; cAlong: number }[] = [];
+    if (holeSkip) {
+      const cAlong0 = alongX ? cx : cz;
+      const hAlong = alongX ? holeSkip.x : holeSkip.z;
+      const hPerp = alongX ? holeSkip.z : holeSkip.x;
+      const cPerp = alongX ? cz : cx;
+      // Only skip if hole sits on this segment's perpendicular centerline
+      if (Math.abs(hPerp - cPerp) < pipeR * 0.85) {
+        const half = length / 2;
+        const a0 = cAlong0 - half;
+        const a1 = cAlong0 + half;
+        const gap = holeSkip.r * 1.08;
+        const g0 = hAlong - gap;
+        const g1 = hAlong + gap;
+        if (g0 > a0 + 0.01) spans.push({ len: g0 - a0, cAlong: (a0 + g0) / 2 });
+        if (a1 > g1 + 0.01) spans.push({ len: a1 - g1, cAlong: (g1 + a1) / 2 });
+      } else {
+        spans.push({ len: length, cAlong: cAlong0 });
+      }
+    } else {
+      spans.push({ len: length, cAlong: alongX ? cx : cz });
     }
 
-    // Physics: ONLY outer vertical wall (inner edge open to mat)
-    {
-      const wallH = gutterDepth * 0.92;
-      const wallT = 0.005;
-      const wallCy = troughY + wallH / 2;
-      const side = outerSign;
-      const ox = alongX ? 0 : side * (chW / 2 - wallT / 2);
-      const oz = alongX ? side * (chW / 2 - wallT / 2) : 0;
-      addShapeBox(
-        channelBody,
-        alongX ? length / 2 : wallT / 2,
-        wallH / 2,
-        alongX ? wallT / 2 : length / 2,
-        cx + ox,
-        wallCy,
-        cz + oz,
-      );
-    }
+    for (const span of spans) {
+      if (span.len < 0.015) continue;
+      const scx = alongX ? span.cAlong : cx;
+      const scz = alongX ? cz : span.cAlong;
 
-    // Thin outer lip at desk-top edge (visual + physics)
-    const lipH = 0.01;
-    const lipT = 0.006;
-    const lip = alongX
-      ? new THREE.Mesh(new THREE.BoxGeometry(length, lipH, lipT), lipMat)
-      : new THREE.Mesh(new THREE.BoxGeometry(lipT, lipH, length), lipMat);
-    const lox = alongX ? 0 : outerSign * (chW / 2 - lipT / 2);
-    const loz = alongX ? outerSign * (chW / 2 - lipT / 2) : 0;
-    lip.position.set(cx + lox, -lipH / 2 + 0.0002, cz + loz);
-    lip.castShadow = true;
-    desk.add(lip);
-    addShapeBox(
-      channelBody,
-      alongX ? length / 2 : lipT / 2,
-      lipH / 2,
-      alongX ? lipT / 2 : length / 2,
-      cx + lox,
-      -lipH / 2,
-      cz + loz,
-    );
+      // Visual half-pipe via many thin boxes (matches physics)
+      for (let i = 0; i < SEGS; i++) {
+        const t0 = i / SEGS;
+        const t1 = (i + 1) / SEGS;
+        const a0 = Math.PI * t0; // 0 = outer lip (+perp), π = inner lip (−perp)
+        const a1 = Math.PI * t1;
+        const amid = 0.5 * (a0 + a1);
+        const arc = (a1 - a0) * pipeR;
+        const thick = Math.max(0.0045, arc * 0.95);
+        // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
+        const lat = pipeR * Math.cos(amid);
+        const y = -pipeR * Math.sin(amid);
+        // Tangent angle for facet
+        const ang = amid - Math.PI / 2; // rotate facet to follow circle
+
+        const bw = alongX ? span.len : thick;
+        const bd = alongX ? thick : span.len;
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.0055, bd), chMat);
+        if (alongX) {
+          mesh.position.set(scx, y, scz + lat);
+          mesh.rotation.x = ang;
+        } else {
+          mesh.position.set(scx + lat, y, scz);
+          mesh.rotation.z = -ang;
+        }
+        mesh.receiveShadow = true;
+        mesh.castShadow = true;
+        desk.add(mesh);
+
+        // Physics facet
+        const q = new CANNON.Quaternion();
+        if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
+        else q.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), -ang);
+        addShapeBox(
+          channelBody,
+          alongX ? span.len / 2 : thick / 2,
+          0.0028,
+          alongX ? thick / 2 : span.len / 2,
+          alongX ? scx : scx + lat,
+          y,
+          alongX ? scz + lat : scz,
+          q,
+        );
+      }
+
+      // Rounded lip beads (visual + light physics) at inner & outer edges
+      for (const side of [-1, 1] as const) {
+        const lipR = 0.0035;
+        const lat = side * pipeR;
+        const bead = alongX
+          ? new THREE.Mesh(new THREE.CylinderGeometry(lipR, lipR, span.len, 8), lipMat)
+          : new THREE.Mesh(new THREE.CylinderGeometry(lipR, lipR, span.len, 8), lipMat);
+        if (alongX) {
+          bead.rotation.z = Math.PI / 2;
+          bead.position.set(scx, -lipR * 0.15, scz + lat);
+        } else {
+          bead.rotation.x = Math.PI / 2;
+          bead.position.set(scx + lat, -lipR * 0.15, scz);
+        }
+        bead.castShadow = true;
+        desk.add(bead);
+        addShapeBox(
+          channelBody,
+          alongX ? span.len / 2 : lipR,
+          lipR,
+          alongX ? lipR : span.len / 2,
+          alongX ? scx : scx + lat,
+          -lipR * 0.15,
+          alongX ? scz + lat : scz,
+        );
+      }
+    }
   };
 
-  // North (-Z) full run including NW/NE corners
-  {
-    const cz = -(matHalf + chW / 2);
-    addUChannel(matHalf * 2 + chW * 2, 0, cz, true, -1);
-  }
+  /** Rounded corner elbow: quarter-circle of half-pipe around (±matHalf, ±matHalf). */
+  const addHalfPipeCorner = (signX: number, signZ: number) => {
+    const cornerCx = signX * matHalf;
+    const cornerCz = signZ * matHalf;
+    const slices = 8;
+    for (let s = 0; s < slices; s++) {
+      // Angle along the plan-view quarter: from south/east etc.
+      // For +X+Z (SE): from angle 0 (east, +X) to π/2 (south, +Z) in standard CCW from +X
+      // General: start at angle toward the east/west straight end
+      // signX>0,signZ>0 (SE): θ from 0 (+X) to π/2 (+Z)
+      // signX<0,signZ>0 (SW): θ from π/2 (+Z) to π (−X)
+      // signX<0,signZ<0 (NW): θ from π (−X) to 3π/2 (−Z)
+      // signX>0,signZ<0 (NE): θ from −π/2 / 3π/2 (−Z) to 0 / 2π (+X)
+      let theta0: number;
+      if (signX > 0 && signZ > 0) theta0 = 0;
+      else if (signX < 0 && signZ > 0) theta0 = Math.PI / 2;
+      else if (signX < 0 && signZ < 0) theta0 = Math.PI;
+      else theta0 = -Math.PI / 2;
+      const t0 = theta0 + (Math.PI / 2) * (s / slices);
+      const t1 = theta0 + (Math.PI / 2) * ((s + 1) / slices);
+      const tmid = 0.5 * (t0 + t1);
+      const arcLen = pipeR * (t1 - t0);
+      // Centerline point
+      const clx = cornerCx + pipeR * Math.cos(tmid);
+      const clz = cornerCz + pipeR * Math.sin(tmid);
+      // Radial (outward in XZ) and tangent
+      const radX = Math.cos(tmid);
+      const radZ = Math.sin(tmid);
 
-  // West / East: trough runs to hole rim (open terminus — marble drops in)
-  {
-    const holeClear = holeR * 1.05;
-    const weZ0 = -(matHalf + chW);
-    const weZ1 = matHalf + chW / 2 - holeClear;
-    const weLen = weZ1 - weZ0;
-    const weCz = (weZ0 + weZ1) / 2;
-    if (weLen > 0.04) {
-      addUChannel(weLen, -(matHalf + chW / 2), weCz, false, -1);
-      addUChannel(weLen, matHalf + chW / 2, weCz, false, +1);
-    }
-  }
+      for (let i = 0; i < SEGS; i++) {
+        const a0 = Math.PI * (i / SEGS);
+        const a1 = Math.PI * ((i + 1) / SEGS);
+        const amid = 0.5 * (a0 + a1);
+        const thick = Math.max(0.0045, (a1 - a0) * pipeR * 0.95);
+        const lat = pipeR * Math.cos(amid); // along radial in XZ
+        const y = -pipeR * Math.sin(amid);
+        const px = clx + lat * radX;
+        const pz = clz + lat * radZ;
 
-  // South-of-mat wood (NO south gutter).
-  // Center span only — SW/SE corners stay OPEN into W/E channels (no murito end-walls).
-  {
-    const bridgeZ = matHalf + chW / 2;
-    const cornerOpen = chW * 0.95; // open mouth wrapping mat SW/SE into side channels
-    const bridgeW = Math.max(0.08, matHalf * 2 - cornerOpen * 2);
-    mkBoard(bridgeW, gutterDepth, chW, 0, -gutterDepth / 2, bridgeZ);
-    const br = mkStatic(woodMat);
-    br.addShape(
-      new CANNON.Box(new CANNON.Vec3(bridgeW / 2, gutterDepth / 2, chW / 2)),
-      new CANNON.Vec3(0, -gutterDepth / 2, bridgeZ),
-    );
-  }
+        // Facet orientation: rotate about tangent axis
+        const tangX = -Math.sin(tmid);
+        const tangZ = Math.cos(tmid);
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(arcLen, 0.0055, thick), chMat);
+        mesh.position.set(px, y, pz);
+        // Look along tangent; roll by amid
+        mesh.lookAt(px + tangX, y, pz + tangZ);
+        mesh.rotateX(amid - Math.PI / 2);
+        mesh.receiveShadow = true;
+        desk.add(mesh);
 
-  // SW / SE termini: continuous desk-top wood with ONLY circular hole openings
-  // + a narrow recessed corridor from the W/E channel into each hole.
-  // No rectangular L-voids; no murito posts at mat corners.
-  const fillCorner = (hx: number, hz: number) => {
-    const side = Math.sign(hx) || 1;
-    const cornerBody = mkStatic(woodMat);
-
-    const xMat = side * matHalf;
-    const xOut = side * outerHalf;
-    const zMat = matHalf;
-    const zOut = outerHalf;
-    const xLo = Math.min(xMat, xOut);
-    const xHi = Math.max(xMat, xOut);
-
-    const fillH = gutterDepth;
-    const fillCy = -fillH / 2;
-    const corridorW = chW * 0.92; // full channel width stays open from mat → hole (no murito)
-
-    // Desk-top wood ONLY south of hole + outer flank — NEVER between mat and hole
-    // (that band stays recessed so SW/SE mouths are open).
-    {
-      // South-of-hole band across full strip
-      {
-        const za = hz + holeR * 1.08;
-        const zb = zOut;
-        const d = zb - za;
-        if (d > 0.004) {
-          mkBoard(xHi - xLo, fillH, d, (xLo + xHi) / 2, fillCy, (za + zb) / 2);
-          addShapeBox(cornerBody, (xHi - xLo) / 2, fillH / 2, d / 2, (xLo + xHi) / 2, fillCy, (za + zb) / 2);
-        }
-      }
-      // Outer flank beside hole (away from mat)
-      {
-        const za = zMat;
-        const zb = hz + holeR * 1.08;
-        const d = zb - za;
-        if (d > 0.004) {
-          if (side < 0) {
-            const xa = xOut;
-            const xb = hx - Math.max(corridorW / 2, holeR * 1.05);
-            const w = xb - xa;
-            if (w > 0.004) {
-              mkBoard(w, fillH, d, (xa + xb) / 2, fillCy, (za + zb) / 2);
-              addShapeBox(cornerBody, w / 2, fillH / 2, d / 2, (xa + xb) / 2, fillCy, (za + zb) / 2);
-            }
-          } else {
-            const xa = hx + Math.max(corridorW / 2, holeR * 1.05);
-            const xb = xOut;
-            const w = xb - xa;
-            if (w > 0.004) {
-              mkBoard(w, fillH, d, (xa + xb) / 2, fillCy, (za + zb) / 2);
-              addShapeBox(cornerBody, w / 2, fillH / 2, d / 2, (xa + xb) / 2, fillCy, (za + zb) / 2);
-            }
-          }
-        }
+        // Physics: approximate with unrotated box at facet center (good enough for marbles)
+        addShapeBox(
+          channelBody,
+          Math.max(arcLen, thick) / 2,
+          0.0028,
+          Math.min(arcLen, thick) / 2 + 0.001,
+          px,
+          y,
+          pz,
+        );
       }
     }
+  };
 
-    // Trough floor only in the corridor + around hole rim (marble path)
-    {
-      const apronT = floorT;
-      const apronCy = troughY + apronT / 2;
-      const slabs: [number, number, number, number][] = [
-        // corridor from mat to hole
-        [hx - corridorW / 2, hx + corridorW / 2, zMat, hz - holeR * 1.02],
-        // ring around hole
-        [xLo, xHi, hz - holeR * 1.02, hz + holeR * 1.02],
-        [hx - holeR * 1.02, hx + holeR * 1.02, hz - holeR * 1.02, hz + holeR * 1.02],
-      ];
-      // Refine ring into 4 slabs excluding hole disk
-      const ring: [number, number, number, number][] = [
-        [hx - corridorW / 2, hx + corridorW / 2, zMat, hz - holeR * 1.02],
-        [xLo, xHi, hz + holeR * 1.02, Math.min(zOut, hz + holeR * 1.02 + 0.004)], // tiny deadzone
-        [hx - holeR * 1.02, hx + holeR * 1.02, hz - holeR * 1.02, hz + holeR * 1.02], // will skip center via mesh only at edges
-      ];
-      void slabs;
-      // Corridor floor
-      {
-        const w = corridorW;
-        const d = hz - holeR * 1.02 - zMat;
-        if (d > 0.004) {
-          const m = new THREE.Mesh(new THREE.BoxGeometry(w, apronT, d), chMat);
-          m.position.set(hx, apronCy, (zMat + (hz - holeR * 1.02)) / 2);
-          m.receiveShadow = true;
-          desk.add(m);
-          addShapeBox(channelBody, w / 2, apronT / 2, d / 2, hx, apronCy, (zMat + (hz - holeR * 1.02)) / 2);
-        }
-      }
-      // Floor pads N/S/W/E of hole
-      for (const [xa, xb, za, zb] of [
-        [hx - holeR * 1.6, hx + holeR * 1.6, hz + holeR * 1.02, hz + holeR * 1.6],
-        [hx - holeR * 1.6, hx - holeR * 1.02, hz - holeR * 1.02, hz + holeR * 1.02],
-        [hx + holeR * 1.02, hx + holeR * 1.6, hz - holeR * 1.02, hz + holeR * 1.02],
-      ] as [number, number, number, number][]) {
-        const w = xb - xa;
-        const d = zb - za;
-        if (w < 0.003 || d < 0.003) continue;
-        const cx = (xa + xb) / 2;
-        const cz = (za + zb) / 2;
-        const m = new THREE.Mesh(new THREE.BoxGeometry(w, apronT, d), chMat);
-        m.position.set(cx, apronCy, cz);
-        m.receiveShadow = true;
-        desk.add(m);
-        addShapeBox(channelBody, w / 2, apronT / 2, d / 2, cx, apronCy, cz);
-      }
-      void ring;
-    }
+  // Straights (centerline at matHalf + pipeR; length = 2 * matHalf between corner centers)
+  const straightLen = matHalf * 2;
+  const hole = holeCentersLocal[0]!;
+  addHalfPipeStraight(straightLen, 0, -(matHalf + pipeR), true); // north
+  addHalfPipeStraight(straightLen, 0, matHalf + pipeR, true, { x: hole.x, z: hole.z, r: holeR }); // south (gap at hole)
+  addHalfPipeStraight(straightLen, -(matHalf + pipeR), 0, false); // west
+  addHalfPipeStraight(straightLen, matHalf + pipeR, 0, false); // east
 
-    // Through-hole visual — rim FLUSH with trough floor
+  // Rounded corners (no square 90° pits)
+  addHalfPipeCorner(1, 1);
+  addHalfPipeCorner(-1, 1);
+  addHalfPipeCorner(-1, -1);
+  addHalfPipeCorner(1, -1);
+
+  // Single south hole visual + shaft (open through underplate)
+  {
+    const hx = hole.x;
+    const hz = hole.z;
+    const troughY = -pipeR;
     const pit = new THREE.Mesh(
       new THREE.CircleGeometry(holeR * 1.05, 28),
       new THREE.MeshBasicMaterial({ color: 0x000000 }),
@@ -818,86 +786,73 @@ export function buildOfficeDesk(
     shaft.position.set(hx, troughY - shaftH / 2, hz);
     desk.add(shaft);
 
-    {
-      const cap = new THREE.Mesh(
-        new THREE.CircleGeometry(holeR * 1.05, 24),
-        new THREE.MeshBasicMaterial({ color: 0x000000 }),
-      );
-      cap.rotation.x = -Math.PI / 2;
-      cap.position.set(hx, troughY - shaftH + 0.002, hz);
-      desk.add(cap);
-    }
-
     const rim = new THREE.Mesh(
       new THREE.RingGeometry(holeR * 0.98, holeR * 1.22, 28),
       new THREE.MeshStandardMaterial({ color: 0x1a0c06, roughness: 0.92, metalness: 0 }),
     );
     rim.rotation.x = -Math.PI / 2;
-    rim.position.set(hx, troughY + floorT + 0.0002, hz);
+    rim.position.set(hx, troughY + 0.001, hz);
     desk.add(rim);
+  }
 
-    // Outer cheek only
-    {
-      const cheekW = 0.007;
-      const cheekH = 0.012;
-      const cheek = new THREE.Mesh(
-        new THREE.BoxGeometry(cheekW, cheekH, holeR * 2.4),
-        lipMat,
-      );
-      cheek.position.set(hx + side * (chW / 2 - cheekW / 2), -cheekH / 2, hz);
-      cheek.castShadow = true;
-      desk.add(cheek);
-      addShapeBox(
-        channelBody,
-        cheekW / 2,
-        cheekH / 2,
-        holeR * 1.2,
-        hx + side * (chW / 2 - cheekW / 2),
-        -cheekH / 2,
-        hz,
+  // Outer wood apron just outside the half-pipe ring (fills leftover square voids with mahogany)
+  {
+    const outer = matHalf + chW;
+    const apronT = gutterDepth;
+    const apronCy = -apronT / 2;
+    const apronBody = mkStatic(woodMat);
+    // North outer strip (between channel outer lip and left desk north edge) already framed;
+    // fill SE/SW former dual-hole voids with continuous wood south of the ring except the hole gap.
+    const southZ0 = outer;
+    const southZ1 = leftMaxZ;
+    const southD = southZ1 - southZ0;
+    if (southD > 0.01) {
+      mkBoard(leftLen, apronT, southD, leftCX, apronCy, (southZ0 + southZ1) / 2);
+      apronBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(leftLen / 2, apronT / 2, southD / 2)),
+        new CANNON.Vec3(leftCX, apronCy, (southZ0 + southZ1) / 2),
       );
     }
-  };
+  }
 
-  for (const h of holeCentersLocal) fillCorner(h.x, h.z);
-
-  // ——— Shooter-only invisible lids over channels + holes ———
-  // Field marbles ignore these (collision mask); shooters roll across as solid desk-top.
+  // ——— Shooter-only invisible BRIDGES over the full half-pipe ring + hole ———
+  // Field marbles ignore these (collision mask); shooters roll across at desk-top height.
   {
-    const blockerBody = new CANNON.Body({
+    const bridgeBody = new CANNON.Body({
       mass: 0,
       type: CANNON.Body.STATIC,
       material: woodMat,
       collisionFilterGroup: L4_COL_GROUP_SHOOTER_BLOCKER,
       collisionFilterMask: L4_COL_GROUP_SHOOTER,
     });
-    blockerBody.position.set(0, PLAY_SURFACE_Y, 0);
-    blockerBody.quaternion.copy(qTilt);
-    bodies.push(blockerBody);
+    bridgeBody.position.set(0, PLAY_SURFACE_Y, 0);
+    bridgeBody.quaternion.copy(qTilt);
+    bodies.push(bridgeBody);
 
-    const lidT = 0.006;
-    const lidCy = -lidT / 2; // top face flush with desk top (local Y=0)
-    const addLid = (hx: number, hz: number, ox: number, oz: number) => {
+    const bridgeT = 0.006;
+    const bridgeCy = -bridgeT / 2; // top face flush with desk top (local Y=0)
+    const addBridge = (hx: number, hz: number, ox: number, oz: number) => {
       if (hx < 0.002 || hz < 0.002) return;
-      blockerBody.addShape(
-        new CANNON.Box(new CANNON.Vec3(hx, lidT / 2, hz)),
-        new CANNON.Vec3(ox, lidCy, oz),
+      bridgeBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(hx, bridgeT / 2, hz)),
+        new CANNON.Vec3(ox, bridgeCy, oz),
       );
     };
 
-    // North channel full run (incl. NW/NE)
-    addLid(outerHalf, chW / 2, 0, -(matHalf + chW / 2));
-    // West / East channels full run (incl. SW/SE hole termini)
-    addLid(chW / 2, outerHalf, -(matHalf + chW / 2), 0);
-    addLid(chW / 2, outerHalf, matHalf + chW / 2, 0);
+    // Full ring coverage (N/S/E/W) — shooters pass OVER the concave channel
+    addBridge(outerHalf, chW / 2, 0, -(matHalf + chW / 2)); // north
+    addBridge(outerHalf, chW / 2, 0, matHalf + chW / 2); // south (incl. hole)
+    addBridge(chW / 2, outerHalf, -(matHalf + chW / 2), 0); // west
+    addBridge(chW / 2, outerHalf, matHalf + chW / 2, 0); // east
 
-    // Extra hole caps (redundant with W/E lids; keeps mouths sealed if trough gaps appear)
-    for (const h of holeCentersLocal) {
-      const cap = holeR * 1.15;
-      addLid(cap, cap, h.x, h.z);
+    // Corner caps so bridges meet cleanly at rounded corners
+    const cap = chW * 0.55;
+    for (const sx of [-1, 1] as const) {
+      for (const sz of [-1, 1] as const) {
+        addBridge(cap, cap, sx * (matHalf + chW / 2), sz * (matHalf + chW / 2));
+      }
     }
   }
-
 
   // Right wing top — MUST sit fully east of the play well (no overlap with mat/channels/holes)
   const rightCX = leftMaxX + rightWidth / 2 + 0.01; // ≈ 0.895

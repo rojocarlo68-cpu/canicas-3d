@@ -1184,7 +1184,7 @@ export class Game {
         this.sceneLevel === 3
           ? `L3 Escupidera: mete canicas de campo al HOYO. Tu canica al hoyo o fuera del bowl = pierdes. IA L3.`
           : this.sceneLevel === 4
-            ? `L4 Escritorio: saca canicas al canal → hoyos SO/SE (cuentan como KO). Personalizar = playmat.`
+            ? `L4 Escritorio: saca canicas al half-pipe → hoyo sur (cuenta como KO). Personalizar = playmat.`
             : `Pulsa el botón de soltar (~10 cm). Luego turnos ${this.playerName} ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent =
@@ -1197,7 +1197,7 @@ export class Game {
           ? this.sceneLevel === 3
             ? `${modeHint} · Meta: hoyo · No caigas al hoyo ni fuera del bowl`
             : this.sceneLevel === 4
-              ? `${modeHint} · Meta: hoyos de esquina (canales)`
+              ? `${modeHint} · Meta: half-pipe → hoyo sur`
               : modeHint
           : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
@@ -1705,7 +1705,7 @@ private spawnShootersInitial(): void {
       p.set(x, l4MarbleRestY(x, 0) ?? MARBLE_REST_Y, 0);
     }
     if (l4) {
-      // Shooters treat channels/holes as desk-top (lids). Never park them in a trough.
+      // Shooters treat half-pipe/hole as desk-top (bridges). Spawn on mat, not over trough.
       if (l4IsChannelOrHoleXZ(p.x, p.z)) {
         const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
         p.x = Math.max(-maxOnMat, Math.min(maxOnMat, p.x));
@@ -2576,7 +2576,7 @@ private spawnShootersInitial(): void {
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
       const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
-      // L1/L2: out of chalk circle. L3: into the center hole. L4: corner channel holes.
+      // L1/L2: out of chalk circle. L3: into the center hole. L4: single south channel hole.
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
         : l4
@@ -4558,7 +4558,7 @@ private spawnShootersInitial(): void {
   }
 
 
-  /** L4 interim: marble in either south-corner channel hole (or fallen into pit). */
+  /** L4: marble in the single south-center channel hole (or fallen into pit). */
   private isInL4Hole(x: number, y: number, z: number): boolean {
     const desk = this.officeDesk;
     if (!desk) return false;
@@ -4589,7 +4589,7 @@ private spawnShootersInitial(): void {
     // Below desk trough / into room → fallen
     if (y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH - MARBLE_RADIUS * 2) return true;
     if (opts?.shooter) {
-      // Shooters ride lids over channels/holes — only leave via desk edge → floor
+      // Shooters ride bridges over half-pipe/hole — only leave via desk edge → floor
       if (l4ShooterSupportLocalY(x, z) === null) {
         return y < PLAY_SURFACE_Y - MARBLE_RADIUS * 0.5;
       }
@@ -4605,19 +4605,16 @@ private spawnShootersInitial(): void {
    */
   private rescueL4ShootersFromChannels(): void {
     if (this.sceneLevel !== 4 || !this.officeDesk) return;
-    const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
     const outer = L4_MAT_HALF + L4_CHANNEL_W;
     for (const m of [this.playerMarble, this.aiMarble]) {
       if (!m || !m.active) continue;
       const p = m.body.position;
       const overPlayWell = Math.abs(p.x) <= outer + 0.02 && Math.abs(p.z) <= outer + 0.02;
-      const inForbiddenXZ = l4IsChannelOrHoleXZ(p.x, p.z);
+      // Bridges keep shooters at desk-top; only rescue if they tunneled into the trough.
       const sunkInTrough =
-        overPlayWell && p.y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH * 0.35;
-      if (!inForbiddenXZ && !sunkInTrough) continue;
-
-      p.x = Math.max(-maxOnMat, Math.min(maxOnMat, p.x));
-      p.z = Math.max(-maxOnMat, Math.min(maxOnMat, p.z));
+        overPlayWell && p.y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH * 0.25;
+      if (!sunkInTrough) continue;
+      // Keep XZ — lift onto the invisible bridge (do NOT yank back onto the mat).
       p.y = l4ShooterMarbleRestY(p.x, p.z) ?? MARBLE_REST_Y;
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
@@ -4628,7 +4625,7 @@ private spawnShootersInitial(): void {
   /**
    * L4 lose conditions for a personal (shooter) marble:
    * falling off the desk edge to the floor → that side loses ("perdiste").
-   * Channels / corner holes are shooter-blocked (lids); field marbles still use them.
+   * Half-pipe / south hole are shooter-bridged; field marbles still fall in / score.
    */
   private checkL4PersonalMarbleFail(): boolean {
     this.rescueL4ShootersFromChannels();
@@ -4803,7 +4800,7 @@ private spawnShootersInitial(): void {
       this.sceneLevel === 3
         ? 'Canicas al hoyo'
         : this.sceneLevel === 4
-          ? 'Canicas a hoyos de esquina'
+          ? 'Canicas al hoyo sur (half-pipe)'
           : 'Canicas sacadas';
     this.els.victoryWinner.textContent = t('victory.winner');
     this.els.victoryMoney.textContent =
