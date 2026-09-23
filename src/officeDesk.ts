@@ -6,7 +6,7 @@
  * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
  * - Concave U channels W/N/E only; NO south gutter; NO raised lip between mat and channel.
  * - Real through-holes at BOTH SW and SE channel termini.
- * - Soft south tilt (−1°) so off-mat wood/channel drift toward holes.
+ * - Soft south tilt (−0.8°) so off-mat wood/channel drift toward holes.
  * - Open mat→channel mouths (no corner muritos); continuous south wood except scoring holes.
  * - Solid Cannon bodies on clutter props.
  */
@@ -24,8 +24,8 @@ export const L4_MAT_HALF = CIRCLE_RADIUS;
 export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2;
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
-/** Soft south tilt (rad) — downhill toward +Z (−1° only). */
-export const L4_TILT = (1 * Math.PI) / 180;
+/** Soft south tilt (rad) — downhill toward +Z (−0.8° only). */
+export const L4_TILT = (0.8 * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
