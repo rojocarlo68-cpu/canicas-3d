@@ -905,8 +905,8 @@ export class Game {
       // Mat: plush / antiderrape — grippier than wood, low bounce
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
-          friction: 1.6,
-          restitution: 0.08,
+          friction: 2.2,
+          restitution: 0.05,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
         }),
