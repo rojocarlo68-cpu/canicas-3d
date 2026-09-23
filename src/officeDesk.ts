@@ -5,8 +5,8 @@
  * - Desk / mat / props stay FLAT (L4_TILT = 0). No gravity drift on mat or outer wood.
  * - Continuous HALF-PIPE channel ring on ALL four sides (N/S/E/W) with rounded corners.
  * - ONE scoring through-hole only at the SW corner of the ring (historic dual-hole spot).
- * - Channel-only downhill (L4_CHANNEL_TILT ≈ 0.15°) toward the SW hole so trough
- *   marbles reliably roll along the ring to the hole; mat/desk wood remain level.
+ * - Channel-only downhill along the RING PATH (arc-length height → SW hole) so trough
+ *   marbles reliably roll to the hole from any side; mat/desk wood remain level.
  * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges).
  * - Solid Cannon bodies on clutter props.
  * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
@@ -29,8 +29,16 @@ export const L4_CHANNEL_W = MARBLE_RADIUS * 3.6; // ~1.8× diameter — one marb
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Desk assembly tilt (rad). Always 0 — mat/desk wood stay level. */
 export const L4_TILT = 0;
-/** Channel-only downhill (rad) toward the SW scoring hole (~0.15°). Desk/mat stay 0°. */
-export const L4_CHANNEL_TILT = (0.15 * Math.PI) / 180;
+/** Geometric along-path slope (kept under half-pipe depth). Desk/mat stay 0°. */
+export const L4_CHANNEL_SLOPE_DEG = 0.55;
+export const L4_CHANNEL_TILT = (L4_CHANNEL_SLOPE_DEG * Math.PI) / 180;
+/**
+ * Extra along-centerline drainage (rad) applied as a force on field marbles in the
+ * trough only — equivalent slope on top of the geometric bias so they reach SW
+ * without raising the far-side trough above the desk top.
+ */
+export const L4_CHANNEL_DRAIN_DEG = 2.0;
+export const L4_CHANNEL_DRAIN = (L4_CHANNEL_DRAIN_DEG * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = L4_CHANNEL_W / 2; // true half-pipe radius
@@ -70,15 +78,302 @@ export function l4HoleCentersLocal(): { x: number; z: number }[] {
 }
 
 /**
- * Planar height bias for channel trough only: uphill toward NE, downhill to SW hole.
- * Desk/mat stay at local Y=0; this is added only to half-pipe support / facets.
+ * Perimeter of the rounded-rect channel centerline (straights + four corner arcs).
+ */
+export function l4ChannelCenterlinePerimeter(): number {
+  return 8 * L4_MAT_HALF + 2 * Math.PI * L4_PIPE_R;
+}
+
+/**
+ * CCW arc length along the channel centerline from the SW corner midpoint
+ * (drainage reference / scoring hole) to the nearest centerline point under (x, z).
+ * Returns null if (x, z) is not in the channel band.
+ */
+export function l4ChannelArcLengthFromSW(x: number, z: number): number | null {
+  const mh = L4_MAT_HALF;
+  const R = L4_PIPE_R;
+  const lat = l4ChannelLateral(x, z);
+  if (lat === null || Math.abs(lat) > R + 1e-6) return null;
+
+  const peri = l4ChannelCenterlinePerimeter();
+  const swHalf = (Math.PI / 4) * R; // SW mid → west-straight junction
+  const cornerQ = (Math.PI / 2) * R;
+  const straight = 2 * mh;
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  let s: number;
+
+  if (ax <= mh + 1e-9 && az > mh) {
+    // North / south straights
+    const clx = Math.max(-mh, Math.min(mh, x));
+    if (z < 0) {
+      // North, CCW: after SW-remnant + west + NW
+      s = swHalf + straight + cornerQ + (clx + mh);
+    } else {
+      // South, CCW: after SE; x runs mh → -mh
+      s =
+        swHalf +
+        straight +
+        cornerQ +
+        straight +
+        cornerQ +
+        straight +
+        cornerQ +
+        (mh - clx);
+    }
+  } else if (az <= mh + 1e-9 && ax > mh) {
+    // East / west straights
+    const clz = Math.max(-mh, Math.min(mh, z));
+    if (x < 0) {
+      // West, CCW from SW mid remnant then north (z: mh → -mh)
+      s = swHalf + (mh - clz);
+    } else {
+      // East, CCW after NE; z runs -mh → mh
+      s = swHalf + straight + cornerQ + straight + cornerQ + (clz + mh);
+    }
+  } else if (ax > mh && az > mh) {
+    // Corner quarter-circles centered at (±mh, ±mh)
+    const cx = Math.sign(x) * mh;
+    const cz = Math.sign(z) * mh;
+    let th = Math.atan2(z - cz, x - cx);
+    if (x > 0 && z > 0) {
+      // SE: θ ∈ [0, π/2]
+      th = Math.max(0, Math.min(Math.PI / 2, th));
+      s = swHalf + straight + cornerQ + straight + cornerQ + straight + th * R;
+    } else if (x < 0 && z > 0) {
+      // SW: θ ∈ [π/2, π]; SW mid at 3π/4
+      th = Math.max(Math.PI / 2, Math.min(Math.PI, th));
+      if (th >= (3 * Math.PI) / 4) s = (th - (3 * Math.PI) / 4) * R;
+      else s = peri - ((3 * Math.PI) / 4 - th) * R;
+    } else if (x < 0 && z < 0) {
+      // NW: θ ∈ [π, 3π/2]
+      if (th < 0) th += 2 * Math.PI;
+      th = Math.max(Math.PI, Math.min((3 * Math.PI) / 2, th));
+      s = swHalf + straight + (th - Math.PI) * R;
+    } else {
+      // NE: θ ∈ [3π/2, 2π]
+      if (th < 0) th += 2 * Math.PI;
+      th = Math.max((3 * Math.PI) / 2, Math.min(2 * Math.PI, th));
+      s = swHalf + straight + cornerQ + straight + (th - (3 * Math.PI) / 2) * R;
+    }
+  } else {
+    return null;
+  }
+
+  // Normalize into [0, peri)
+  s = ((s % peri) + peri) % peri;
+  return s;
+}
+
+/**
+ * Shortest arc distance along the ring centerline to the SW drainage point.
+ */
+export function l4ChannelArcDistToSW(x: number, z: number): number | null {
+  const s = l4ChannelArcLengthFromSW(x, z);
+  if (s === null) return null;
+  const peri = l4ChannelCenterlinePerimeter();
+  return Math.min(s, peri - s);
+}
+
+/**
+ * Arc-length height bias for channel trough only: lowest at SW hole, highest opposite.
+ * Desk/mat stay at local Y=0; added only to half-pipe support / facets.
+ * Both directions along the ring are downhill toward SW (no planar wrong-way slopes).
  */
 export function l4ChannelHeightBias(x: number, z: number): number {
-  const hole = l4HoleCentersLocal()[0]!;
-  // Unit vector SW → NE (opposite corner of the ring)
-  const inv = Math.SQRT1_2; // 1/√2
-  const along = (x - hole.x) * inv + (z - hole.z) * -inv;
-  return Math.sin(L4_CHANNEL_TILT) * Math.max(0, along);
+  const dist = l4ChannelArcDistToSW(x, z);
+  if (dist === null) return 0;
+  const raw = Math.sin(L4_CHANNEL_TILT) * dist;
+  // Keep trough recessed even at the far side of the ring
+  return Math.min(L4_PIPE_R * 0.55, raw);
+}
+
+/**
+ * Unit XZ direction along the channel centerline that decreases arc-distance to SW
+ * (downhill / drainage). null if not in the channel band.
+ */
+export function l4ChannelDrainDirXZ(x: number, z: number): { x: number; z: number } | null {
+  const lat = l4ChannelLateral(x, z);
+  if (lat === null || Math.abs(lat) > L4_PIPE_R + 1e-6) return null;
+  const mh = L4_MAT_HALF;
+  const R = L4_PIPE_R;
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  // Centerline point + unit tangent CCW
+  let clx: number;
+  let clz: number;
+  let tx: number;
+  let tz: number;
+  if (ax <= mh + 1e-9 && az > mh) {
+    clx = Math.max(-mh, Math.min(mh, x));
+    if (z < 0) {
+      clz = -(mh + R);
+      tx = 1;
+      tz = 0; // CCW east on north
+    } else {
+      clz = mh + R;
+      tx = -1;
+      tz = 0; // CCW west on south
+    }
+  } else if (az <= mh + 1e-9 && ax > mh) {
+    clz = Math.max(-mh, Math.min(mh, z));
+    if (x < 0) {
+      clx = -(mh + R);
+      tx = 0;
+      tz = -1; // CCW north on west
+    } else {
+      clx = mh + R;
+      tx = 0;
+      tz = 1; // CCW south on east
+    }
+  } else if (ax > mh && az > mh) {
+    const cx = Math.sign(x) * mh;
+    const cz = Math.sign(z) * mh;
+    const th = Math.atan2(z - cz, x - cx);
+    clx = cx + R * Math.cos(th);
+    clz = cz + R * Math.sin(th);
+    tx = -Math.sin(th);
+    tz = Math.cos(th); // CCW
+  } else {
+    return null;
+  }
+  const s0 = l4ChannelArcLengthFromSW(clx, clz);
+  if (s0 === null) return null;
+  const peri = l4ChannelCenterlinePerimeter();
+  const d0 = Math.min(s0, peri - s0);
+  const eps = 0.012;
+  // Probe both ways along tangent; pick the one that reduces shortest dist to SW
+  const fwdX = clx + tx * eps;
+  const fwdZ = clz + tz * eps;
+  const bwdX = clx - tx * eps;
+  const bwdZ = clz - tz * eps;
+  const dFwd = l4ChannelArcDistToSW(fwdX, fwdZ);
+  const dBwd = l4ChannelArcDistToSW(bwdX, bwdZ);
+  let dx = tx;
+  let dz = tz;
+  if (dFwd !== null && dBwd !== null) {
+    if (dBwd < dFwd) {
+      dx = -tx;
+      dz = -tz;
+    }
+  } else if (dBwd !== null && dBwd < d0) {
+    dx = -tx;
+    dz = -tz;
+  }
+  const len = Math.hypot(dx, dz) || 1;
+  return { x: dx / len, z: dz / len };
+}
+
+
+/**
+ * Nearest channel centerline point under (x, z), or null if outside the band.
+ */
+export function l4ChannelCenterlinePoint(
+  x: number,
+  z: number,
+): { x: number; z: number } | null {
+  const lat = l4ChannelLateral(x, z);
+  if (lat === null || Math.abs(lat) > L4_PIPE_R + 1e-6) return null;
+  const mh = L4_MAT_HALF;
+  const R = L4_PIPE_R;
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  if (ax <= mh + 1e-9 && az > mh) {
+    return { x: Math.max(-mh, Math.min(mh, x)), z: Math.sign(z) * (mh + R) };
+  }
+  if (az <= mh + 1e-9 && ax > mh) {
+    return { x: Math.sign(x) * (mh + R), z: Math.max(-mh, Math.min(mh, z)) };
+  }
+  if (ax > mh && az > mh) {
+    const cx = Math.sign(x) * mh;
+    const cz = Math.sign(z) * mh;
+    const th = Math.atan2(z - cz, x - cx);
+    return { x: cx + R * Math.cos(th), z: cz + R * Math.sin(th) };
+  }
+  return null;
+}
+
+
+/**
+ * Step `ds` meters along the channel centerline toward the SW hole.
+ * Returns the new centerline point, or null if not in channel / already at SW.
+ */
+export function l4ChannelStepTowardSW(
+  x: number,
+  z: number,
+  ds: number,
+): { x: number; z: number } | null {
+  const cl = l4ChannelCenterlinePoint(x, z);
+  if (!cl) return null;
+  const peri = l4ChannelCenterlinePerimeter();
+  let s = l4ChannelArcLengthFromSW(cl.x, cl.z);
+  if (s === null) return null;
+  const dist = Math.min(s, peri - s);
+  if (dist < 1e-4) return cl;
+  const step = Math.min(ds, dist);
+  // Move toward s=0 along the shorter arc (decrease s or increase s)
+  if (s <= peri - s) s = Math.max(0, s - step);
+  else s = Math.min(peri, s + step);
+  return l4ChannelPointAtArcLength(s);
+}
+
+/** Centerline point at CCW arc length s from SW mid. */
+export function l4ChannelPointAtArcLength(s: number): { x: number; z: number } {
+  const mh = L4_MAT_HALF;
+  const R = L4_PIPE_R;
+  const peri = l4ChannelCenterlinePerimeter();
+  let u = ((s % peri) + peri) % peri;
+  const swHalf = (Math.PI / 4) * R;
+  const cornerQ = (Math.PI / 2) * R;
+  const straight = 2 * mh;
+
+  // A: SW mid → west junction
+  if (u <= swHalf) {
+    const th = (3 * Math.PI) / 4 + u / R;
+    return { x: -mh + R * Math.cos(th), z: mh + R * Math.sin(th) };
+  }
+  u -= swHalf;
+  // B: west northbound
+  if (u <= straight) {
+    return { x: -(mh + R), z: mh - u };
+  }
+  u -= straight;
+  // C: NW corner
+  if (u <= cornerQ) {
+    const th = Math.PI + u / R;
+    return { x: -mh + R * Math.cos(th), z: -mh + R * Math.sin(th) };
+  }
+  u -= cornerQ;
+  // D: north eastbound
+  if (u <= straight) {
+    return { x: -mh + u, z: -(mh + R) };
+  }
+  u -= straight;
+  // E: NE corner
+  if (u <= cornerQ) {
+    const th = (3 * Math.PI) / 2 + u / R;
+    return { x: mh + R * Math.cos(th), z: -mh + R * Math.sin(th) };
+  }
+  u -= cornerQ;
+  // F: east southbound
+  if (u <= straight) {
+    return { x: mh + R, z: -mh + u };
+  }
+  u -= straight;
+  // G: SE corner
+  if (u <= cornerQ) {
+    const th = 0 + u / R;
+    return { x: mh + R * Math.cos(th), z: mh + R * Math.sin(th) };
+  }
+  u -= cornerQ;
+  // H: south westbound
+  if (u <= straight) {
+    return { x: mh - u, z: mh + R };
+  }
+  u -= straight;
+  // I: SW corner first half back to mid
+  const th = Math.PI / 2 + u / R;
+  return { x: -mh + R * Math.cos(th), z: mh + R * Math.sin(th) };
 }
 
 /**
@@ -493,7 +788,7 @@ export function buildOfficeDesk(
       );
     };
     const hole = holeCentersLocal[0]!;
-    const gap = holeR * 2.05;
+    const gap = holeR * 2.25;
     // North of hole — full width
     {
       const z1 = hole.z - gap / 2;
@@ -584,7 +879,7 @@ export function buildOfficeDesk(
    * `alongX` → pipe runs along X (north/south). Otherwise along Z (west/east).
    * Skip a hole gap when |along-axis center| falls inside hole disk.
    */
-  const SEGS = 10;
+  const SEGS = 16;
   const addHalfPipeStraight = (
     length: number,
     cx: number,
@@ -605,7 +900,7 @@ export function buildOfficeDesk(
         const half = length / 2;
         const a0 = cAlong0 - half;
         const a1 = cAlong0 + half;
-        const gap = holeSkip.r * 1.08;
+        const gap = holeSkip.r * 1.18;
         const g0 = hAlong - gap;
         const g1 = hAlong + gap;
         if (g0 > a0 + 0.01) spans.push({ len: g0 - a0, cAlong: (a0 + g0) / 2 });
@@ -620,7 +915,7 @@ export function buildOfficeDesk(
     for (const span of spans) {
       if (span.len < 0.015) continue;
       // Subdivide along the ring so channel height bias is continuous (not one flat shelf).
-      const alongSlices = Math.max(4, Math.ceil(span.len / 0.032));
+      const alongSlices = Math.max(6, Math.ceil(span.len / 0.022));
       const sliceLen = span.len / alongSlices;
       const aStart = span.cAlong - span.len / 2;
 
@@ -680,19 +975,16 @@ export function buildOfficeDesk(
     }
   };
 
-  /** Rounded corner elbow: quarter-circle of half-pipe around (±matHalf, ±matHalf). */
+  /**
+   * Rounded corner elbow (visual half-pipe) + FLAT trough-floor physics.
+   * Faceted corner boxes previously trapped marbles; a continuous flat gutter at
+   * trough depth with arc-length height bias lets drain force carry them through.
+   */
   const addHalfPipeCorner = (signX: number, signZ: number) => {
     const cornerCx = signX * matHalf;
     const cornerCz = signZ * matHalf;
-    const slices = 8;
+    const slices = 14;
     for (let s = 0; s < slices; s++) {
-      // Angle along the plan-view quarter: from south/east etc.
-      // For +X+Z (SE): from angle 0 (east, +X) to π/2 (south, +Z) in standard CCW from +X
-      // General: start at angle toward the east/west straight end
-      // signX>0,signZ>0 (SE): θ from 0 (+X) to π/2 (+Z)
-      // signX<0,signZ>0 (SW): θ from π/2 (+Z) to π (−X)
-      // signX<0,signZ<0 (NW): θ from π (−X) to 3π/2 (−Z)
-      // signX>0,signZ<0 (NE): θ from −π/2 / 3π/2 (−Z) to 0 / 2π (+X)
       let theta0: number;
       if (signX > 0 && signZ > 0) theta0 = 0;
       else if (signX < 0 && signZ > 0) theta0 = Math.PI / 2;
@@ -701,54 +993,80 @@ export function buildOfficeDesk(
       const t0 = theta0 + (Math.PI / 2) * (s / slices);
       const t1 = theta0 + (Math.PI / 2) * ((s + 1) / slices);
       const tmid = 0.5 * (t0 + t1);
-      const arcLen = pipeR * (t1 - t0);
-      // Centerline point
+      const arcLen = pipeR * (t1 - t0) * 1.08; // slight overlap, no gaps
       const clx = cornerCx + pipeR * Math.cos(tmid);
       const clz = cornerCz + pipeR * Math.sin(tmid);
-      // Radial (outward in XZ) and tangent
       const radX = Math.cos(tmid);
       const radZ = Math.sin(tmid);
+      const tangX = -Math.sin(tmid);
+      const tangZ = Math.cos(tmid);
+      const bias = l4ChannelHeightBias(clx, clz);
 
+      // Visual curved half-pipe (unchanged look)
       for (let i = 0; i < SEGS; i++) {
         const a0 = Math.PI * (i / SEGS);
         const a1 = Math.PI * ((i + 1) / SEGS);
         const amid = 0.5 * (a0 + a1);
-        const thick = Math.max(0.0045, (a1 - a0) * pipeR * 0.95);
-        const lat = pipeR * Math.cos(amid); // along radial in XZ
-        const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(clx, clz);
+        const thick = Math.max(0.004, (a1 - a0) * pipeR * 0.92);
+        const lat = pipeR * Math.cos(amid);
+        const y = -pipeR * Math.sin(amid) + bias;
         const px = clx + lat * radX;
         const pz = clz + lat * radZ;
-
-        // Facet orientation: rotate about tangent axis
-        const tangX = -Math.sin(tmid);
-        const tangZ = Math.cos(tmid);
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(arcLen, 0.0055, thick), chMat);
+        const ang = amid - Math.PI / 2;
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(arcLen / 1.08, 0.0055, thick), chMat);
         mesh.position.set(px, y, pz);
-        // Look along tangent; roll by amid
         mesh.lookAt(px + tangX, y, pz + tangZ);
-        mesh.rotateX(amid - Math.PI / 2);
+        mesh.rotateX(ang);
         mesh.receiveShadow = true;
         desk.add(mesh);
-
-        // Physics: approximate with unrotated box at facet center (good enough for marbles)
-        addShapeBox(
-          channelBody,
-          Math.max(arcLen, thick) / 2,
-          0.0028,
-          Math.min(arcLen, thick) / 2 + 0.001,
-          px,
-          y,
-          pz,
-        );
       }
+
+      // Physics: flat gutter plank at trough bottom, yawed along tangent
+      const floorY = -pipeR + bias;
+      const qYaw = new CANNON.Quaternion();
+      qYaw.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.atan2(tangX, tangZ));
+      addShapeBox(
+        channelBody,
+        arcLen / 2,
+        0.003,
+        pipeR * 1.05, // covers trough width
+        clx,
+        floorY - 0.003,
+        clz,
+        qYaw,
+      );
+      // Soft side rails so the marble stays in the gutter through the bend
+      const railH = pipeR * 0.55;
+      const railY = floorY + railH / 2;
+      const railOff = pipeR * 1.05;
+      addShapeBox(
+        channelBody,
+        arcLen / 2,
+        railH / 2,
+        0.0018,
+        clx + radX * railOff,
+        railY,
+        clz + radZ * railOff,
+        qYaw,
+      );
+      addShapeBox(
+        channelBody,
+        arcLen / 2,
+        railH / 2,
+        0.0022,
+        clx - radX * railOff,
+        railY,
+        clz - radZ * railOff,
+        qYaw,
+      );
     }
   };
 
-  // Straights (centerline at matHalf + pipeR; length = 2 * matHalf between corner centers)
+    // Straights (centerline at matHalf + pipeR; length = 2 * matHalf between corner centers)
   const straightLen = matHalf * 2;
   const hole = holeCentersLocal[0]!;
   // Open ring into the SW hole: shorten south (west end) + west (south end); skip SW corner.
-  const holeClear = holeR * 1.15 + pipeR * 0.35;
+  const holeClear = holeR * 1.25 + pipeR * 0.45;
   addHalfPipeStraight(straightLen, 0, -(matHalf + pipeR), true); // north
   {
     // South: shift/ shorten so west end stops before SW hole

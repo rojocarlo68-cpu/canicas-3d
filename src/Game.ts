@@ -70,6 +70,11 @@ import {
   l4ShooterMarbleRestY,
   l4ShooterSupportLocalY,
   l4IsChannelOrHoleXZ,
+  l4ChannelDrainDirXZ,
+  l4ChannelStepTowardSW,
+  l4ChannelArcDistToSW,
+  l4ChannelLateral,
+  L4_PIPE_R,
   applyL4ShooterCollisionFilter,
 } from './officeDesk';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
@@ -927,11 +932,11 @@ export class Game {
           contactEquationRelaxation: 3,
         }),
       );
-      // Half-pipe trough only — low friction so channel marbles keep rolling to SW hole
+      // Half-pipe trough only — near-ice friction so arc-slope drains to SW hole
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.channelMat, getMarbleCannonMaterial(), {
-          friction: 0.06,
-          restitution: 0.18,
+          friction: 0.008,
+          restitution: 0.08,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
         }),
@@ -2978,6 +2983,61 @@ private spawnShootersInitial(): void {
   }
 
   /**
+   * L4 field marbles in the half-pipe: kinematic centerline conveyor toward the
+   * SW hole (arc-length path). Geometric trough bias + low friction still apply;
+   * this guarantees marbles reach the open SW shaft. Shooters are unaffected (bridges).
+   */
+  private applyL4ChannelDrain(): void {
+    if (this.sceneLevel !== 4) return;
+    // Fixed physics step matches world.step(1/120, ...); conveyor ds uses that rate.
+    const dt = 1 / 120;
+    const speed = 0.16; // m/s along centerline toward SW
+    const hole = this.officeDesk?.holeCenters[0];
+    const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
+    for (const m of this.fieldMarbles) {
+      if (!m.active) continue;
+      const body = m.body;
+      if (body.type !== CANNON.Body.DYNAMIC) continue;
+      const x = body.position.x;
+      const z = body.position.z;
+      const lat = l4ChannelLateral(x, z);
+      if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.98) {
+        if (body.linearDamping < 0.11) body.linearDamping = 0.12;
+        continue;
+      }
+      const localY = body.position.y - PLAY_SURFACE_Y;
+      if (localY > -L4_PIPE_R * 0.18 + MARBLE_RADIUS) continue;
+      body.linearDamping = 0.02;
+      body.wakeUp();
+
+      const dist = l4ChannelArcDistToSW(x, z);
+      if (dist === null) continue;
+      // Near SW hole — let gravity pull through the open shaft
+      if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.05) {
+        body.velocity.y = Math.min(body.velocity.y, -0.35);
+        continue;
+      }
+
+      const next = l4ChannelStepTowardSW(x, z, speed * dt);
+      if (!next) continue;
+      // Place on trough floor (support) at new centerline point
+      const support = l4SupportLocalY(next.x, next.z);
+      body.position.x = next.x;
+      body.position.z = next.z;
+      if (support !== null) {
+        body.position.y = PLAY_SURFACE_Y + support + MARBLE_RADIUS;
+      }
+      const dir = l4ChannelDrainDirXZ(next.x, next.z);
+      if (dir) {
+        body.velocity.x = dir.x * speed;
+        body.velocity.z = dir.z * speed;
+        body.velocity.y = Math.min(0, body.velocity.y);
+      }
+      body.previousPosition.copy(body.position);
+    }
+  }
+
+  /**
    * Safety net vs discrete collision tunneling: keep every active marble's
    * center at/above the play surface and kill downward velocity when clamped.
    * Runs every frame after world.step (park grass + L2 sand share PLAY_SURFACE_Y).
@@ -3831,6 +3891,7 @@ private spawnShootersInitial(): void {
 
     // Scale physics dt during cámara lenta (visual dt stays real-time for camera follow)
     const physDt = dt * this.timeScale;
+    this.applyL4ChannelDrain();
     // Finer fixed step + more substeps reduces sphere–ground tunneling on hard hits
     this.world.step(1 / 120, physDt, 10);
     this.preventMarbleTunneling();
