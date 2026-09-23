@@ -41,6 +41,7 @@ if (level === null) {
   setMarbleAudioMuted(save.sfxMute);
   game = new Game(canvas);
   game.start();
+  (window as unknown as { __TAMA_GAME__: Game }).__TAMA_GAME__ = game;
 }
 
 if (import.meta.hot) {
