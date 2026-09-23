@@ -25,7 +25,7 @@ export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2;
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Desk assembly tilt (rad). 0 = fully flat / straight. */
-export const L4_TILT = 0;
+export const L4_TILT = (0.001 * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
