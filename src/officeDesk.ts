@@ -1688,22 +1688,22 @@ export function buildOfficeDesk(
     );
   }
 
-  // ——— DeWalt TSTAK-style toolbox (south outer wood barrier) ———
-  // FOREGROUND south mahogany, FRONT-LEFT (camera from south): south of the
-  // playmat SW / bottom-LEFT corner, between the lamp base (far left, x≈−0.7)
-  // and the desk centerline. Opposite side of the south strip from the backpack
-  // — do NOT cluster with the mochila. Clear of the half-pipe channel mouth.
-  // Solid static collider = marble barrier. Upright, long axis along +X.
+  // ——— DeWalt TSTAK-style toolbox (WEST front strip barrier) ———
+  // FOREGROUND west mahogany (camera from west matches Carlo’s photo): between
+  // the camera and the avocado mat, LEFT half of that near strip — south of the
+  // lamp base (z≈−0.42) / SW of mat. NOT on +Z south strip (that reads as the
+  // RIGHT edge from Carlo’s west framing). Clear of half-pipe outer lip (x≈−0.36).
+  // Upright; long axis along +Z (parallel to west edge) via rotation.y = π/2.
   {
-    const tbW = 0.20; // ~20 cm wide (X, along south desk edge)
-    const tbD = 0.075; // depth fits south outer wood strip (~0.36→0.525)
+    const tbW = 0.20; // ~20 cm along strip (local X → world Z after yaw)
+    const tbD = 0.075; // ~7.5 cm depth toward channel (local Z → world −X)
     const bodyH = 0.11;
     const lidH = 0.055;
-    const tbH = bodyH + lidH; // ~16.5 cm tall — short toolbox on desk
-    // South outer wood, west/SW: south of mat SW (x≈−0.32). Clears channel
-    // outer lip at z≈0.349 (north face of box ≈ 0.445−0.0375 = 0.4075).
+    const tbH = bodyH + lidH; // ~16.5 cm tall
+    // West outer wood, near channel (mat-side of strip) so red boxes sit
+    // just outside the avocado well. Left/north-ish half, south of lamp.
     const tbOx = -0.48;
-    const tbOz = 0.445;
+    const tbOz = -0.12;
 
     const tbBlack = new THREE.MeshStandardMaterial({
       color: 0x1a1a1a,
@@ -1731,6 +1731,8 @@ export function buildOfficeDesk(
     const tbGroup = new THREE.Group();
     tbGroup.name = 'dewaltToolbox';
     tbGroup.position.set(tbOx, 0, tbOz);
+    // Yaw so the long axis runs along the west strip (+Z), depth toward channel.
+    tbGroup.rotation.y = Math.PI / 2;
     desk.add(tbGroup);
 
     // Main body (slightly inset under lid)
@@ -1875,25 +1877,26 @@ export function buildOfficeDesk(
       tbGroup.add(foot);
     }
 
-    // Dense static collider — outer AABB (marbles must not pass through)
+    // Dense static collider — desk-frame AABB after yaw (X=depth, Z=length)
     propBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(tbW / 2, tbH / 2, tbD / 2)),
+      new CANNON.Box(new CANNON.Vec3(tbD / 2, tbH / 2, tbW / 2)),
       new CANNON.Vec3(tbOx, tbH / 2, tbOz),
     );
   }
 
-  // ——— Yellow school backpack (Mochila) — south FRONT-RIGHT (not next to toolbox) ———
-  // Mustard canvas pack on outer mahogany south of the playmat SE / bottom-RIGHT
-  // corner. Opposite side of the south strip from the DeWalt toolbox — leave the
-  // center-south wood open (channel mouth clear). Solid barrier, channel untouched.
+  // ——— Yellow school backpack (Mochila) — WEST front strip, RIGHT half, ACOSTADA ———
+  // Same near mahogany strip as the toolbox (west / camera-front), RIGHT half
+  // (further +Z / south of toolbox). Lying flat on its back so the tall axis is
+  // horizontal along the strip — footprint fills Carlo’s red square. Not on the
+  // +Z south strip or the right L-wing. Channel untouched.
   {
-    const bpW = 0.165; // ~16.5 cm wide
-    const bpD = 0.095; // ~9.5 cm deep
-    const bpH = 0.24; // ~24 cm tall (toolbox-scale / a bit taller)
-    // Front-RIGHT: south of mat SE (x≈+0.32). Far from toolbox (−0.48); center
-    // south strip stays empty. Clears channel outer lip (north face ≈ 0.397).
-    const bpOx = 0.40;
-    const bpOz = 0.445;
+    const bpW = 0.16; // ~16 cm (world X footprint when lying)
+    const bpD = 0.10; // ~10 cm (becomes height when lying on back)
+    const bpH = 0.24; // ~24 cm (becomes length along +Z strip when lying)
+    // West outer wood, right half of front strip (south of toolbox). Clear of
+    // channel outer lip at x≈−0.358 (east face ≈ −0.48+0.10 = −0.38).
+    const bpOx = -0.48;
+    const bpOz = 0.22;
 
     const canvasY = new THREE.MeshStandardMaterial({
       color: 0xe6b422, // vibrant mustard / school-bus yellow
@@ -1928,7 +1931,15 @@ export function buildOfficeDesk(
 
     const bpGroup = new THREE.Group();
     bpGroup.name = 'yellowBackpack';
-    bpGroup.position.set(bpOx, 0, bpOz);
+    // Lie on back (rotation.x = −π/2): local Y (tall) → −Z, local Z (depth) → +Y.
+    // Scale local Z (becomes world height) so the pack is unmistakably ACOSTADA
+    // (~7 cm tall). Offset Z so the lying AABB is centered on bpOz.
+    const bpMainH = bpH * 0.88;
+    const lieScaleZ = 0.55; // squash world height after pitch
+    const lieH = bpD * lieScaleZ;
+    bpGroup.position.set(bpOx, lieH / 2 + 0.008, bpOz + bpMainH / 2);
+    bpGroup.rotation.x = -Math.PI / 2;
+    bpGroup.scale.set(1.15, 1.0, lieScaleZ);
     desk.add(bpGroup);
 
     // Main boxy body (slightly rounded via chamfer boxes at edges)
@@ -2057,25 +2068,17 @@ export function buildOfficeDesk(
       }
     }
 
-    // Dense static colliders — main body + side pockets (marbles must not pass)
-    const mainH = bpH * 0.88;
+    // Lying AABB in desk frame: footprint ~18×24 cm (X×Z), height ~lieH
+    const mainH = bpMainH;
+    const lieHalfX = (bpW * 1.15) / 2;
     propBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(bpW / 2, mainH / 2, bpD / 2)),
-      new CANNON.Vec3(bpOx, mainH / 2, bpOz),
+      new CANNON.Box(new CANNON.Vec3(lieHalfX, lieH / 2, mainH / 2)),
+      new CANNON.Vec3(bpOx, lieH / 2 + 0.008, bpOz),
     );
-    // Side pocket boxes
+    // Side/front pocket bulk (slightly wider lying footprint)
     propBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(0.012, (bpH * 0.32) / 2, (bpD * 0.55) / 2)),
-      new CANNON.Vec3(bpOx - (bpW * 0.5 + 0.008), bpH * 0.28, bpOz),
-    );
-    propBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(0.012, (bpH * 0.32) / 2, (bpD * 0.55) / 2)),
-      new CANNON.Vec3(bpOx + (bpW * 0.5 + 0.008), bpH * 0.28, bpOz),
-    );
-    // Front pocket
-    propBody.addShape(
-      new CANNON.Box(new CANNON.Vec3((bpW * 0.78) / 2, (bpH * 0.28) / 2, 0.012)),
-      new CANNON.Vec3(bpOx, bpH * 0.32, bpOz + bpD * 0.5 + 0.008),
+      new CANNON.Box(new CANNON.Vec3(lieHalfX + 0.01, lieH / 2 * 0.65, mainH * 0.28)),
+      new CANNON.Vec3(bpOx, lieH / 2 * 0.65 + 0.008, bpOz - mainH * 0.15),
     );
   }
 

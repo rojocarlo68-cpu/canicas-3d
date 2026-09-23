@@ -912,10 +912,10 @@ export class Game {
       for (const b of this.officeDesk.bodies) {
         this.world.addBody(b);
       }
-      // Mat: plush / antiderrape — +30% grip vs prior 3.8 (avocado mat only; wood/channel untouched)
+      // Mat: plush / antiderrape — +50% braking vs baseline 3.8 (avocado mat only; wood/channel untouched)
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
-          friction: 4.94, // 3.8 * 1.30
+          friction: 5.7, // 3.8 * 1.50
           restitution: 0.015,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
