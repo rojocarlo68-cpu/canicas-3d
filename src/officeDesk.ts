@@ -1688,18 +1688,20 @@ export function buildOfficeDesk(
     );
   }
 
-  // ——— DeWalt TSTAK-style toolbox (barrier beside lamp, north of mat) ———
-  // Sits on outer wood north of the half-pipe so the channel mouth stays open.
-  // Solid static collider matching outer bounds — marbles cannot pass through.
+  // ——— DeWalt TSTAK-style toolbox (south outer wood barrier) ———
+  // Moved from north-of-lamp strip to FOREGROUND south mahogany (camera-front),
+  // near the playmat's lower-left / SW outer wood — east of the lamp area, fully
+  // clear of the half-pipe channel mouth. Solid static collider = marble barrier.
   {
-    const tbW = 0.20; // ~20 cm wide (X)
-    const tbD = 0.065; // thin depth fits the wood strip north of channel
+    const tbW = 0.20; // ~20 cm wide (X, along south desk edge)
+    const tbD = 0.075; // depth fits south outer wood strip (~0.35→0.52)
     const bodyH = 0.11;
     const lidH = 0.055;
     const tbH = bodyH + lidH; // ~16.5 cm tall — short toolbox on desk
-    // East of lamp (-0.7), on north outer wood; south face clears channel outer lip
-    const tbOx = -0.48;
-    const tbOz = -0.388;
+    // South outer wood, west-of-center (right of lamp from camera); clears channel
+    // outer lip at z≈0.349 (north face of box ≈ 0.445−0.0375 = 0.4075).
+    const tbOx = -0.52;
+    const tbOz = 0.445;
 
     const tbBlack = new THREE.MeshStandardMaterial({
       color: 0x1a1a1a,
@@ -1875,6 +1877,200 @@ export function buildOfficeDesk(
     propBody.addShape(
       new CANNON.Box(new CANNON.Vec3(tbW / 2, tbH / 2, tbD / 2)),
       new CANNON.Vec3(tbOx, tbH / 2, tbOz),
+    );
+  }
+
+  // ——— Yellow school backpack (Mochila) — immediately east of toolbox ———
+  // Mustard canvas pack on south outer wood; solid barrier, channel untouched.
+  {
+    const bpW = 0.165; // ~16.5 cm wide
+    const bpD = 0.095; // ~9.5 cm deep
+    const bpH = 0.24; // ~24 cm tall (toolbox-scale / a bit taller)
+    // Right of toolbox (−0.52): toolbox east face ≈ −0.42; gap ~1.5 cm → center −0.28
+    const bpOx = -0.28;
+    const bpOz = 0.442;
+
+    const canvasY = new THREE.MeshStandardMaterial({
+      color: 0xe6b422, // vibrant mustard / school-bus yellow
+      roughness: 0.78,
+      metalness: 0.04,
+    });
+    const canvasYDark = new THREE.MeshStandardMaterial({
+      color: 0xc49a14,
+      roughness: 0.82,
+      metalness: 0.03,
+    });
+    const strapMat = new THREE.MeshStandardMaterial({
+      color: 0x2a221c, // dark brown / charcoal straps
+      roughness: 0.7,
+      metalness: 0.08,
+    });
+    const buckleMat = new THREE.MeshStandardMaterial({
+      color: 0xc8ccd0,
+      roughness: 0.28,
+      metalness: 0.9,
+    });
+    const zipMat = new THREE.MeshStandardMaterial({
+      color: 0xb8bcc0,
+      roughness: 0.35,
+      metalness: 0.85,
+    });
+    const meshMat = new THREE.MeshStandardMaterial({
+      color: 0x3a342e,
+      roughness: 0.9,
+      metalness: 0.02,
+    });
+
+    const bpGroup = new THREE.Group();
+    bpGroup.name = 'yellowBackpack';
+    bpGroup.position.set(bpOx, 0, bpOz);
+    desk.add(bpGroup);
+
+    // Main boxy body (slightly rounded via chamfer boxes at edges)
+    const body = new THREE.Mesh(new THREE.BoxGeometry(bpW, bpH * 0.88, bpD), canvasY);
+    body.position.y = (bpH * 0.88) / 2;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    bpGroup.add(body);
+
+    // Soft edge rounding — thin darker corner posts
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const edge = new THREE.Mesh(
+          new THREE.BoxGeometry(0.012, bpH * 0.86, 0.012),
+          canvasYDark,
+        );
+        edge.position.set(sx * (bpW * 0.48), (bpH * 0.88) / 2, sz * (bpD * 0.48));
+        bpGroup.add(edge);
+      }
+    }
+
+    // Top flap (folds over front a bit)
+    const flap = new THREE.Mesh(
+      new THREE.BoxGeometry(bpW * 0.98, 0.018, bpD * 0.78),
+      canvasYDark,
+    );
+    flap.position.set(0, bpH * 0.88 + 0.006, -bpD * 0.05);
+    flap.castShadow = true;
+    bpGroup.add(flap);
+    const flapFront = new THREE.Mesh(
+      new THREE.BoxGeometry(bpW * 0.96, bpH * 0.16, 0.012),
+      canvasY,
+    );
+    flapFront.position.set(0, bpH * 0.78, bpD * 0.5 + 0.004);
+    bpGroup.add(flapFront);
+
+    // Two dark vertical straps on flap + silver square buckles
+    for (const sx of [-1, 1]) {
+      const strap = new THREE.Mesh(
+        new THREE.BoxGeometry(0.018, bpH * 0.22, 0.006),
+        strapMat,
+      );
+      strap.position.set(sx * bpW * 0.22, bpH * 0.74, bpD * 0.5 + 0.01);
+      bpGroup.add(strap);
+      const buckle = new THREE.Mesh(
+        new THREE.BoxGeometry(0.022, 0.018, 0.008),
+        buckleMat,
+      );
+      buckle.position.set(sx * bpW * 0.22, bpH * 0.64, bpD * 0.5 + 0.014);
+      bpGroup.add(buckle);
+      // buckle slot detail
+      const slot = new THREE.Mesh(
+        new THREE.BoxGeometry(0.01, 0.006, 0.002),
+        new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 }),
+      );
+      slot.position.set(sx * bpW * 0.22, bpH * 0.64, bpD * 0.5 + 0.019);
+      bpGroup.add(slot);
+    }
+
+    // Front zippered pocket
+    const pocket = new THREE.Mesh(
+      new THREE.BoxGeometry(bpW * 0.78, bpH * 0.28, 0.022),
+      canvasYDark,
+    );
+    pocket.position.set(0, bpH * 0.32, bpD * 0.5 + 0.008);
+    pocket.castShadow = true;
+    bpGroup.add(pocket);
+    // Zip line
+    const zip = new THREE.Mesh(
+      new THREE.BoxGeometry(bpW * 0.7, 0.004, 0.004),
+      zipMat,
+    );
+    zip.position.set(0, bpH * 0.44, bpD * 0.5 + 0.02);
+    bpGroup.add(zip);
+    // Silver zip pull
+    const pull = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.01, 0.008), zipMat);
+    pull.position.set(bpW * 0.12, bpH * 0.44, bpD * 0.5 + 0.026);
+    bpGroup.add(pull);
+
+    // Left / right side pockets
+    for (const sx of [-1, 1]) {
+      const side = new THREE.Mesh(
+        new THREE.BoxGeometry(0.02, bpH * 0.32, bpD * 0.55),
+        canvasYDark,
+      );
+      side.position.set(sx * (bpW * 0.5 + 0.008), bpH * 0.28, 0);
+      side.castShadow = true;
+      bpGroup.add(side);
+    }
+
+    // Simplified dark shoulder straps on back (−Z face)
+    for (const sx of [-1, 1]) {
+      const shoulder = new THREE.Mesh(
+        new THREE.BoxGeometry(0.028, bpH * 0.7, 0.014),
+        strapMat,
+      );
+      shoulder.position.set(sx * bpW * 0.22, bpH * 0.45, -bpD * 0.5 - 0.006);
+      bpGroup.add(shoulder);
+      // Mesh pad hint on strap
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(0.032, bpH * 0.35, 0.01),
+        meshMat,
+      );
+      pad.position.set(sx * bpW * 0.22, bpH * 0.38, -bpD * 0.5 - 0.014);
+      bpGroup.add(pad);
+    }
+    // Top carry handle
+    const handle = new THREE.Mesh(
+      new THREE.TorusGeometry(0.028, 0.005, 8, 16, Math.PI),
+      strapMat,
+    );
+    handle.rotation.x = Math.PI;
+    handle.rotation.z = Math.PI / 2;
+    handle.position.set(0, bpH * 0.88 + 0.02, -bpD * 0.1);
+    bpGroup.add(handle);
+
+    // Bottom feet
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const foot = new THREE.Mesh(
+          new THREE.BoxGeometry(0.02, 0.008, 0.02),
+          strapMat,
+        );
+        foot.position.set(sx * bpW * 0.35, 0.004, sz * bpD * 0.32);
+        bpGroup.add(foot);
+      }
+    }
+
+    // Dense static colliders — main body + side pockets (marbles must not pass)
+    const mainH = bpH * 0.88;
+    propBody.addShape(
+      new CANNON.Box(new CANNON.Vec3(bpW / 2, mainH / 2, bpD / 2)),
+      new CANNON.Vec3(bpOx, mainH / 2, bpOz),
+    );
+    // Side pocket boxes
+    propBody.addShape(
+      new CANNON.Box(new CANNON.Vec3(0.012, (bpH * 0.32) / 2, (bpD * 0.55) / 2)),
+      new CANNON.Vec3(bpOx - (bpW * 0.5 + 0.008), bpH * 0.28, bpOz),
+    );
+    propBody.addShape(
+      new CANNON.Box(new CANNON.Vec3(0.012, (bpH * 0.32) / 2, (bpD * 0.55) / 2)),
+      new CANNON.Vec3(bpOx + (bpW * 0.5 + 0.008), bpH * 0.28, bpOz),
+    );
+    // Front pocket
+    propBody.addShape(
+      new CANNON.Box(new CANNON.Vec3((bpW * 0.78) / 2, (bpH * 0.28) / 2, 0.012)),
+      new CANNON.Vec3(bpOx, bpH * 0.32, bpOz + bpD * 0.5 + 0.008),
     );
   }
 
