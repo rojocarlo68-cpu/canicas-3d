@@ -2,12 +2,12 @@
  * Level 4 — lived-in L-shaped mahogany office desk.
  *
  * CRITICAL layout:
- * - ONE tilted desk assembly (mat + wood + half-pipe ring + props + legs share L4_TILT).
- * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
+ * - Desk / mat / props stay FLAT (L4_TILT = 0). No gravity drift on mat or outer wood.
  * - Continuous HALF-PIPE channel ring on ALL four sides (N/S/E/W) with rounded corners.
- * - ONE scoring through-hole only (south-center of the ring). No second SW/SE hole.
- * - Tiny south tilt (L4_TILT ≈ 0.001°) for balance; do not retune lightly.
- * - Open mat→channel lips (rounded); no square 90° trough corners (no wedging).
+ * - ONE scoring through-hole only at the SW corner of the ring (historic dual-hole spot).
+ * - Channel-only micro-slope (L4_CHANNEL_TILT ≈ 0.001°) toward the SW hole so trough
+ *   marbles roll along the ring to the hole; mat/desk wood remain level.
+ * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges).
  * - Solid Cannon bodies on clutter props.
  * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
  *   marbles fall into the trough / score via the single hole, while player+AI shooters
@@ -27,8 +27,10 @@ export const L4_MAT_HALF = CIRCLE_RADIUS;
 export const L4_CHANNEL_W = MARBLE_RADIUS * 3.6; // ~1.8× diameter — one marble rolls freely
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
-/** Desk assembly tilt (rad). 0 = fully flat / straight. */
-export const L4_TILT = (0.001 * Math.PI) / 180;
+/** Desk assembly tilt (rad). Always 0 — mat/desk wood stay level. */
+export const L4_TILT = 0;
+/** Channel-only micro-slope (rad) toward the SW scoring hole (~0.001°). */
+export const L4_CHANNEL_TILT = (0.001 * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = L4_CHANNEL_W / 2; // true half-pipe radius
@@ -60,15 +62,23 @@ export const L4_DESK_BOUNDS = {
   maxZ: 0.71,
 };
 
-/**
- * Local desk-top Y of the collider under (x, z), or null if open air / hole.
- * Desk top = 0; channel trough = −L4_GUTTER_DEPTH. World Y ≈ PLAY_SURFACE_Y + local − sin(tilt)·z.
- */
-/** Single L4 scoring hole — south-center of the half-pipe ring. */
+/** Single L4 scoring hole — SW corner of the half-pipe ring (historic dual-hole SW). */
 export function l4HoleCentersLocal(): { x: number; z: number }[] {
   const mh = L4_MAT_HALF;
   const r = L4_PIPE_R;
-  return [{ x: 0, z: mh + r }];
+  return [{ x: -(mh + r), z: mh + r }];
+}
+
+/**
+ * Planar height bias for channel trough only: uphill toward NE, downhill to SW hole.
+ * Desk/mat stay at local Y=0; this is added only to half-pipe support / facets.
+ */
+export function l4ChannelHeightBias(x: number, z: number): number {
+  const hole = l4HoleCentersLocal()[0]!;
+  // Unit vector SW → NE (opposite corner of the ring)
+  const inv = Math.SQRT1_2; // 1/√2
+  const along = (x - hole.x) * inv + (z - hole.z) * -inv;
+  return Math.sin(L4_CHANNEL_TILT) * Math.max(0, along);
 }
 
 /**
@@ -119,11 +129,12 @@ export function l4SupportLocalY(x: number, z: number): number | null {
   // Playmat top
   if (Math.abs(x) <= mh && Math.abs(z) <= mh) return 0;
 
-  // Half-pipe ring (straights + rounded corners)
+  // Half-pipe ring (straights + rounded corners) + channel-only slope toward SW hole
   const lat = l4ChannelLateral(x, z);
   if (lat !== null && Math.abs(lat) <= R + 1e-6) {
     const clamped = Math.max(-R, Math.min(R, lat));
-    return -Math.sqrt(Math.max(0, R * R - clamped * clamped));
+    const base = -Math.sqrt(Math.max(0, R * R - clamped * clamped));
+    return base + l4ChannelHeightBias(x, z);
   }
 
   // Left desk slab wood margins (outside the play well)
@@ -364,7 +375,7 @@ export function buildOfficeDesk(
   peel.rotation.y = Math.PI / 2;
   root.add(peel);
 
-  // ——— ONE desk assembly (visual + physics share L4_TILT; currently flat) ———
+  // ——— ONE desk assembly (flat: L4_TILT = 0; channel slope is facet-local only) ———
   const desk = new THREE.Group();
   desk.name = 'deskAssembly';
   desk.rotation.x = L4_TILT;
@@ -395,7 +406,7 @@ export function buildOfficeDesk(
   const gutterDepth = L4_GUTTER_DEPTH;
   const outerHalf = matHalf + chW;
 
-  // Single scoring hole — south-center of the half-pipe ring
+  // Single scoring hole — SW corner of the half-pipe ring
   const holeCentersLocal = l4HoleCentersLocal();
   const pipeR = L4_PIPE_R;
 
@@ -464,7 +475,7 @@ export function buildOfficeDesk(
     addFrameBox(w / 2, deskThick / 2, outerHalf, cx, topYc, 0);
   }
 
-  // Solid underplate under the left desk with a tight opening only at the single south hole.
+  // Solid underplate under the left desk with a tight opening only at the single SW hole.
   // Stops light floor showing through channel cracks / L-voids.
   {
     const plateH = 0.045;
@@ -492,7 +503,7 @@ export function buildOfficeDesk(
       const d = leftMaxZ - z0;
       if (d > 0.02) addPlate(leftLen, d, leftCX, (z0 + leftMaxZ) / 2);
     }
-    // Mid band (hole row) — two segments left/right of the single south hole
+    // Mid band (hole row) — two segments left/right of the single SW hole
     {
       const d = gap;
       const cz = hole.z;
@@ -543,10 +554,9 @@ export function buildOfficeDesk(
     );
   }
 
-  // ——— Continuous half-pipe ring (N/S/E/W + rounded corners) + single south hole ———
+  // ——— Continuous half-pipe ring (N/S/E/W + rounded corners) + single SW hole ———
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
-  const lipMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.5 });
   const channelBody = mkStatic(woodMat);
 
   const addShapeBox = (
@@ -620,7 +630,8 @@ export function buildOfficeDesk(
         const thick = Math.max(0.0045, arc * 0.95);
         // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
         const lat = pipeR * Math.cos(amid);
-        const y = -pipeR * Math.sin(amid);
+        // Channel-only slope: bias by centerline (scx,scz), keep half-pipe cross-section
+        const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
         // Tangent angle for facet
         const ang = amid - Math.PI / 2; // rotate facet to follow circle
 
@@ -654,32 +665,7 @@ export function buildOfficeDesk(
         );
       }
 
-      // Rounded lip beads (visual + light physics) at inner & outer edges
-      for (const side of [-1, 1] as const) {
-        const lipR = 0.0035;
-        const lat = side * pipeR;
-        const bead = alongX
-          ? new THREE.Mesh(new THREE.CylinderGeometry(lipR, lipR, span.len, 8), lipMat)
-          : new THREE.Mesh(new THREE.CylinderGeometry(lipR, lipR, span.len, 8), lipMat);
-        if (alongX) {
-          bead.rotation.z = Math.PI / 2;
-          bead.position.set(scx, -lipR * 0.15, scz + lat);
-        } else {
-          bead.rotation.x = Math.PI / 2;
-          bead.position.set(scx + lat, -lipR * 0.15, scz);
-        }
-        bead.castShadow = true;
-        desk.add(bead);
-        addShapeBox(
-          channelBody,
-          alongX ? span.len / 2 : lipR,
-          lipR,
-          alongX ? lipR : span.len / 2,
-          alongX ? scx : scx + lat,
-          -lipR * 0.15,
-          alongX ? scz + lat : scz,
-        );
-      }
+      // No raised lip beads — flush mat→channel and channel→outer wood transition.
     }
   };
 
@@ -718,7 +704,7 @@ export function buildOfficeDesk(
         const amid = 0.5 * (a0 + a1);
         const thick = Math.max(0.0045, (a1 - a0) * pipeR * 0.95);
         const lat = pipeR * Math.cos(amid); // along radial in XZ
-        const y = -pipeR * Math.sin(amid);
+        const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(clx, clz);
         const px = clx + lat * radX;
         const pz = clz + lat * radZ;
 
@@ -750,22 +736,35 @@ export function buildOfficeDesk(
   // Straights (centerline at matHalf + pipeR; length = 2 * matHalf between corner centers)
   const straightLen = matHalf * 2;
   const hole = holeCentersLocal[0]!;
+  // Open ring into the SW hole: shorten south (west end) + west (south end); skip SW corner.
+  const holeClear = holeR * 1.15 + pipeR * 0.35;
   addHalfPipeStraight(straightLen, 0, -(matHalf + pipeR), true); // north
-  addHalfPipeStraight(straightLen, 0, matHalf + pipeR, true, { x: hole.x, z: hole.z, r: holeR }); // south (gap at hole)
-  addHalfPipeStraight(straightLen, -(matHalf + pipeR), 0, false); // west
+  {
+    // South: shift/ shorten so west end stops before SW hole
+    const sLen = Math.max(0.04, straightLen - holeClear);
+    const sCx = holeClear / 2; // bias east, leave SW open
+    addHalfPipeStraight(sLen, sCx, matHalf + pipeR, true, { x: hole.x, z: hole.z, r: holeR });
+  }
+  {
+    // West: shift/shorten so south end stops before SW hole
+    const wLen = Math.max(0.04, straightLen - holeClear);
+    const wCz = -holeClear / 2; // bias north, leave SW open
+    addHalfPipeStraight(wLen, -(matHalf + pipeR), wCz, false, { x: hole.x, z: hole.z, r: holeR });
+  }
   addHalfPipeStraight(straightLen, matHalf + pipeR, 0, false); // east
 
-  // Rounded corners (no square 90° pits)
-  addHalfPipeCorner(1, 1);
-  addHalfPipeCorner(-1, 1);
-  addHalfPipeCorner(-1, -1);
-  addHalfPipeCorner(1, -1);
+  // Rounded corners (no square 90° pits) — SW corner omitted (scoring hole)
+  addHalfPipeCorner(1, 1);   // SE
+  // SW skipped — hole lives here
+  addHalfPipeCorner(-1, -1); // NW
+  addHalfPipeCorner(1, -1);  // NE
 
-  // Single south hole visual + shaft (open through underplate)
+  // Single SW hole visual + shaft (open through underplate)
   {
     const hx = hole.x;
     const hz = hole.z;
-    const troughY = -pipeR;
+    // Trough floor at hole uses channel bias (≈0 at SW)
+    const troughY = -pipeR + l4ChannelHeightBias(hx, hz);
     const pit = new THREE.Mesh(
       new THREE.CircleGeometry(holeR * 1.05, 28),
       new THREE.MeshBasicMaterial({ color: 0x000000 }),

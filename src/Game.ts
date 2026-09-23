@@ -1184,7 +1184,7 @@ export class Game {
         this.sceneLevel === 3
           ? `L3 Escupidera: mete canicas de campo al HOYO. Tu canica al hoyo o fuera del bowl = pierdes. IA L3.`
           : this.sceneLevel === 4
-            ? `L4 Escritorio: saca canicas al half-pipe → hoyo sur (cuenta como KO). Personalizar = playmat.`
+            ? `L4 Escritorio: saca canicas al half-pipe → hoyo SW (cuenta como KO). Personalizar = playmat.`
             : `Pulsa el botón de soltar (~10 cm). Luego turnos ${this.playerName} ↔ ${this.opponentName}.`;
     } else if (phase === 'settling') {
       this.els.instructions.textContent =
@@ -1197,7 +1197,7 @@ export class Game {
           ? this.sceneLevel === 3
             ? `${modeHint} · Meta: hoyo · No caigas al hoyo ni fuera del bowl`
             : this.sceneLevel === 4
-              ? `${modeHint} · Meta: half-pipe → hoyo sur`
+              ? `${modeHint} · Meta: half-pipe → hoyo SW`
               : modeHint
           : `Turno de ${this.opponentName}…`;
     } else if (phase === 'ai_thinking' || phase === 'shot_flying') {
@@ -4558,7 +4558,7 @@ private spawnShootersInitial(): void {
   }
 
 
-  /** L4: marble in the single south-center channel hole (or fallen into pit). */
+  /** L4: marble in the single SW-corner channel hole (or fallen into pit). */
   private isInL4Hole(x: number, y: number, z: number): boolean {
     const desk = this.officeDesk;
     if (!desk) return false;
@@ -4625,7 +4625,7 @@ private spawnShootersInitial(): void {
   /**
    * L4 lose conditions for a personal (shooter) marble:
    * falling off the desk edge to the floor → that side loses ("perdiste").
-   * Half-pipe / south hole are shooter-bridged; field marbles still fall in / score.
+   * Half-pipe / SW hole are shooter-bridged; field marbles still fall in / score.
    */
   private checkL4PersonalMarbleFail(): boolean {
     this.rescueL4ShootersFromChannels();
@@ -4800,7 +4800,7 @@ private spawnShootersInitial(): void {
       this.sceneLevel === 3
         ? 'Canicas al hoyo'
         : this.sceneLevel === 4
-          ? 'Canicas al hoyo sur (half-pipe)'
+          ? 'Canicas al hoyo SW (half-pipe)'
           : 'Canicas sacadas';
     this.els.victoryWinner.textContent = t('victory.winner');
     this.els.victoryMoney.textContent =
