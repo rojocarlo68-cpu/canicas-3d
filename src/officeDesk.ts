@@ -6,9 +6,11 @@
  * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
  * - Concave U channels W/N/E only; NO south gutter; NO raised lip between mat and channel.
  * - Real through-holes at BOTH SW and SE channel termini.
- * - Desk is fully flat (L4_TILT = 0°); no south incline.
+ * - Tiny south tilt (L4_TILT ≈ 0.001°) for balance; do not retune lightly.
  * - Open mat→channel mouths (no corner muritos); continuous south wood except scoring holes.
  * - Solid Cannon bodies on clutter props.
+ * - Invisible shooter-only lids over channels + holes (collision groups) so field marbles
+ *   still fall in / score, while player+AI shooters roll across as if the desk were solid.
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
@@ -32,6 +34,17 @@ export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
 
 /** Room floor Y relative to desk top assembly (legs). */
 export const L4_ROOM_FLOOR_Y = -0.74;
+
+/** Cannon collision groups (bit masks). Default world/field = 1. */
+export const L4_COL_GROUP_DEFAULT = 1;
+export const L4_COL_GROUP_SHOOTER = 2;
+export const L4_COL_GROUP_SHOOTER_BLOCKER = 4;
+
+/** Tag a shooter body so it collides with L4 channel/hole lids (field marbles do not). */
+export function applyL4ShooterCollisionFilter(body: CANNON.Body): void {
+  body.collisionFilterGroup = L4_COL_GROUP_SHOOTER;
+  body.collisionFilterMask = -1; // default world + other shooters + blockers
+}
 
 /**
  * Tight desk footprint in untilted XZ (left slab + right wing).
@@ -112,6 +125,42 @@ export function l4MarbleRestY(x: number, z: number): number | null {
   if (local === null) return null;
   // Match existing tilt convention used elsewhere in Game.ts
   return PLAY_SURFACE_Y + local - Math.sin(L4_TILT) * z + MARBLE_RADIUS;
+}
+
+/**
+ * Shooter support: channels + scoring holes act as desk-top (lids).
+ * Returns local Y (=0 on play well / wood) or null if off the desk entirely.
+ */
+export function l4ShooterSupportLocalY(x: number, z: number): number | null {
+  const mh = L4_MAT_HALF;
+  const cw = L4_CHANNEL_W;
+  const outer = mh + cw;
+  // Entire play well (mat + W/N/E channels + SW/SE holes) is solid for shooters
+  if (Math.abs(x) <= outer + 1e-4 && Math.abs(z) <= outer + 1e-4) return 0;
+  return l4SupportLocalY(x, z);
+}
+
+/** World rest Y for shooters (lids over channels/holes). */
+export function l4ShooterMarbleRestY(x: number, z: number): number | null {
+  const local = l4ShooterSupportLocalY(x, z);
+  if (local === null) return null;
+  return PLAY_SURFACE_Y + local - Math.sin(L4_TILT) * z + MARBLE_RADIUS;
+}
+
+/** True if XZ is over a recessed channel trough or a scoring-hole opening. */
+export function l4IsChannelOrHoleXZ(x: number, z: number): boolean {
+  const mh = L4_MAT_HALF;
+  const cw = L4_CHANNEL_W;
+  const hr = L4_HOLE_RADIUS;
+  const holes = [
+    { x: -(mh + cw / 2), z: mh + cw / 2 },
+    { x: mh + cw / 2, z: mh + cw / 2 },
+  ];
+  for (const h of holes) {
+    if (Math.hypot(x - h.x, z - h.z) < hr) return true;
+  }
+  const local = l4SupportLocalY(x, z);
+  return local !== null && local < -1e-4;
 }
 
 const MAT_PRESETS: { id: string; label: string; url: string | null }[] = [
@@ -811,6 +860,44 @@ export function buildOfficeDesk(
   };
 
   for (const h of holeCentersLocal) fillCorner(h.x, h.z);
+
+  // ——— Shooter-only invisible lids over channels + holes ———
+  // Field marbles ignore these (collision mask); shooters roll across as solid desk-top.
+  {
+    const blockerBody = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: woodMat,
+      collisionFilterGroup: L4_COL_GROUP_SHOOTER_BLOCKER,
+      collisionFilterMask: L4_COL_GROUP_SHOOTER,
+    });
+    blockerBody.position.set(0, PLAY_SURFACE_Y, 0);
+    blockerBody.quaternion.copy(qTilt);
+    bodies.push(blockerBody);
+
+    const lidT = 0.006;
+    const lidCy = -lidT / 2; // top face flush with desk top (local Y=0)
+    const addLid = (hx: number, hz: number, ox: number, oz: number) => {
+      if (hx < 0.002 || hz < 0.002) return;
+      blockerBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(hx, lidT / 2, hz)),
+        new CANNON.Vec3(ox, lidCy, oz),
+      );
+    };
+
+    // North channel full run (incl. NW/NE)
+    addLid(outerHalf, chW / 2, 0, -(matHalf + chW / 2));
+    // West / East channels full run (incl. SW/SE hole termini)
+    addLid(chW / 2, outerHalf, -(matHalf + chW / 2), 0);
+    addLid(chW / 2, outerHalf, matHalf + chW / 2, 0);
+
+    // Extra hole caps (redundant with W/E lids; keeps mouths sealed if trough gaps appear)
+    for (const h of holeCentersLocal) {
+      const cap = holeR * 1.15;
+      addLid(cap, cap, h.x, h.z);
+    }
+  }
+
 
   // Right wing top — MUST sit fully east of the play well (no overlap with mat/channels/holes)
   const rightCX = leftMaxX + rightWidth / 2 + 0.01; // ≈ 0.895

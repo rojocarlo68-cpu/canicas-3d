@@ -64,8 +64,13 @@ import {
   L4_MAT_HALF,
   L4_GUTTER_DEPTH,
   L4_ROOM_FLOOR_Y,
+  L4_CHANNEL_W,
   l4SupportLocalY,
   l4MarbleRestY,
+  l4ShooterMarbleRestY,
+  l4ShooterSupportLocalY,
+  l4IsChannelOrHoleXZ,
+  applyL4ShooterCollisionFilter,
 } from './officeDesk';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
@@ -1498,6 +1503,7 @@ private spawnShootersInitial(): void {
     player.body.velocity.setZero();
     player.body.angularVelocity.setZero();
     player.body.type = CANNON.Body.KINEMATIC;
+    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(player.body);
     this.scene.add(player.mesh);
     this.world.addBody(player.body);
     this.playerMarble = player;
@@ -1511,6 +1517,7 @@ private spawnShootersInitial(): void {
     ai.body.velocity.setZero();
     ai.body.angularVelocity.setZero();
     ai.body.type = CANNON.Body.KINEMATIC;
+    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(ai.body);
     this.scene.add(ai.mesh);
     this.world.addBody(ai.body);
     this.aiMarble = ai;
@@ -1698,8 +1705,13 @@ private spawnShootersInitial(): void {
       p.set(x, l4MarbleRestY(x, 0) ?? MARBLE_REST_Y, 0);
     }
     if (l4) {
-      // Never yank to desk-top mid-air. Pull onto real support (mat/wood/trough).
-      let rest = l4MarbleRestY(p.x, p.z);
+      // Shooters treat channels/holes as desk-top (lids). Never park them in a trough.
+      if (l4IsChannelOrHoleXZ(p.x, p.z)) {
+        const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
+        p.x = Math.max(-maxOnMat, Math.min(maxOnMat, p.x));
+        p.z = Math.max(-maxOnMat, Math.min(maxOnMat, p.z));
+      }
+      let rest = l4ShooterMarbleRestY(p.x, p.z);
       if (rest === null) {
         // Off desk — clamp onto mat so we don't create floaters outside the desk
         const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
@@ -1707,7 +1719,7 @@ private spawnShootersInitial(): void {
         const s = Math.min(1, maxOnMat / horiz);
         p.x *= s;
         p.z *= s;
-        rest = l4MarbleRestY(p.x, p.z) ?? MARBLE_REST_Y;
+        rest = l4ShooterMarbleRestY(p.x, p.z) ?? MARBLE_REST_Y;
       }
       // Only lift/drop onto support when near it or below floor; leave falling alone if deep
       if (p.y > 1 || p.y < L4_ROOM_FLOOR_Y + MARBLE_RADIUS * 2 || Math.abs(p.y - rest) < 0.08) {
@@ -2553,7 +2565,7 @@ private spawnShootersInitial(): void {
       const personalLoss = this.checkPersonalMarbleFail();
       if (personalLoss) return true;
     }
-    // L4: personal marble off desk / into corner hole = perdiste / opponent loses
+    // L4: personal marble off desk edge (to floor) = perdiste; channels/holes blocked for shooters
     if (l4) {
       const personalLoss = this.checkL4PersonalMarbleFail();
       if (personalLoss) return true;
@@ -4498,6 +4510,7 @@ private spawnShootersInitial(): void {
         new CANNON.Vec3(snap.player.x, snap.player.y, snap.player.z),
         'player',
       );
+      if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(player.body);
       this.scene.add(player.mesh);
       this.world.addBody(player.body);
       this.playerMarble = player;
@@ -4510,6 +4523,7 @@ private spawnShootersInitial(): void {
         new CANNON.Vec3(snap.ai.x, snap.ai.y, snap.ai.z),
         'ai',
       );
+      if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(ai.body);
       this.scene.add(ai.mesh);
       this.world.addBody(ai.body);
       this.aiMarble = ai;
@@ -4565,25 +4579,64 @@ private spawnShootersInitial(): void {
 
 
   /** L4: marble left real desk support or dropped below the top (fell off / through). */
-  private isOffL4Desk(x: number, y: number, z: number): boolean {
+  private isOffL4Desk(
+    x: number,
+    y: number,
+    z: number,
+    opts?: { shooter?: boolean },
+  ): boolean {
     if (!this.officeDesk) return y < PLAY_SURFACE_Y - 0.06;
     // Below desk trough / into room → fallen
     if (y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH - MARBLE_RADIUS * 2) return true;
-    // No collider under this XZ (past outer lip, hole opening, or void) → off desk
+    if (opts?.shooter) {
+      // Shooters ride lids over channels/holes — only leave via desk edge → floor
+      if (l4ShooterSupportLocalY(x, z) === null) {
+        return y < PLAY_SURFACE_Y - MARBLE_RADIUS * 0.5;
+      }
+      return false;
+    }
+    // Field: no collider under this XZ (past outer lip, hole opening, or void) → off desk
     return l4SupportLocalY(x, z) === null;
   }
 
   /**
+   * If a shooter somehow ends up in a channel/hole (tunneling / old pose), snap it
+   * back onto the mat. Does not affect field marbles.
+   */
+  private rescueL4ShootersFromChannels(): void {
+    if (this.sceneLevel !== 4 || !this.officeDesk) return;
+    const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
+    const outer = L4_MAT_HALF + L4_CHANNEL_W;
+    for (const m of [this.playerMarble, this.aiMarble]) {
+      if (!m || !m.active) continue;
+      const p = m.body.position;
+      const overPlayWell = Math.abs(p.x) <= outer + 0.02 && Math.abs(p.z) <= outer + 0.02;
+      const inForbiddenXZ = l4IsChannelOrHoleXZ(p.x, p.z);
+      const sunkInTrough =
+        overPlayWell && p.y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH * 0.35;
+      if (!inForbiddenXZ && !sunkInTrough) continue;
+
+      p.x = Math.max(-maxOnMat, Math.min(maxOnMat, p.x));
+      p.z = Math.max(-maxOnMat, Math.min(maxOnMat, p.z));
+      p.y = l4ShooterMarbleRestY(p.x, p.z) ?? MARBLE_REST_Y;
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      this.syncOneMesh(m);
+    }
+  }
+
+  /**
    * L4 lose conditions for a personal (shooter) marble:
-   * falls into a corner hole OR off the desk → that side loses the match ("perdiste").
+   * falling off the desk edge to the floor → that side loses ("perdiste").
+   * Channels / corner holes are shooter-blocked (lids); field marbles still use them.
    */
   private checkL4PersonalMarbleFail(): boolean {
+    this.rescueL4ShootersFromChannels();
     const check = (m: MarbleEntity | null, side: Side): boolean => {
       if (!m || !m.active) return false;
       const { x, y, z } = m.body.position;
-      const inHole = this.isInL4Hole(x, y, z);
-      const offDesk = this.isOffL4Desk(x, y, z);
-      if (!(inHole || offDesk)) return false;
+      const offDesk = this.isOffL4Desk(x, y, z, { shooter: true });
+      if (!offDesk) return false;
 
       m.active = false;
       m.mesh.visible = false;
@@ -4593,7 +4646,7 @@ private spawnShootersInitial(): void {
       if (side === 'player') this.clearPlayerOutline();
 
       this.forcedWinner = side === 'player' ? 'ai' : 'player';
-      const why = inHole ? 'cayó al hoyo' : 'se cayó del escritorio';
+      const why = 'se cayó del escritorio';
       if (side === 'player') {
         this.flashLocationBanner(
           `¡Perdiste! Canica de ${this.playerName} ${why}`,
