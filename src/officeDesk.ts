@@ -59,15 +59,17 @@ export const L4_COL_GROUP_SHOOTER = 2;
 export const L4_COL_GROUP_SHOOTER_BLOCKER = 4;
 
 /**
- * Tag a shooter body: collides with world props + shooter bridges, but the half-pipe
- * channelBody itself is masked to FIELD-only so shooters never rest on trough lips.
+ * Tag a shooter body: collides with world/props/mat/rails + shooter bridges.
+ * Half-pipe channelBody is FIELD-only so shooters never rest on trough lips.
+ * L4-only: shooters do NOT collide with other shooters (no mutual knock/push).
  */
 export function applyL4ShooterCollisionFilter(body: CANNON.Body): void {
   body.collisionFilterGroup = L4_COL_GROUP_SHOOTER;
-  // Explicit mask: default world/field/props + other shooters + bridges.
+  // Mask: DEFAULT world/field/props/rails + bridges. Omit L4_COL_GROUP_SHOOTER
+  // so player↔AI shooters pass through each other (Carlo: no empujar).
   // Channel trough uses DEFAULT group with mask=DEFAULT only → no shooter contact.
   body.collisionFilterMask =
-    L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER | L4_COL_GROUP_SHOOTER_BLOCKER;
+    L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER_BLOCKER;
 }
 
 /** Field-only channel collider: shooters (group 2) never touch half-pipe facets. */
@@ -1293,10 +1295,10 @@ export function buildOfficeDesk(
   // (west −X + south +Z). Stops marbles rolling off where Carlo marked "Bordes".
   // NOT on the right L-wing. Sits ON the desk top (local Y=0 → +railH).
   {
-    // MARBLE_RADIUS is 0.008 (~1.6 cm Ø); ~1.1 cm curb ≈ 1.4×R — stops climb-over
-    // while staying visually low/discrete on the 1.35 m slab.
-    const railH = 0.011;
-    const railT = 0.008;
+    // MARBLE_RADIUS is 0.008 (~1.6 cm Ø). Absolute curb ~1.3 cm stops roll-over
+    // while staying visually low/discrete on the 1.35 m slab (not MARBLE_RADIUS*0.6).
+    const railH = 0.013;
+    const railT = 0.009;
     const railCy = railH / 2;
     const inset = 0.002; // tiny end inset so corners don't overhang
     const railMat = woodStandard(0x5a2814, { map: grain.clone(), roughness: 0.58 });
