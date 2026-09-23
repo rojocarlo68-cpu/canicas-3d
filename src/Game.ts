@@ -77,7 +77,14 @@ import {
   L4_PIPE_R,
   applyL4ShooterCollisionFilter,
 } from './officeDesk';
-import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
+import {
+  playMarbleClack,
+  playMarbleFloorHit,
+  unlockMarbleAudio,
+  installMarbleAudioUnlock,
+  updateMarbleWoodRoll,
+  stopMarbleWoodRoll,
+} from './marbleSounds';
 import {
   createSpyBriefcase,
   resetBriefcase,
@@ -3277,6 +3284,45 @@ private spawnShootersInitial(): void {
   }
 
 
+  /**
+   * L4: quiet wood-channel roll bed while any field marble moves in the half-pipe.
+   * Speed-gated; ducked under clacks inside marbleSounds.
+   */
+  private updateL4WoodRollSfx(): void {
+    if (this.sceneLevel !== 4) {
+      stopMarbleWoodRoll();
+      return;
+    }
+    if (
+      this.phase !== 'shot_flying' &&
+      this.phase !== 'settling' &&
+      this.phase !== 'dropping' &&
+      this.phase !== 'playing' &&
+      this.phase !== 'ai_thinking'
+    ) {
+      stopMarbleWoodRoll();
+      return;
+    }
+    let maxSpeed = 0;
+    for (const m of this.fieldMarbles) {
+      if (!m.active) continue;
+      const body = m.body;
+      if (body.type !== CANNON.Body.DYNAMIC && body.type !== CANNON.Body.KINEMATIC) continue;
+      const x = body.position.x;
+      const z = body.position.z;
+      const lat = l4ChannelLateral(x, z);
+      if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.99) continue;
+      const localY = body.position.y - PLAY_SURFACE_Y;
+      if (localY > MARBLE_RADIUS + L4_PIPE_R * 0.12) continue;
+      if (localY < -L4_PIPE_R - MARBLE_RADIUS * 4) continue;
+      const speed = body.velocity.length();
+      if (speed > maxSpeed) maxSpeed = speed;
+    }
+    // cruise ~0.65 → speed01 ~1; quiet when nearly stopped
+    const speed01 = Math.min(1, Math.max(0, (maxSpeed - 0.05) / 0.7));
+    updateMarbleWoodRoll(speed01);
+  }
+
   /** Sparks on hard marble–marble hits; dirt on ground scrapes / hard landings. */
   private processImpactFX(): void {
     if (!this.particles) return;
@@ -3345,6 +3391,23 @@ private spawnShootersInitial(): void {
               intensity,
             );
           }
+        }
+      }
+
+      // L4: marble hitting the room floor after falling off the desk
+      if (
+        this.sceneLevel === 4 &&
+        impact > 0.28 &&
+        (mi || mj) &&
+        !(mi && mj)
+      ) {
+        const marbleBody = mi ? bi : bj;
+        const other = mi ? bj : bi;
+        if (
+          other.mass === 0 &&
+          marbleBody.position.y < L4_ROOM_FLOOR_Y + MARBLE_RADIUS * 2.8
+        ) {
+          playMarbleFloorHit(impact);
         }
       }
     }
@@ -3929,6 +3992,7 @@ private spawnShootersInitial(): void {
     // cancel translation (root cause of live spin-in-place). Uses simulated dt.
     const simDt = Math.min(physDt, 10 / 120);
     this.applyL4ChannelDrain(simDt);
+    this.updateL4WoodRollSfx();
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
     this.updateAIDirector(dt);
