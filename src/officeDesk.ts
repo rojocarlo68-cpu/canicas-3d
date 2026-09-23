@@ -8,7 +8,11 @@
  * - Channel-only downhill along the RING PATH (arc-length height → SW hole) so trough
  *   marbles reliably roll to the hole from any side; mat/desk wood remain level.
  * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges /
-*   no mat-pedestal or outer-frame vertical thickness walls at the mouths).
+ *   no mat-pedestal or outer-frame vertical thickness walls at the mouths).
+ * - Half-pipe mouths stay OPEN: skip ~20% arc at each lip + never emit a facet whose
+ *   mesh would rise above the desk/mat plane (channel-only height bias included).
+ * - channelBody collides with FIELD marbles only (not shooters). Shooters use invisible
+ *   full-ring bridges and completely ignore trough/hole collision.
  * - Solid Cannon bodies on clutter props.
  * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
  *   marbles fall into the trough / score via the single hole, while player+AI shooters
@@ -54,10 +58,22 @@ export const L4_COL_GROUP_DEFAULT = 1;
 export const L4_COL_GROUP_SHOOTER = 2;
 export const L4_COL_GROUP_SHOOTER_BLOCKER = 4;
 
-/** Tag a shooter body so it collides with L4 channel/hole lids (field marbles do not). */
+/**
+ * Tag a shooter body: collides with world props + shooter bridges, but the half-pipe
+ * channelBody itself is masked to FIELD-only so shooters never rest on trough lips.
+ */
 export function applyL4ShooterCollisionFilter(body: CANNON.Body): void {
   body.collisionFilterGroup = L4_COL_GROUP_SHOOTER;
-  body.collisionFilterMask = -1; // default world + other shooters + blockers
+  // Explicit mask: default world/field/props + other shooters + bridges.
+  // Channel trough uses DEFAULT group with mask=DEFAULT only → no shooter contact.
+  body.collisionFilterMask =
+    L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER | L4_COL_GROUP_SHOOTER_BLOCKER;
+}
+
+/** Field-only channel collider: shooters (group 2) never touch half-pipe facets. */
+export function applyL4ChannelFieldOnlyFilter(body: CANNON.Body): void {
+  body.collisionFilterGroup = L4_COL_GROUP_DEFAULT;
+  body.collisionFilterMask = L4_COL_GROUP_DEFAULT;
 }
 
 /**
@@ -734,7 +750,7 @@ export function buildOfficeDesk(
   const leftMaxZ = leftCZ + leftDepth / 2;
   // Recess outer wood slightly past the half-pipe outer lip so the channel→desk
   // mouth has no vertical mahogany wall (flush transition; shooters still use bridges).
-  const outerLipRecess = Math.max(0.006, pipeR * 0.45);
+  const outerLipRecess = Math.max(0.008, pipeR * 0.65);
   const wMinX = -outerHalf - outerLipRecess;
   const wMaxX = outerHalf + outerLipRecess;
   const wMinZ = -outerHalf - outerLipRecess;
@@ -821,7 +837,7 @@ export function buildOfficeDesk(
     const pedH = gutterDepth;
     const pedCy = -pedH / 2;
     // Keep sides well inside matHalf so the bowl opens with no wall / collision lip.
-    const inset = Math.max(0.012, pipeR * 0.95);
+    const inset = Math.max(0.014, pipeR * 1.05);
     const full = matHalf * 2 - inset * 2;
     mkBoard(full, pedH, full, 0, pedCy, 0);
     const ped = mkStatic(woodMat);
@@ -862,6 +878,8 @@ export function buildOfficeDesk(
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
   const channelBody = mkStatic(channelMat);
+  // CRITICAL: shooters must never collide with trough facets (lip shelves).
+  applyL4ChannelFieldOnlyFilter(channelBody);
 
   const addShapeBox = (
     body: CANNON.Body,
@@ -931,30 +949,35 @@ export function buildOfficeDesk(
         const scz = alongX ? cz : alongMid;
 
         // Visual half-pipe via many thin boxes (matches physics).
-        // Skip near-lip segments (nearly vertical) so mat↔channel↔desk mouths stay flush —
-        // no raised wall beads at the inner/outer lips Carlo marked with red X.
+        // Skip near-lip segments aggressively so mat↔channel↔desk mouths stay flush —
+        // ZERO raised wall beads at the inner/outer lips Carlo marked with red X.
+        const lipSkip = 0.20; // omit outer ~20% arc at each mouth
         for (let i = 0; i < SEGS; i++) {
           const t0 = i / SEGS;
           const t1 = (i + 1) / SEGS;
           const a0 = Math.PI * t0; // 0 = outer lip (+perp), π = inner lip (−perp)
           const a1 = Math.PI * t1;
           const amid = 0.5 * (a0 + a1);
-          // Open mouths: omit facets in the outer ~12% arc near each lip
-          if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
+          if (amid < Math.PI * lipSkip || amid > Math.PI * (1 - lipSkip)) continue;
           const arc = (a1 - a0) * pipeR;
-          const thick = Math.max(0.0045, arc * 0.95);
+          const thick = Math.max(0.004, arc * 0.9);
+          const meshH = 0.0042;
           // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
           const lat = pipeR * Math.cos(amid);
           // Channel-only slope: per-slice centerline bias → continuous downhill to SW hole
           const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
-          // Never let a facet center sit above the desk plane (no ridge)
-          if (y > -0.0012) continue;
+          // Reject any facet whose mesh could rise above the desk/mat plane (ridge/lip)
+          const topY =
+            y +
+            Math.abs((meshH / 2) * Math.sin(amid)) +
+            Math.abs((thick / 2) * Math.cos(amid));
+          if (topY > -0.0004) continue;
           // Tangent angle for facet
           const ang = amid - Math.PI / 2; // rotate facet to follow circle
 
           const bw = alongX ? sliceLen : thick;
           const bd = alongX ? thick : sliceLen;
-          const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.0055, bd), chMat);
+          const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, meshH, bd), chMat);
           if (alongX) {
             mesh.position.set(scx, y, scz + lat);
             mesh.rotation.x = ang;
@@ -963,17 +986,18 @@ export function buildOfficeDesk(
             mesh.rotation.z = -ang;
           }
           mesh.receiveShadow = true;
-          mesh.castShadow = true;
+          // No castShadow — lip shadow lines read as raised borders in screenshots
+          mesh.castShadow = false;
           desk.add(mesh);
 
-          // Physics facet
+          // Physics facet (field-only via channelBody filter)
           const q = new CANNON.Quaternion();
           if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
           else q.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), -ang);
           addShapeBox(
             channelBody,
             alongX ? sliceLen / 2 : thick / 2,
-            0.0028,
+            0.0022,
             alongX ? thick / 2 : sliceLen / 2,
             alongX ? scx : scx + lat,
             y,
@@ -1014,24 +1038,31 @@ export function buildOfficeDesk(
       const tangZ = Math.cos(tmid);
       const bias = l4ChannelHeightBias(clx, clz);
 
-      // Visual curved half-pipe — open lips (skip near-vertical mouth facets)
+      // Visual curved half-pipe — open lips (skip ~20% mouth facets; never above plane)
+      const lipSkip = 0.20;
       for (let i = 0; i < SEGS; i++) {
         const a0 = Math.PI * (i / SEGS);
         const a1 = Math.PI * ((i + 1) / SEGS);
         const amid = 0.5 * (a0 + a1);
-        if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
-        const thick = Math.max(0.004, (a1 - a0) * pipeR * 0.92);
+        if (amid < Math.PI * lipSkip || amid > Math.PI * (1 - lipSkip)) continue;
+        const thick = Math.max(0.0038, (a1 - a0) * pipeR * 0.88);
+        const meshH = 0.0042;
         const lat = pipeR * Math.cos(amid);
         const y = -pipeR * Math.sin(amid) + bias;
-        if (y > -0.0012) continue;
+        const topY =
+          y +
+          Math.abs((meshH / 2) * Math.sin(amid)) +
+          Math.abs((thick / 2) * Math.cos(amid));
+        if (topY > -0.0004) continue;
         const px = clx + lat * radX;
         const pz = clz + lat * radZ;
         const ang = amid - Math.PI / 2;
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(arcLen / 1.08, 0.0055, thick), chMat);
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(arcLen / 1.08, meshH, thick), chMat);
         mesh.position.set(px, y, pz);
         mesh.lookAt(px + tangX, y, pz + tangZ);
         mesh.rotateX(ang);
         mesh.receiveShadow = true;
+        mesh.castShadow = false;
         desk.add(mesh);
       }
 
@@ -1043,7 +1074,7 @@ export function buildOfficeDesk(
         channelBody,
         arcLen / 2,
         0.003,
-        pipeR * 1.05, // covers trough width
+        pipeR * 0.92, // trough floor only — not out to mouth lips
         clx,
         floorY - 0.003,
         clz,
@@ -1137,26 +1168,29 @@ export function buildOfficeDesk(
 
   // Paper-thin flush decks over the outerLipRecess gap — visual continuity at Y=0 with
   // NO vertical thickness into the trough (removes channel→desk raised rim).
-  // Thin physics so shooters stepping off bridges onto outer wood don't fall through.
+  // Start just outside the open outer mouth so decks never read as a rim into the trough.
   {
-    const t = 0.0022;
+    const t = 0.0016;
     const cy = -t / 2;
-    const band = outerLipRecess + 0.001;
-    const span = outerHalf * 2 + band * 2;
+    const mouthClear = pipeR * 0.08; // keep deck clear of open outer mouth
+    const band = Math.max(0.004, outerLipRecess - mouthClear);
+    const deckInner = outerHalf + mouthClear;
+    const span = (deckInner + band) * 2;
     const lipBody = mkStatic(woodMat);
     const addLip = (w: number, d: number, cx: number, cz: number) => {
+      if (w < 0.004 || d < 0.004) return;
       mkBoard(w, t, d, cx, cy, cz);
       lipBody.addShape(
         new CANNON.Box(new CANNON.Vec3(w / 2, t / 2, d / 2)),
         new CANNON.Vec3(cx, cy, cz),
       );
     };
-    // N / S bands
-    addLip(span, band, 0, -(outerHalf + band / 2));
-    addLip(span, band, 0, outerHalf + band / 2);
+    // N / S bands — outer edge of open trough → recessed frame
+    addLip(span, band, 0, -(deckInner + band / 2));
+    addLip(span, band, 0, deckInner + band / 2);
     // W / E bands
-    addLip(band, outerHalf * 2, -(outerHalf + band / 2), 0);
-    addLip(band, outerHalf * 2, outerHalf + band / 2, 0);
+    addLip(band, outerHalf * 2 + mouthClear * 2, -(deckInner + band / 2), 0);
+    addLip(band, outerHalf * 2 + mouthClear * 2, deckInner + band / 2, 0);
   }
 
   // ——— Shooter-only invisible BRIDGES over the full half-pipe ring + hole ———
@@ -1183,14 +1217,16 @@ export function buildOfficeDesk(
       );
     };
 
-    // Full ring coverage (N/S/E/W) — shooters pass OVER the concave channel
-    addBridge(outerHalf, chW / 2, 0, -(matHalf + chW / 2)); // north
-    addBridge(outerHalf, chW / 2, 0, matHalf + chW / 2); // south (incl. hole)
-    addBridge(chW / 2, outerHalf, -(matHalf + chW / 2), 0); // west
-    addBridge(chW / 2, outerHalf, matHalf + chW / 2, 0); // east
+    // Full ring + slight overlap onto mat/desk so shooters never find a gap/lip
+    const bridgeHalfW = chW / 2 + pipeR * 0.35;
+    const bridgeLen = outerHalf + pipeR * 0.25;
+    addBridge(bridgeLen, bridgeHalfW, 0, -(matHalf + chW / 2)); // north
+    addBridge(bridgeLen, bridgeHalfW, 0, matHalf + chW / 2); // south (incl. hole)
+    addBridge(bridgeHalfW, bridgeLen, -(matHalf + chW / 2), 0); // west
+    addBridge(bridgeHalfW, bridgeLen, matHalf + chW / 2, 0); // east
 
-    // Corner caps so bridges meet cleanly at rounded corners
-    const cap = chW * 0.55;
+    // Corner caps — cover rounded elbows fully
+    const cap = chW * 0.75;
     for (const sx of [-1, 1] as const) {
       for (const sz of [-1, 1] as const) {
         addBridge(cap, cap, sx * (matHalf + chW / 2), sz * (matHalf + chW / 2));

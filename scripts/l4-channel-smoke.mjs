@@ -163,8 +163,12 @@ function buildChannelWorld() {
 
   const matHalf = L4_MAT_HALF, pipeR = L4_PIPE_R, holeR = L4_HOLE_RADIUS;
   const hole = l4HoleCentersLocal()[0];
+  const L4_COL_DEFAULT = 1, L4_COL_SHOOTER = 2, L4_COL_BRIDGE = 4;
   const channelBody = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: channelMat });
   channelBody.position.set(0, PLAY_SURFACE_Y, 0);
+  // Field-only: shooters never collide with trough facets (lip shelves)
+  channelBody.collisionFilterGroup = L4_COL_DEFAULT;
+  channelBody.collisionFilterMask = L4_COL_DEFAULT;
   world.addBody(channelBody);
 
   const addHalfPipeStraight = (length, cx, cz, alongX, holeSkip) => {
@@ -194,13 +198,16 @@ function buildChannelWorld() {
         const alongMid = aStart + sliceLen * (si + 0.5);
         const scx = alongX ? alongMid : cx;
         const scz = alongX ? cz : alongMid;
+        const lipSkip = 0.20;
         for (let i = 0; i < SEGS; i++) {
           const amid = Math.PI * ((i + 0.5) / SEGS);
-          if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
-          const thick = Math.max(0.0045, (Math.PI / SEGS) * pipeR * 0.95);
+          if (amid < Math.PI * lipSkip || amid > Math.PI * (1 - lipSkip)) continue;
+          const thick = Math.max(0.004, (Math.PI / SEGS) * pipeR * 0.9);
+          const meshH = 0.0042;
           const lat = pipeR * Math.cos(amid);
           const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
-          if (y > -0.0012) continue;
+          const topY = y + Math.abs((meshH / 2) * Math.sin(amid)) + Math.abs((thick / 2) * Math.cos(amid));
+          if (topY > -0.0004) continue;
           const ang = amid - Math.PI / 2;
           const q = new CANNON.Quaternion();
           if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
@@ -234,7 +241,7 @@ function buildChannelWorld() {
       const floorY = -pipeR + bias;
       const qYaw = new CANNON.Quaternion();
       qYaw.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.atan2(tangX, tangZ));
-      addShapeBox(channelBody, arcLen / 2, 0.003, pipeR * 1.05, clx, floorY - 0.003, clz, qYaw);
+      addShapeBox(channelBody, arcLen / 2, 0.003, pipeR * 0.92, clx, floorY - 0.003, clz, qYaw);
       // No side rails (flush mouths)
     }
   };
@@ -257,7 +264,7 @@ function buildChannelWorld() {
   {
     const ped = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: woodMat });
     ped.position.set(0, PLAY_SURFACE_Y, 0);
-    const inset = Math.max(0.012, pipeR * 0.95);
+    const inset = Math.max(0.014, pipeR * 1.05);
     ped.addShape(new CANNON.Box(new CANNON.Vec3(matHalf - inset, pipeR / 2, matHalf - inset)),
       new CANNON.Vec3(0, -pipeR / 2, 0));
     world.addBody(ped);
@@ -289,7 +296,41 @@ function buildChannelWorld() {
     floorBody.position.set(0, -0.74 - 0.04, 0);
     world.addBody(floorBody);
   }
-  return { world, marbleMat, hole };
+  // Shooter-only bridges (full ring)
+  const bridgeBody = new CANNON.Body({
+    mass: 0, type: CANNON.Body.STATIC, material: woodMat,
+    collisionFilterGroup: L4_COL_BRIDGE,
+    collisionFilterMask: L4_COL_SHOOTER,
+  });
+  bridgeBody.position.set(0, PLAY_SURFACE_Y, 0);
+  const chW = L4_CHANNEL_W, outerHalf = matHalf + chW;
+  const bridgeT = 0.006, bridgeCy = -bridgeT / 2;
+  const bridgeHalfW = chW / 2 + pipeR * 0.35;
+  const bridgeLen = outerHalf + pipeR * 0.25;
+  const addBridge = (hx, hz, ox, oz) => {
+    bridgeBody.addShape(new CANNON.Box(new CANNON.Vec3(hx, bridgeT / 2, hz)),
+      new CANNON.Vec3(ox, bridgeCy, oz));
+  };
+  addBridge(bridgeLen, bridgeHalfW, 0, -(matHalf + chW / 2));
+  addBridge(bridgeLen, bridgeHalfW, 0, matHalf + chW / 2);
+  addBridge(bridgeHalfW, bridgeLen, -(matHalf + chW / 2), 0);
+  addBridge(bridgeHalfW, bridgeLen, matHalf + chW / 2, 0);
+  const cap = chW * 0.75;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    addBridge(cap, cap, sx * (matHalf + chW / 2), sz * (matHalf + chW / 2));
+  }
+  world.addBody(bridgeBody);
+
+  // Mat top for field/shooter support
+  {
+    const matBody = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: woodMat });
+    matBody.position.set(0, PLAY_SURFACE_Y, 0);
+    matBody.addShape(new CANNON.Box(new CANNON.Vec3(matHalf, 0.004, matHalf)),
+      new CANNON.Vec3(0, -0.004, 0));
+    world.addBody(matBody);
+  }
+
+  return { world, marbleMat, hole, channelBody, bridgeBody, L4_COL_DEFAULT, L4_COL_SHOOTER, L4_COL_BRIDGE };
 }
 
 
@@ -468,7 +509,51 @@ for (const label of positions) {
   results.push(r);
   console.log(`${r.pass ? 'PASS' : 'FAIL'} ${label.padEnd(2)} arc=${(r.arcDist ?? -1).toFixed(3)} path=${(r.path ?? 0).toFixed(3)} → ${r.reason}`);
 }
-const req = ['N', 'E', 'S', 'W'];
+
+/** Shooter must rest on bridge over channel, never sink into trough. */
+function runShooterBridgeTest() {
+  const { world, marbleMat, hole, channelBody, L4_COL_DEFAULT, L4_COL_SHOOTER, L4_COL_BRIDGE } = buildChannelWorld();
+  const shooter = new CANNON.Body({
+    mass: MARBLE_MASS, material: marbleMat,
+    linearDamping: 0.12, angularDamping: 0.18,
+    shape: new CANNON.Sphere(MARBLE_RADIUS),
+    collisionFilterGroup: L4_COL_SHOOTER,
+    collisionFilterMask: L4_COL_DEFAULT | L4_COL_SHOOTER | L4_COL_BRIDGE,
+  });
+  // Place over north channel centerline at desk height
+  const x = 0, z = -(L4_MAT_HALF + L4_PIPE_R);
+  shooter.position.set(x, PLAY_SURFACE_Y + MARBLE_RADIUS + 0.002, z);
+  world.addBody(shooter);
+  const dt = 1 / 120;
+  let minY = shooter.position.y;
+  let touchedChannel = false;
+  world.addEventListener('beginContact', (e) => {
+    const a = e.bodyA, b = e.bodyB;
+    if ((a === shooter && b === channelBody) || (b === shooter && a === channelBody)) {
+      touchedChannel = true;
+    }
+  });
+  for (let i = 0; i < 240; i++) { // 2s
+    world.step(dt);
+    minY = Math.min(minY, shooter.position.y);
+  }
+  const restY = PLAY_SURFACE_Y + MARBLE_RADIUS;
+  const sunk = minY < restY - MARBLE_RADIUS * 0.55; // would mean entered trough
+  const pass = !touchedChannel && !sunk && shooter.position.y > restY - MARBLE_RADIUS * 0.35;
+  return {
+    label: 'SHOOTER',
+    pass,
+    reason: pass
+      ? `bridge-ok y=${shooter.position.y.toFixed(4)} minY=${minY.toFixed(4)}`
+      : `FAIL touchedChannel=${touchedChannel} sunk=${sunk} y=${shooter.position.y.toFixed(4)} minY=${minY.toFixed(4)}`,
+  };
+}
+
+const shooterResult = runShooterBridgeTest();
+results.push(shooterResult);
+console.log(`${shooterResult.pass ? 'PASS' : 'FAIL'} ${shooterResult.label} → ${shooterResult.reason}`);
+
+const req = ['N', 'E', 'S', 'W', 'SHOOTER'];
 const reqPass = req.filter((l) => results.find((r) => r.label === l)?.pass);
-console.log(`--- required ${reqPass.length}/4; all ${results.filter((r) => r.pass).length}/${results.length} ---`);
-process.exitCode = reqPass.length >= 4 ? 0 : 1;
+console.log(`--- required ${reqPass.length}/5; all ${results.filter((r) => r.pass).length}/${results.length} ---`);
+process.exitCode = reqPass.length >= 5 ? 0 : 1;
