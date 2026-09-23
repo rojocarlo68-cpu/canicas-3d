@@ -1288,6 +1288,34 @@ export function buildOfficeDesk(
   const floorFill = new THREE.HemisphereLight(0xf0e8d8, 0x2a1810, 0.35);
   desk.add(floorFill);
 
+  // Discrete outer desk edge rails — west + south (Carlo photo)
+  // Thin raised mahogany borders on the left slab's TRUE outer edges only
+  // (west −X + south +Z). Stops marbles rolling off where Carlo marked "Bordes".
+  // NOT on the right L-wing. Sits ON the desk top (local Y=0 → +railH).
+  {
+    // MARBLE_RADIUS is 0.008 (~1.6 cm Ø); ~1.1 cm curb ≈ 1.4×R — stops climb-over
+    // while staying visually low/discrete on the 1.35 m slab.
+    const railH = 0.011;
+    const railT = 0.008;
+    const railCy = railH / 2;
+    const inset = 0.002; // tiny end inset so corners don't overhang
+    const railMat = woodStandard(0x5a2814, { map: grain.clone(), roughness: 0.58 });
+    const railBody = mkStatic(woodMat);
+    const addRail = (w: number, h: number, d: number, cx: number, cy: number, cz: number) => {
+      mkBoard(w, h, d, cx, cy, cz, railMat);
+      railBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2)),
+        new CANNON.Vec3(cx, cy, cz),
+      );
+    };
+    // West (−X / leftMinX): thin in X, long in Z — full west outer edge
+    const westX = leftMinX + railT / 2;
+    addRail(railT, railH, leftDepth - inset, westX, railCy, leftCZ);
+    // South (+Z / leftMaxZ): long in X, thin in Z — left slab front only (to L-junction)
+    const southZ = leftMaxZ - railT / 2;
+    addRail(leftLen - inset, railH, railT, leftCX, railCy, southZ);
+  }
+
   // ——— Clutter + solid Cannon props ———
   const clutter = new THREE.Group();
   clutter.position.set(rightCX, 0, rightCZ);
