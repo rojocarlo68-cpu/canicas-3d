@@ -358,29 +358,34 @@ function l4ChannelStepTowardSW(x, z, ds) {
   else s = Math.min(peri, s + step);
   return l4ChannelPointAtArcLength(s);
 }
-function applyDrain(body) {
+function applyDrain(body, frameDt) {
   const x = body.position.x, z = body.position.z;
   const lat = l4ChannelLateral(x, z);
-  if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.98) {
+  if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.99) {
     body.linearDamping = LINEAR_DAMPING_DEFAULT;
     return;
   }
   const localY = body.position.y - PLAY_SURFACE_Y;
-  if (localY > -L4_PIPE_R * 0.18 + MARBLE_RADIUS) return;
-  body.linearDamping = 0.015;
+  // Wide gate (mirrors Game.ts) — shallow trough sits still convoy
+  if (localY > MARBLE_RADIUS + L4_PIPE_R * 0.12) return;
+  if (localY < -L4_PIPE_R - MARBLE_RADIUS * 4) return;
+  body.linearDamping = 0.008;
+  body.angularDamping = 0.12;
   const hole = l4HoleCentersLocal()[0];
   const holeR = L4_HOLE_RADIUS;
-  if (Math.hypot(x - hole.x, z - hole.z) < holeR * 1.05) {
-    body.velocity.y = Math.min(body.velocity.y, -0.45);
+  if (Math.hypot(x - hole.x, z - hole.z) < holeR * 1.15) {
+    body.velocity.y = Math.min(body.velocity.y, -0.55);
+    body.velocity.x += (hole.x - x) * 2.5;
+    body.velocity.z += (hole.z - z) * 2.5;
     return;
   }
-  const dt = 1 / 120;
-  const cruiseSpeed = 0.34;
-  const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.2);
-  const depthK = Math.min(1, depth / (L4_PIPE_R * 0.55));
+  const dt = Math.max(1 / 240, Math.min(frameDt ?? 1 / 120, 10 / 120));
+  const cruiseSpeed = 0.65;
+  const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.15);
+  const depthK = Math.min(1, depth / (L4_PIPE_R * 0.45));
   const dist = l4ChannelArcDistToSW(x, z) ?? 1;
-  const alongK = Math.min(1, Math.max(0.25, 1 - dist / 1.6));
-  const speed = cruiseSpeed * (0.45 + 0.55 * depthK) * (0.7 + 0.3 * alongK);
+  const alongK = Math.min(1, Math.max(0.35, 1 - dist / 1.8));
+  const speed = cruiseSpeed * (0.78 + 0.22 * depthK) * (0.85 + 0.15 * alongK);
   const next = l4ChannelStepTowardSW(x, z, speed * dt);
   if (!next) return;
   const bias = l4ChannelHeightBias(next.x, next.z);
@@ -417,27 +422,42 @@ function runOne(label, maxSec = 18) {
   const holeR = L4_HOLE_RADIUS;
   let passed = false, reason = 'timeout';
   let bestDist = Infinity, lastImprove = 0;
+  const startArc = l4ChannelArcDistToSW(pt.x, pt.z) ?? 0;
+  let bestArc = startArc;
+  let movedAlong = 0;
   for (let i = 0; i < steps; i++) {
     body.force.set(0, 0, 0);
-    applyDrain(body);
+    // Mirror Game.ts: physics first, then kinematic convoy (prevents spin-in-place)
     world.step(dt);
+    applyDrain(body, dt);
     const x = body.position.x, yb = body.position.y, z = body.position.z;
     const dHole = Math.hypot(x - hole.x, z - hole.z);
+    const arcNow = l4ChannelArcDistToSW(x, z);
+    if (arcNow !== null && arcNow < bestArc - 0.001) {
+      movedAlong += bestArc - arcNow;
+      bestArc = arcNow;
+      lastImprove = i;
+    }
     if (dHole < bestDist - 0.002) { bestDist = dHole; lastImprove = i; }
     // Must reach SW hole region — falling elsewhere (facet cracks / off-desk) is FAIL
     if (dHole < holeR * 1.35 && yb < PLAY_SURFACE_Y - L4_PIPE_R * 0.25) {
-      passed = true; reason = `SW-hole y=${yb.toFixed(3)} t=${(i * dt).toFixed(2)}s d=${dHole.toFixed(3)}`; break;
+      passed = true; reason = `SW-hole y=${yb.toFixed(3)} t=${(i * dt).toFixed(2)}s d=${dHole.toFixed(3)} path=${movedAlong.toFixed(3)}`; break;
     }
     if (dHole < holeR * 2.0 && yb < PLAY_SURFACE_Y - L4_PIPE_R - MARBLE_RADIUS * 2.2) {
-      passed = true; reason = `fell-near-SW y=${yb.toFixed(3)} t=${(i * dt).toFixed(2)}s d=${dHole.toFixed(3)}`; break;
+      passed = true; reason = `fell-near-SW y=${yb.toFixed(3)} t=${(i * dt).toFixed(2)}s d=${dHole.toFixed(3)} path=${movedAlong.toFixed(3)}`; break;
     }
-    // Stall only if no progress for 5s after first 2s
-    if (i > 240 && i - lastImprove > 600 && body.velocity.length() < 0.01 && dHole > holeR * 1.4) {
-      reason = `stalled d=${dHole.toFixed(3)} pos=(${x.toFixed(3)},${z.toFixed(3)}) v=${body.velocity.length().toFixed(4)}`;
+    // Stall only if no path progress for 5s after first 2s
+    if (i > 240 && i - lastImprove > 600 && body.velocity.length() < 0.02 && dHole > holeR * 1.4) {
+      reason = `stalled d=${dHole.toFixed(3)} path=${movedAlong.toFixed(3)} pos=(${x.toFixed(3)},${z.toFixed(3)}) v=${body.velocity.length().toFixed(4)}`;
       break;
     }
   }
-  return { label, pass: passed, reason, arcDist: l4ChannelArcDistToSW(pt.x, pt.z), heightBias: l4ChannelHeightBias(pt.x, pt.z) };
+  // Require actual along-path translation (not spin-in-place that lucks into a fall)
+  if (passed && movedAlong < 0.04 && startArc > 0.08) {
+    passed = false;
+    reason = `no-path-progress path=${movedAlong.toFixed(3)} startArc=${startArc.toFixed(3)} (${reason})`;
+  }
+  return { label, pass: passed, reason, arcDist: startArc, heightBias: l4ChannelHeightBias(pt.x, pt.z), path: movedAlong };
 }
 
 const positions = ['N', 'E', 'S', 'W', 'NE', 'NW', 'SE'];
@@ -446,7 +466,7 @@ const results = [];
 for (const label of positions) {
   const r = runOne(label);
   results.push(r);
-  console.log(`${r.pass ? 'PASS' : 'FAIL'} ${label.padEnd(2)} arc=${(r.arcDist ?? -1).toFixed(3)} → ${r.reason}`);
+  console.log(`${r.pass ? 'PASS' : 'FAIL'} ${label.padEnd(2)} arc=${(r.arcDist ?? -1).toFixed(3)} path=${(r.path ?? 0).toFixed(3)} → ${r.reason}`);
 }
 const req = ['N', 'E', 'S', 'W'];
 const reqPass = req.filter((l) => results.find((r) => r.label === l)?.pass);

@@ -1652,6 +1652,196 @@ export function buildOfficeDesk(
     );
   }
 
+  // ——— DeWalt TSTAK-style toolbox (barrier beside lamp, north of mat) ———
+  // Sits on outer wood north of the half-pipe so the channel mouth stays open.
+  // Solid static collider matching outer bounds — marbles cannot pass through.
+  {
+    const tbW = 0.20; // ~20 cm wide (X)
+    const tbD = 0.065; // thin depth fits the wood strip north of channel
+    const bodyH = 0.11;
+    const lidH = 0.055;
+    const tbH = bodyH + lidH; // ~16.5 cm tall — short toolbox on desk
+    // East of lamp (-0.7), on north outer wood; south face clears channel outer lip
+    const tbOx = -0.48;
+    const tbOz = -0.388;
+
+    const tbBlack = new THREE.MeshStandardMaterial({
+      color: 0x1a1a1a,
+      roughness: 0.82,
+      metalness: 0.08,
+    });
+    const tbYellow = new THREE.MeshStandardMaterial({
+      color: 0xffcd00,
+      roughness: 0.48,
+      metalness: 0.12,
+    });
+    const tbSilver = new THREE.MeshStandardMaterial({
+      color: 0xc5c9ce,
+      roughness: 0.32,
+      metalness: 0.88,
+    });
+    const tbClear = new THREE.MeshStandardMaterial({
+      color: 0xdde3ea,
+      roughness: 0.25,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.55,
+    });
+
+    const tbGroup = new THREE.Group();
+    tbGroup.name = 'dewaltToolbox';
+    tbGroup.position.set(tbOx, 0, tbOz);
+    desk.add(tbGroup);
+
+    // Main body (slightly inset under lid)
+    const bodyMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(tbW * 0.98, bodyH, tbD * 0.98),
+      tbBlack,
+    );
+    bodyMesh.position.y = bodyH / 2;
+    bodyMesh.castShadow = true;
+    bodyMesh.receiveShadow = true;
+    tbGroup.add(bodyMesh);
+
+    // Clipped / chamfered corner feel — small black wedges at front corners
+    for (const sx of [-1, 1]) {
+      const clip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.012, bodyH * 0.92, 0.012),
+        tbBlack,
+      );
+      clip.position.set(sx * (tbW * 0.48 - 0.004), bodyH / 2, tbD * 0.42);
+      clip.rotation.y = sx * 0.55;
+      tbGroup.add(clip);
+    }
+
+    // Vertical front ribs
+    for (let i = 0; i < 7; i++) {
+      const t = (i + 0.5) / 7;
+      const rib = new THREE.Mesh(
+        new THREE.BoxGeometry(0.006, bodyH * 0.78, 0.004),
+        tbBlack,
+      );
+      rib.position.set(-tbW * 0.4 + t * tbW * 0.8, bodyH * 0.5, tbD * 0.49);
+      tbGroup.add(rib);
+    }
+
+    // Lid
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(tbW, lidH, tbD), tbBlack);
+    lid.position.y = bodyH + lidH / 2;
+    lid.castShadow = true;
+    lid.receiveShadow = true;
+    tbGroup.add(lid);
+
+    // Recessed U-handle on lid
+    const handleY = bodyH + lidH * 0.72;
+    const handleMat = tbBlack;
+    const bar = new THREE.Mesh(
+      new THREE.BoxGeometry(0.07, 0.01, 0.012),
+      handleMat,
+    );
+    bar.position.set(0, handleY, 0);
+    tbGroup.add(bar);
+    for (const sx of [-1, 1]) {
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.01, 0.022, 0.012),
+        handleMat,
+      );
+      leg.position.set(sx * 0.04, handleY - 0.008, 0);
+      tbGroup.add(leg);
+    }
+    // Handle recess well
+    const recess = new THREE.Mesh(
+      new THREE.BoxGeometry(0.095, 0.012, 0.035),
+      new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.9, metalness: 0.05 }),
+    );
+    recess.position.set(0, bodyH + lidH * 0.35, 0);
+    tbGroup.add(recess);
+
+    // Yellow DEWALT logo plate on lid (canvas texture)
+    {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, 256, 64);
+      ctx.fillStyle = '#ffcd00';
+      ctx.font = 'bold 36px Arial, Helvetica, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('DEWALT', 128, 34);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const logo = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.11, 0.028),
+        new THREE.MeshStandardMaterial({
+          map: tex,
+          roughness: 0.55,
+          metalness: 0.05,
+        }),
+      );
+      logo.rotation.x = -Math.PI / 2;
+      logo.position.set(0, bodyH + lidH + 0.001, -tbD * 0.18);
+      tbGroup.add(logo);
+    }
+
+    // Yellow side stacking latches (left/right top)
+    for (const sx of [-1, 1]) {
+      const latch = new THREE.Mesh(
+        new THREE.BoxGeometry(0.028, 0.016, 0.022),
+        tbYellow,
+      );
+      latch.position.set(sx * (tbW * 0.42), bodyH + lidH * 0.55, -tbD * 0.05);
+      tbGroup.add(latch);
+      const tab = new THREE.Mesh(
+        new THREE.BoxGeometry(0.016, 0.01, 0.03),
+        tbYellow,
+      );
+      tab.position.set(sx * (tbW * 0.42), bodyH + lidH * 0.35, -tbD * 0.28);
+      tbGroup.add(tab);
+    }
+
+    // Silver front latches
+    for (const sx of [-1, 1]) {
+      const base = new THREE.Mesh(
+        new THREE.BoxGeometry(0.022, 0.028, 0.01),
+        tbSilver,
+      );
+      base.position.set(sx * 0.045, bodyH - 0.01, tbD * 0.5);
+      tbGroup.add(base);
+      const hasp = new THREE.Mesh(
+        new THREE.BoxGeometry(0.016, 0.035, 0.008),
+        tbSilver,
+      );
+      hasp.position.set(sx * 0.045, bodyH + 0.012, tbD * 0.5);
+      tbGroup.add(hasp);
+    }
+
+    // Clear label window on front lid lip
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.05, 0.018),
+      tbClear,
+    );
+    label.position.set(0, bodyH + 0.008, tbD * 0.501);
+    tbGroup.add(label);
+
+    // Foot / interlocking cutouts (visual only)
+    for (const sx of [-1, 1]) {
+      const foot = new THREE.Mesh(
+        new THREE.BoxGeometry(0.035, 0.008, 0.02),
+        tbBlack,
+      );
+      foot.position.set(sx * 0.06, 0.004, -tbD * 0.35);
+      tbGroup.add(foot);
+    }
+
+    // Dense static collider — outer AABB (marbles must not pass through)
+    propBody.addShape(
+      new CANNON.Box(new CANNON.Vec3(tbW / 2, tbH / 2, tbD / 2)),
+      new CANNON.Vec3(tbOx, tbH / 2, tbOz),
+    );
+  }
+
   // Blinds (room)
   const blinds = new THREE.Mesh(
     new THREE.PlaneGeometry(1.4, 1.1),

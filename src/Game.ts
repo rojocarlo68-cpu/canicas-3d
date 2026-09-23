@@ -2984,14 +2984,21 @@ private spawnShootersInitial(): void {
 
   /**
    * L4 field marbles in the half-pipe: CPU centerline convoy toward the SW hole.
-   * Ease-in speed (~0.34 m/s cruise) along the arc path + rolling spin so motion
-   * looks like gravity, not a magnetic snap. Shooters unchanged (bridges).
+   *
+   * Root cause of live "spin in place": convoy ran ONLY before world.step; the
+   * multi-substep contact solver vs half-pipe facets cancelled linear velocity while
+   * ω (and friction spin) remained — marbles looked stuck spinning. Also a tight
+   * localY depth gate skipped shallow N/E trough sits.
+   *
+   * Fix: kinematic path-follow AFTER physics with a wide in-channel gate, forced
+   * centerline-tangential linear velocity every frame, matching rolling ω, cruise
+   * ~0.65 m/s. Shooters unchanged (bridges). Field-only.
    */
-  private applyL4ChannelDrain(): void {
+  private applyL4ChannelDrain(frameDt: number): void {
     if (this.sceneLevel !== 4) return;
-    // Fixed physics step matches world.step(1/120, ...); convoy ds uses that rate.
-    const dt = 1 / 120;
-    const cruiseSpeed = 0.34; // m/s along centerline toward SW (was 0.16)
+    // Match simulated time from world.step(1/120, physDt, 10)
+    const dt = Math.max(1 / 240, Math.min(frameDt, 10 / 120));
+    const cruiseSpeed = 0.65; // m/s — fast travel through channel (was 0.34, felt stuck live)
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
@@ -3001,50 +3008,63 @@ private spawnShootersInitial(): void {
       const x = body.position.x;
       const z = body.position.z;
       const lat = l4ChannelLateral(x, z);
-      if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.98) {
+      // Cover full trough band including corners (N/E/S/W)
+      if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.99) {
         if (body.linearDamping < 0.11) body.linearDamping = 0.12;
         continue;
       }
       const localY = body.position.y - PLAY_SURFACE_Y;
-      if (localY > -L4_PIPE_R * 0.18 + MARBLE_RADIUS) continue;
-      body.linearDamping = 0.015;
+      // Wide gate: any marble whose center is at/below desk-top lip (+ small float).
+      // Old gate (-PIPE_R*0.18+R) skipped shallow wedged sits that still spin from friction.
+      if (localY > MARBLE_RADIUS + L4_PIPE_R * 0.12) continue;
+      // Already fell through / under desk — leave alone
+      if (localY < -L4_PIPE_R - MARBLE_RADIUS * 4) continue;
+      body.linearDamping = 0.008;
+      body.angularDamping = 0.12;
       body.wakeUp();
 
       const dist = l4ChannelArcDistToSW(x, z);
       if (dist === null) continue;
       // Near SW hole — let gravity pull through the open shaft
-      if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.05) {
-        body.velocity.y = Math.min(body.velocity.y, -0.45);
+      if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.15) {
+        body.velocity.y = Math.min(body.velocity.y, -0.55);
+        // Still nudge XZ into hole center so they don't orbit the rim
+        body.velocity.x += (hole.x - x) * 2.5;
+        body.velocity.z += (hole.z - z) * 2.5;
         continue;
       }
 
-      // Ease-in: slower when just entering the trough, cruise further along the ring
-      const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.2);
-      const depthK = Math.min(1, depth / (L4_PIPE_R * 0.55));
-      const alongK = Math.min(1, Math.max(0.25, 1 - dist / 1.6));
-      const speed = cruiseSpeed * (0.45 + 0.55 * depthK) * (0.7 + 0.3 * alongK);
+      // Mild ease: always translate meaningfully (min ~78% cruise)
+      const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.15);
+      const depthK = Math.min(1, depth / (L4_PIPE_R * 0.45));
+      const alongK = Math.min(1, Math.max(0.35, 1 - dist / 1.8));
+      const speed = cruiseSpeed * (0.78 + 0.22 * depthK) * (0.85 + 0.15 * alongK);
 
       const next = l4ChannelStepTowardSW(x, z, speed * dt);
       if (!next) continue;
-      // Place on trough floor (support) at new centerline point — small lerp feel via velocity
+      // Force onto trough floor at new centerline — kinematic override after solver
       const support = l4SupportLocalY(next.x, next.z);
       body.position.x = next.x;
       body.position.z = next.z;
       if (support !== null) {
         body.position.y = PLAY_SURFACE_Y + support + MARBLE_RADIUS;
+      } else {
+        // Fallback: half-pipe floor at lat=0
+        body.position.y = PLAY_SURFACE_Y - L4_PIPE_R + MARBLE_RADIUS;
       }
       const dir = l4ChannelDrainDirXZ(next.x, next.z);
       if (dir) {
         body.velocity.x = dir.x * speed;
         body.velocity.z = dir.z * speed;
         body.velocity.y = Math.min(0, body.velocity.y);
-        // Rolling spin matching travel (ω = v × n / r) so mesh rotation looks natural
+        // Rolling spin matching travel (ω = v × n / r)
         const invR = 1 / MARBLE_RADIUS;
         body.angularVelocity.x = -dir.z * speed * invR;
         body.angularVelocity.y = 0;
         body.angularVelocity.z = dir.x * speed * invR;
       }
       body.previousPosition.copy(body.position);
+      if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
     }
   }
 
@@ -3902,10 +3922,13 @@ private spawnShootersInitial(): void {
 
     // Scale physics dt during cámara lenta (visual dt stays real-time for camera follow)
     const physDt = dt * this.timeScale;
-    this.applyL4ChannelDrain();
     // Finer fixed step + more substeps reduces sphere–ground tunneling on hard hits
     this.world.step(1 / 120, physDt, 10);
     this.preventMarbleTunneling();
+    // L4 convoy AFTER physics: kinematic centerline drive so the contact solver cannot
+    // cancel translation (root cause of live spin-in-place). Uses simulated dt.
+    const simDt = Math.min(physDt, 10 / 120);
+    this.applyL4ChannelDrain(simDt);
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
     this.updateAIDirector(dt);
