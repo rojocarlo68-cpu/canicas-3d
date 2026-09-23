@@ -6,7 +6,7 @@
  * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
  * - Concave U channels W/N/E only; NO south gutter; NO raised lip between mat and channel.
  * - Real through-holes at BOTH SW and SE channel termini.
- * - Soft south tilt (−0.8°) so off-mat wood/channel drift toward holes.
+ * - Desk is fully flat (L4_TILT = 0°); no south incline.
  * - Open mat→channel mouths (no corner muritos); continuous south wood except scoring holes.
  * - Solid Cannon bodies on clutter props.
  */
@@ -24,8 +24,8 @@ export const L4_MAT_HALF = CIRCLE_RADIUS;
 export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2;
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
-/** Soft south tilt (rad) — downhill toward +Z (−0.8° only). */
-export const L4_TILT = (0.8 * Math.PI) / 180;
+/** Desk assembly tilt (rad). 0 = fully flat / straight. */
+export const L4_TILT = 0;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
@@ -281,7 +281,7 @@ export function buildOfficeDesk(
   peel.rotation.y = Math.PI / 2;
   root.add(peel);
 
-  // ——— ONE tilted desk assembly (visual + physics share L4_TILT) ———
+  // ——— ONE desk assembly (visual + physics share L4_TILT; currently flat) ———
   const desk = new THREE.Group();
   desk.name = 'deskAssembly';
   desk.rotation.x = L4_TILT;
@@ -1276,7 +1276,7 @@ export function buildOfficeDesk(
 
   scene.add(root);
 
-  // Hole centers ≈ world XZ (small tilt; score with radius slack)
+  // Hole centers ≈ world XZ (tilt factor kept for API; currently 0)
   const cy = Math.cos(L4_TILT);
   const sy = Math.sin(L4_TILT);
   const holeCenters = holeCentersLocal.map((h) => {
