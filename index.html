@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/canicas-3d/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#0a0604" />
+    <title>TAMA Project</title>
+    <script type="module" crossorigin src="/canicas-3d/assets/index-DR25XzRT.js"></script>
+    <link rel="stylesheet" crossorigin href="/canicas-3d/assets/index-Cka0cUQq.css">
+  </head>
+  <body>
+    <div id="game-root">
+      <canvas id="game-canvas"></canvas>
+
+      <div id="hud">
+        <div id="top-bar">
+          <div id="score-panel">
+            <span class="score-side player" id="score-player-side">
+              <span class="score-name" id="score-player-name">Jugador1</span>
+              <span id="score-player">0</span>
+              <span class="score-money" id="score-money">$0</span>
+            </span>
+            <span class="score-vs">vs</span>
+            <span class="score-side ai">
+              <span class="score-name" id="score-ai-name">Rival</span>
+              <span id="score-ai">0</span>
+            </span>
+          </div>
+          <div id="meta-panel">
+            <span id="turn-label" class="turn-player">Turno: Jugador</span>
+            <span id="level-label">Nivel 1</span>
+          </div>
+        </div>
+
+        <button id="btn-l4-personalizar" class="hidden premium-btn l4-personalizar" type="button" title="Personalizar playmat">Personalizar</button>
+        <div id="l4-mat-menu" class="hidden" role="dialog" aria-label="Playmat">
+          <div class="l4-mat-card">
+            <h3 data-i18n="hud.playmat">Playmat</h3>
+            <div id="l4-mat-presets"></div>
+            <label class="l4-mat-upload">
+              Subir imagen
+              <input id="l4-mat-file" type="file" accept="image/*" />
+            </label>
+            <button id="btn-l4-mat-close" type="button" class="premium-btn secondary" data-i18n="l4.close">Cerrar</button>
+          </div>
+        </div>
+        <div id="ui-actions" aria-label="Acciones">
+          <button id="btn-drop" class="ui-img-btn" type="button" title="Soltar canicas" aria-label="Soltar canicas">
+            <img src="ui/btn-drop.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-replay" class="ui-img-btn" type="button" disabled title="Repetición" aria-label="Repetición">
+            <img src="ui/btn-replay.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-hud-restart" class="ui-img-btn" type="button" title="Reiniciar nivel" aria-label="Reiniciar nivel">
+            <img src="ui/btn-restart.png" alt="" draggable="false" />
+          </button>
+          <button id="btn-pause" class="ui-img-btn" type="button" title="Pausa" aria-label="Pausa">
+            <img src="ui/btn-pause.png" alt="" draggable="false" />
+          </button>
+        </div>
+
+        <p id="instructions" data-i18n="hud.instructions.aim">Orbitar · Zoom · En tu turno: arrastra sobre tu canica para disparar</p>
+
+        <div id="power-wrap" class="hidden" aria-hidden="true">
+          <div id="power-label" data-i18n="hud.power">Potencia</div>
+          <div id="power-bar-bg">
+            <div id="power-bar"></div>
+          </div>
+          <div id="power-pct"></div>
+        </div>
+      </div>
+
+      <div id="pause-overlay" class="hidden" aria-hidden="true">
+        <div id="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+          <button id="btn-pause-close" type="button" title="Continuar" aria-label="Cerrar">×</button>
+          <h2 id="pause-title" data-i18n="pause.title">Pausa</h2>
+          <p data-i18n="pause.body">El juego está en pausa.</p>
+          <div class="pause-extra">
+            <button id="btn-pause-save" type="button" class="premium-btn" data-i18n="pause.save">Guardar</button>
+            <button id="btn-pause-load" type="button" class="premium-btn" data-i18n="pause.load">Cargar</button>
+            <button id="btn-pause-gallery" type="button" class="premium-btn" data-i18n="pause.gallery">Galería</button>
+            <button id="btn-pause-menu" type="button" class="premium-btn secondary" data-i18n="pause.menu">Menú título</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="location-banner" class="hidden">Tu canica está aquí</div>
+      <div id="replay-banner" class="hidden">▶ Repetición</div>
+
+      <div id="replay-controls" class="hidden" aria-label="Controles de repetición">
+        <button id="replay-btn-back" type="button" title="Rebobinar">⏪</button>
+        <button id="replay-btn-play" type="button" title="Reproducir / Pausar">▶</button>
+        <button id="replay-btn-fwd" type="button" title="Avanzar">⏩</button>
+        <button id="replay-btn-stop" type="button" title="Detener">⏹</button>
+        <input id="replay-scrub" type="range" min="0" max="1000" value="0" step="1" aria-label="Posición" />
+        <label class="replay-speed-label" for="replay-speed">Vel
+          <select id="replay-speed" aria-label="Velocidad">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </label>
+        <button id="replay-btn-exit" type="button">Salir</button>
+      </div>
+
+      <div id="money-toast" class="hidden">+$2</div>
+      <div id="game-toast" class="hidden" role="status"></div>
+      <div id="caster-toast" class="hidden caster-top" aria-live="polite">
+        <span class="caster-tag"></span>
+        <span class="caster-text"></span>
+      </div>
+      <div id="punch-overlay" aria-hidden="true"></div>
+
+      <div id="end-screen" class="hidden">
+        <div id="end-card">
+          <h1 id="end-title">¡Victoria!</h1>
+          <p id="end-message"></p>
+          <p id="end-score"></p>
+          <div id="end-actions">
+            <button id="btn-continue-level" class="premium-btn hidden" type="button">Continuar · Nivel 2</button>
+            <button id="btn-restart" type="button">Jugar de nuevo</button>
+            <button id="btn-end-replay" type="button">Repetición</button>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- Victory screen (before gacha) -->
+      <div id="victory-overlay" class="hidden" aria-hidden="true">
+        <div id="victory-bg" aria-hidden="true"></div>
+        <div id="victory-confetti" aria-hidden="true"></div>
+        <div id="victory-content">
+          <h1 id="victory-title" class="victoria-fire" aria-label="Victoria">VICTORIA</h1>
+          <div id="victory-ring-slot">
+            <canvas id="victory-marble-canvas" width="320" height="320" aria-label="Canica equipada"></canvas>
+          </div>
+          <div id="victory-summary">
+            <p id="victory-winner"></p>
+            <p id="victory-money"></p>
+            <p id="victory-marbles"></p>
+            <p id="victory-meta"></p>
+          </div>
+          <div id="victory-actions">
+            <button id="btn-victory-menu" class="premium-btn victory-btn" type="button" data-i18n="victory.menu">Menú</button>
+            <button id="btn-victory-continue" class="premium-btn victory-btn" type="button" data-i18n="victory.continue">Continuar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Victory gacha -->
+      <div id="gacha-overlay" class="hidden" aria-hidden="true">
+        <div id="gacha-stage">
+          <div id="gacha-fx" aria-hidden="true"></div>
+          <div id="gacha-case" class="spinning">
+            <div class="gacha-case-body"></div>
+            <div class="gacha-case-lid"></div>
+            <div class="gacha-lightning"></div>
+          </div>
+          <div id="gacha-reveal" class="hidden">
+            <div id="gacha-pad">
+              <canvas id="gacha-marble-canvas" width="320" height="320"></canvas>
+            </div>
+            <h2 id="gacha-marble-name">Canica única</h2>
+            <p id="gacha-marble-sub" data-i18n="gacha.sub">Añadida a tu colección</p>
+            <button id="btn-gacha-continue" class="premium-btn" type="button" data-i18n="gacha.continue">Continuar</button>
+          </div>
+          <p id="gacha-status" data-i18n="gacha.status.gen">Generando canica única…</p>
+        </div>
+      </div>
+
+      <div id="settle-banner" class="hidden">Esperando a que se detengan las canicas…</div>
+    </div>
+
+    <!-- Title screen -->
+    <div id="title-screen" class="hidden" aria-label="TAMA Project">
+      <div id="title-art-wrap">
+        <img id="title-art" src="ui/title-tama.png" alt="TAMA Project" draggable="false" />
+        <div id="title-menu">
+          <button id="btn-menu-new" type="button" class="menu-item neon-text">
+            <span class="menu-label" data-i18n="menu.new">Nueva partida</span>
+            <span class="menu-sub" data-i18n-sub="menu.new.sub">New Game</span>
+          </button>
+          <button id="btn-menu-load" type="button" class="menu-item neon-text is-disabled" disabled>
+            <span class="menu-label" data-i18n="menu.load">Cargar</span>
+            <span class="menu-sub" data-i18n-sub="menu.load.empty">Sin partida</span>
+          </button>
+          <button id="btn-menu-multi" type="button" class="menu-item neon-text">
+            <span class="menu-label" data-i18n="menu.multi">Multijugador</span>
+            <span class="menu-sub" data-i18n-sub="menu.multi.sub">Próximamente</span>
+          </button>
+          <button id="btn-menu-gallery" type="button" class="menu-item neon-text">
+            <span class="menu-label" data-i18n="menu.gallery">Galería</span>
+            <span class="menu-sub" data-i18n-sub="menu.gallery.sub">Colección</span>
+          </button>
+          <button id="btn-menu-factory" type="button" class="menu-item neon-text">
+            <span class="menu-label" data-i18n="menu.factory">Fábrica de canicas</span>
+            <span class="menu-sub" data-i18n-sub="menu.factory.sub">Crear</span>
+          </button>
+          <button id="btn-menu-options" type="button" class="menu-item neon-text">
+            <span class="menu-label" data-i18n="menu.options">Opciones</span>
+            <span class="menu-sub" data-i18n-sub="menu.options.sub">Options</span>
+          </button>
+        </div>
+      </div>
+      <div id="menu-toast" class="hidden"></div>
+    </div>
+
+
+    <div id="name-prompt" class="hidden" role="dialog" aria-modal="true" aria-labelledby="name-prompt-title">
+      <div class="modal-card name-prompt-card">
+        <h2 id="name-prompt-title" class="neon-text" data-i18n="name.title">Tu nombre</h2>
+        <p class="modal-hint" data-i18n="name.hint">¿Cómo te llamamos en el marcador?</p>
+        <label class="name-prompt-label" for="name-prompt-input" data-i18n="name.label">Nombre</label>
+        <input id="name-prompt-input" type="text" maxlength="24" value="Jugador1" autocomplete="nickname" />
+        <div class="name-prompt-actions">
+          <button id="btn-name-cancel" type="button" class="premium-btn secondary" data-i18n="name.cancel">Cancelar</button>
+          <button id="btn-name-ok" type="button" class="premium-btn" data-i18n="name.ok">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="level-pick" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <button id="btn-level-pick-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
+        <h2 class="neon-text" data-i18n="level.pick">Elegir nivel</h2>
+        <div class="level-pick-actions">
+          <button id="btn-level-1" type="button" class="premium-btn">
+            Nivel 1 · Parque
+            <span class="menu-sub">Park</span>
+          </button>
+          <button id="btn-level-2" type="button" class="premium-btn secondary">
+            Nivel 2 · Campamento
+            <span class="menu-sub">Desert camp</span>
+          </button>
+          <button id="btn-level-3" type="button" class="premium-btn secondary">
+            Nivel 3 · Consultorio
+            <span class="menu-sub">Dentist cuspidor</span>
+          </button>
+          <button id="btn-level-4" type="button" class="premium-btn secondary">
+            Nivel 4 · Escritorio
+            <span class="menu-sub">Mahogany desk</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gallery-overlay" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card gallery-card-wrap">
+        <button id="btn-gallery-close" type="button" class="modal-close" aria-label="Cerrar">×</button>
+        <h2 class="neon-text" data-i18n="gallery.title">Galería</h2>
+        <p class="modal-hint" data-i18n="gallery.hint">Elige una canica → Aplicar cambia solo la piel del tirador. Casillas + Exportar/Importar (.tama-collection.json). Colab protegida.</p>
+        <div class="gallery-toolbar">
+          <button id="btn-gallery-apply-top" type="button" class="premium-btn" data-mode="close" data-i18n="gallery.close">Cerrar</button>
+          <button id="btn-gallery-select-all" type="button" class="premium-btn secondary" data-i18n="gallery.selectAll">Seleccionar todas</button>
+          <button id="btn-gallery-export" type="button" class="premium-btn secondary" data-i18n="gallery.export">Exportar</button>
+          <button id="btn-gallery-import" type="button" class="premium-btn secondary" data-i18n="gallery.import">Importar</button>
+          <input id="gallery-import-file" type="file" accept=".json,.tama-collection.json,application/json" hidden />
+        </div>
+        <div id="gallery-grid"></div>
+        <div class="gallery-toolbar gallery-toolbar-bottom">
+          <button id="btn-gallery-apply-bottom" type="button" class="premium-btn" data-mode="close" data-i18n="gallery.close">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="options-overlay" class="hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <button id="btn-options-close" type="button" class="modal-close" data-i18n-aria="gallery.close" aria-label="Cerrar">×</button>
+        <h2 class="neon-text" data-i18n="options.title">Opciones</h2>
+        <label class="opt-row">
+          <span data-i18n="options.mute">Silenciar SFX</span>
+          <input id="opt-mute" type="checkbox" />
+        </label>
+        <label class="opt-row">
+          <span data-i18n="options.quality">Calidad</span>
+          <select id="opt-quality">
+            <option value="auto" data-i18n="options.quality.auto">Auto</option>
+            <option value="high" data-i18n="options.quality.high">Alta</option>
+            <option value="low" data-i18n="options.quality.low">Baja</option>
+          </select>
+        </label>
+        <label class="opt-row">
+          <span data-i18n="options.language">Idioma</span>
+          <select id="opt-language">
+            <option value="es">Español</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+        <label class="opt-row">
+          <span data-i18n="options.aimGuide">Guía de apuntado</span>
+          <input id="opt-aim-guide" type="checkbox" checked />
+        </label>
+      </div>
+    </div>
+
+    <div id="factory-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="factory-title">
+      <div class="modal-card factory-card">
+        <button id="btn-factory-close-x" type="button" class="modal-close" data-i18n-aria="factory.close" aria-label="Cerrar">×</button>
+        <h2 id="factory-title" class="neon-text" data-i18n="factory.title">Fábrica de canicas</h2>
+        <div class="factory-preview-wrap">
+          <canvas id="factory-preview" width="280" height="280" aria-label="Vista previa"></canvas>
+        </div>
+        <h3 id="factory-marble-name" class="factory-name">—</h3>
+        <p id="factory-marble-style" class="factory-style">—</p>
+        <div class="factory-actions">
+          <button id="btn-factory-generate" type="button" class="premium-btn" data-i18n="factory.generate">Generar</button>
+          <button id="btn-factory-save" type="button" class="premium-btn secondary" data-i18n="factory.save">Guardar en colección</button>
+          <button id="btn-factory-equip" type="button" class="premium-btn secondary" data-i18n="factory.equip">Equipar</button>
+          <button id="btn-factory-close" type="button" class="premium-btn secondary" data-i18n="factory.close">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+  </body>
+</html>
