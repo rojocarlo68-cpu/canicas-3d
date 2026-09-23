@@ -840,9 +840,9 @@ export class Game {
 
     // Spy briefcase dropper (all levels) — starts upside-down above the circle
     this.briefcase = createSpyBriefcase();
-    // L4 only: drop 4 cm closer to the mat / play surface (prior −2cm + another −2cm)
+    // L4 only: drop 5 cm closer to the mat / play surface (prior −4cm + another −1cm)
     if (this.sceneLevel === 4) {
-      this.briefcase.restY -= 0.04;
+      this.briefcase.restY -= 0.05;
       this.briefcase.root.position.y = this.briefcase.restY;
     }
     this.scene.add(this.briefcase.root);
@@ -912,10 +912,10 @@ export class Game {
       for (const b of this.officeDesk.bodies) {
         this.world.addBody(b);
       }
-      // Mat: plush / antiderrape — even grippier; marbles crawl / stick more
+      // Mat: plush / antiderrape — +30% grip vs prior 3.8 (avocado mat only; wood/channel untouched)
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
-          friction: 3.8,
+          friction: 4.94, // 3.8 * 1.30
           restitution: 0.015,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
