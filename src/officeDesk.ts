@@ -1036,44 +1036,235 @@ export function buildOfficeDesk(
     desk.add(scrap);
   }
 
-  // Lamp
+  // Lamp — matte black gooseneck desk lamp (reference remodel)
   const lampGroup = new THREE.Group();
+  lampGroup.name = 'gooseneckLamp';
   lampGroup.position.set(-0.7, 0, -0.42);
   desk.add(lampGroup);
-  const clamp = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.025, 0.08), metal);
-  clamp.position.set(0, 0.01, 0);
-  lampGroup.add(clamp);
-  // Lamp base collider in desk space:
-  propBody.addShape(
-    new CANNON.Box(new CANNON.Vec3(0.04, 0.04, 0.04)),
-    new CANNON.Vec3(-0.7, 0.04, -0.42),
-  );
-  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.38, 8), metal);
-  arm.position.set(0, 0.22, 0.05);
-  arm.rotation.x = 0.55;
-  lampGroup.add(arm);
-  const shade = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.09, 0.08, 16, 1, true),
-    new THREE.MeshStandardMaterial({
-      color: 0x2a2a28,
-      side: THREE.DoubleSide,
-      roughness: 0.6,
-    }),
-  );
-  shade.position.set(0.02, 0.38, 0.14);
-  shade.rotation.x = 0.9;
-  lampGroup.add(shade);
 
-  const lampLight = new THREE.SpotLight(0xffc878, 2.4, 2.8, Math.PI / 5, 0.45, 1.2);
-  lampLight.position.set(0.02, 0.4, 0.12);
-  lampLight.target.position.set(0.7, 0, 0.55);
+  const lampBlack = new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a,
+    roughness: 0.72,
+    metalness: 0.18,
+  });
+  const lampShadeIn = new THREE.MeshStandardMaterial({
+    color: 0xf2f2f0,
+    roughness: 0.55,
+    metalness: 0.05,
+    side: THREE.BackSide,
+  });
+  const lampSwitchFace = new THREE.MeshStandardMaterial({
+    color: 0x111111,
+    roughness: 0.55,
+    metalness: 0.1,
+  });
+  const lampMark = new THREE.MeshStandardMaterial({
+    color: 0xe8e8e8,
+    roughness: 0.6,
+    metalness: 0,
+  });
+  const cordMat = new THREE.MeshStandardMaterial({
+    color: 0x6a6a6e,
+    roughness: 0.85,
+    metalness: 0.05,
+  });
+
+  // Circular base: low disc + slight dome
+  const baseR = 0.062;
+  const baseH = 0.016;
+  const baseDisc = new THREE.Mesh(
+    new THREE.CylinderGeometry(baseR, baseR * 1.02, baseH, 32),
+    lampBlack,
+  );
+  baseDisc.position.y = baseH / 2;
+  baseDisc.castShadow = true;
+  baseDisc.receiveShadow = true;
+  lampGroup.add(baseDisc);
+  const baseDome = new THREE.Mesh(
+    new THREE.SphereGeometry(baseR * 1.02, 28, 12, 0, Math.PI * 2, 0, Math.PI * 0.28),
+    lampBlack,
+  );
+  baseDome.scale.y = 0.28;
+  baseDome.position.y = baseH * 0.65;
+  baseDome.castShadow = true;
+  lampGroup.add(baseDome);
+  // Bottom lip / seam
+  const baseLip = new THREE.Mesh(
+    new THREE.TorusGeometry(baseR * 0.98, 0.0022, 8, 40),
+    lampBlack,
+  );
+  baseLip.rotation.x = Math.PI / 2;
+  baseLip.position.y = 0.0015;
+  lampGroup.add(baseLip);
+
+  // Rocker switch on top toward front (+Z)
+  const switchBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.016, 0.006, 0.022),
+    lampSwitchFace,
+  );
+  const swY = baseH + 0.014;
+  switchBody.position.set(0.018, swY, 0.034);
+  lampGroup.add(switchBody);
+  const rocker = new THREE.Mesh(
+    new THREE.BoxGeometry(0.012, 0.004, 0.018),
+    lampBlack,
+  );
+  rocker.position.set(0.018, swY + 0.004, 0.034);
+  rocker.rotation.x = -0.12;
+  lampGroup.add(rocker);
+  // I / O marks
+  const markI = new THREE.Mesh(new THREE.BoxGeometry(0.0012, 0.0008, 0.005), lampMark);
+  markI.position.set(0.018, swY + 0.0065, 0.028);
+  lampGroup.add(markI);
+  const markO = new THREE.Mesh(
+    new THREE.TorusGeometry(0.0022, 0.00055, 6, 12),
+    lampMark,
+  );
+  markO.rotation.x = Math.PI / 2;
+  markO.position.set(0.018, swY + 0.0065, 0.040);
+  lampGroup.add(markO);
+
+  // Thin grey cord from back of base
+  const cordCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.006, -baseR * 0.85),
+    new THREE.Vector3(0.01, -0.02, -baseR - 0.04),
+    new THREE.Vector3(0.04, -0.12, -baseR - 0.08),
+    new THREE.Vector3(0.08, -0.35, -baseR - 0.06),
+  ]);
+  const cord = new THREE.Mesh(
+    new THREE.TubeGeometry(cordCurve, 16, 0.0032, 6, false),
+    cordMat,
+  );
+  lampGroup.add(cord);
+
+  // Flexible gooseneck: rise from center, smooth C toward +Z (desk / light area)
+  const neckCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, baseH + 0.01, 0),
+    new THREE.Vector3(0, 0.12, 0.01),
+    new THREE.Vector3(0.01, 0.26, 0.04),
+    new THREE.Vector3(0.03, 0.34, 0.12),
+    new THREE.Vector3(0.05, 0.36, 0.22),
+    new THREE.Vector3(0.06, 0.32, 0.30),
+  ]);
+  const ribCount = 56;
+  const neckFrames = neckCurve.computeFrenetFrames(ribCount, false);
+  const neckPts = neckCurve.getSpacedPoints(ribCount);
+  const ribGeo = new THREE.CylinderGeometry(1, 1, 1, 10);
+  const upY = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < neckPts.length; i++) {
+    const p = neckPts[i]!;
+    const tang = neckFrames.tangents[i]!.clone().normalize();
+    const next = neckPts[Math.min(i + 1, neckPts.length - 1)]!;
+    const seg = Math.max(p.distanceTo(next) * 1.15, 0.0028);
+    const r = i % 2 === 0 ? 0.0092 : 0.0074;
+    const rib = new THREE.Mesh(ribGeo, lampBlack);
+    rib.scale.set(r, seg, r);
+    rib.position.copy(p);
+    rib.quaternion.setFromUnitVectors(upY, tang);
+    rib.castShadow = true;
+    lampGroup.add(rib);
+  }
+  // Small ferrule at base of neck
+  const ferrule = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.011, 0.013, 0.014, 14),
+    lampBlack,
+  );
+  ferrule.position.set(0, baseH + 0.012, 0);
+  lampGroup.add(ferrule);
+
+  // Shade tip = end of neck
+  const shadeTip = neckPts[neckPts.length - 1]!.clone();
+  const shadeTang = neckFrames.tangents[neckPts.length - 1]!.clone().normalize();
+
+  // Pivot joint at neck→shade
+  const pivot = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.01, 0.01, 0.018, 12),
+    lampBlack,
+  );
+  pivot.position.copy(shadeTip);
+  pivot.quaternion.setFromUnitVectors(upY, shadeTang);
+  lampGroup.add(pivot);
+  const pivotBall = new THREE.Mesh(new THREE.SphereGeometry(0.011, 12, 10), lampBlack);
+  pivotBall.position.copy(shadeTip).addScaledVector(shadeTang, 0.01);
+  lampGroup.add(pivotBall);
+
+  // Bell / dome shade (black exterior + white interior)
+  // Lathe profile: tip at +Y, open rim at Y=0. Local +Y aims back toward neck.
+  const shadeH = 0.055;
+  const shadeProfile: THREE.Vector2[] = [
+    new THREE.Vector2(0.01, shadeH),
+    new THREE.Vector2(0.018, 0.052),
+    new THREE.Vector2(0.032, 0.042),
+    new THREE.Vector2(0.048, 0.025),
+    new THREE.Vector2(0.056, 0.01),
+    new THREE.Vector2(0.058, 0.0),
+  ];
+  const shadeOuter = new THREE.Mesh(new THREE.LatheGeometry(shadeProfile, 28), lampBlack);
+  const shadeInner = new THREE.Mesh(
+    new THREE.LatheGeometry(
+      shadeProfile.map((v) => new THREE.Vector2(Math.max(0.004, v.x - 0.0025), v.y)),
+      28,
+    ),
+    lampShadeIn,
+  );
+  const shadeAttach = shadeTip.clone().addScaledVector(shadeTang, 0.014);
+  const shadeGroup = new THREE.Group();
+  shadeGroup.quaternion.setFromUnitVectors(upY, shadeTang.clone().negate());
+  // tip (local +shadeH) sits on pivot; rim (y=0) opens along +shadeTang
+  shadeGroup.position.copy(shadeAttach).addScaledVector(shadeTang, shadeH);
+  shadeOuter.castShadow = true;
+  shadeGroup.add(shadeOuter);
+  shadeGroup.add(shadeInner);
+  lampGroup.add(shadeGroup);
+
+  // Large spherical frosted bulb — partially recessed, protrudes past rim
+  const bulbMat = new THREE.MeshStandardMaterial({
+    color: 0xf5f7fa,
+    emissive: 0xdde8ff,
+    emissiveIntensity: 1.45,
+    roughness: 0.85,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const bulbR = 0.036;
+  const bulbMesh = new THREE.Mesh(new THREE.SphereGeometry(bulbR, 24, 18), bulbMat);
+  // local −Y = +shadeTang → past the rim
+  bulbMesh.position.set(0, -0.042, 0);
+  shadeGroup.add(bulbMesh);
+
+  // Cool-white lighting (SpotLight kept for OfficeDeskBuild API + PointLight for fill)
+  const lampLight = new THREE.SpotLight(0xe8f2ff, 2.6, 3.0, Math.PI / 4.2, 0.55, 1.15);
+  const bulbWorld = shadeAttach.clone().addScaledVector(shadeTang, shadeH + 0.04);
+  lampLight.position.copy(bulbWorld);
+  lampLight.target.position.set(0.55, 0.02, 0.45);
   lampLight.castShadow = true;
   lampLight.shadow.mapSize.set(512, 512);
   lampGroup.add(lampLight);
   lampGroup.add(lampLight.target);
-  const bulb = new THREE.PointLight(0xffb060, 0.55, 1.6, 2);
-  bulb.position.set(0.02, 0.36, 0.14);
-  lampGroup.add(bulb);
+  const bulbGlow = new THREE.PointLight(0xeaf2ff, 0.9, 2.0, 1.8);
+  bulbGlow.position.copy(bulbWorld);
+  lampGroup.add(bulbGlow);
+
+  // Solid colliders: base cylinder + shade approx sphere (desk-local)
+  const lampOx = -0.7;
+  const lampOz = -0.42;
+  propBody.addShape(
+    new CANNON.Cylinder(baseR, baseR, baseH + 0.01, 12),
+    new CANNON.Vec3(lampOx, (baseH + 0.01) / 2, lampOz),
+    new CANNON.Quaternion().setFromEuler(Math.PI / 2, 0, 0),
+  );
+  propBody.addShape(
+    new CANNON.Sphere(0.058),
+    new CANNON.Vec3(lampOx + bulbWorld.x, bulbWorld.y, lampOz + bulbWorld.z),
+  );
+  for (const t of [0.25, 0.5, 0.75]) {
+    const p = neckCurve.getPoint(t);
+    propBody.addShape(
+      new CANNON.Sphere(0.014),
+      new CANNON.Vec3(lampOx + p.x, p.y, lampOz + p.z),
+    );
+  }
 
   // Blinds (room)
   const blinds = new THREE.Mesh(
@@ -1130,7 +1321,10 @@ export function buildOfficeDesk(
   let tSec = 0;
   const update = (dt: number) => {
     tSec += dt;
-    lampLight.intensity = 2.25 + Math.sin(tSec * 1.7) * 0.12;
+    const pulse = Math.sin(tSec * 1.7) * 0.12;
+    lampLight.intensity = 2.45 + pulse;
+    bulbGlow.intensity = 0.85 + pulse * 0.35;
+    bulbMat.emissiveIntensity = 1.35 + pulse * 0.25;
   };
 
   
