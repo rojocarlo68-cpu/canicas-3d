@@ -1689,18 +1689,20 @@ export function buildOfficeDesk(
   }
 
   // ——— DeWalt TSTAK-style toolbox (south outer wood barrier) ———
-  // Moved from north-of-lamp strip to FOREGROUND south mahogany (camera-front),
-  // near the playmat's lower-left / SW outer wood — east of the lamp area, fully
-  // clear of the half-pipe channel mouth. Solid static collider = marble barrier.
+  // FOREGROUND south mahogany, FRONT-LEFT (camera from south): south of the
+  // playmat SW / bottom-LEFT corner, between the lamp base (far left, x≈−0.7)
+  // and the desk centerline. Opposite side of the south strip from the backpack
+  // — do NOT cluster with the mochila. Clear of the half-pipe channel mouth.
+  // Solid static collider = marble barrier. Upright, long axis along +X.
   {
     const tbW = 0.20; // ~20 cm wide (X, along south desk edge)
-    const tbD = 0.075; // depth fits south outer wood strip (~0.35→0.52)
+    const tbD = 0.075; // depth fits south outer wood strip (~0.36→0.525)
     const bodyH = 0.11;
     const lidH = 0.055;
     const tbH = bodyH + lidH; // ~16.5 cm tall — short toolbox on desk
-    // South outer wood, west-of-center (right of lamp from camera); clears channel
+    // South outer wood, west/SW: south of mat SW (x≈−0.32). Clears channel
     // outer lip at z≈0.349 (north face of box ≈ 0.445−0.0375 = 0.4075).
-    const tbOx = -0.52;
+    const tbOx = -0.48;
     const tbOz = 0.445;
 
     const tbBlack = new THREE.MeshStandardMaterial({
@@ -1880,15 +1882,18 @@ export function buildOfficeDesk(
     );
   }
 
-  // ——— Yellow school backpack (Mochila) — immediately east of toolbox ———
-  // Mustard canvas pack on south outer wood; solid barrier, channel untouched.
+  // ——— Yellow school backpack (Mochila) — south FRONT-RIGHT (not next to toolbox) ———
+  // Mustard canvas pack on outer mahogany south of the playmat SE / bottom-RIGHT
+  // corner. Opposite side of the south strip from the DeWalt toolbox — leave the
+  // center-south wood open (channel mouth clear). Solid barrier, channel untouched.
   {
     const bpW = 0.165; // ~16.5 cm wide
     const bpD = 0.095; // ~9.5 cm deep
     const bpH = 0.24; // ~24 cm tall (toolbox-scale / a bit taller)
-    // Right of toolbox (−0.52): toolbox east face ≈ −0.42; gap ~1.5 cm → center −0.28
-    const bpOx = -0.28;
-    const bpOz = 0.442;
+    // Front-RIGHT: south of mat SE (x≈+0.32). Far from toolbox (−0.48); center
+    // south strip stays empty. Clears channel outer lip (north face ≈ 0.397).
+    const bpOx = 0.40;
+    const bpOz = 0.445;
 
     const canvasY = new THREE.MeshStandardMaterial({
       color: 0xe6b422, // vibrant mustard / school-bus yellow
