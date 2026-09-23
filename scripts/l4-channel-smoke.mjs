@@ -196,9 +196,11 @@ function buildChannelWorld() {
         const scz = alongX ? cz : alongMid;
         for (let i = 0; i < SEGS; i++) {
           const amid = Math.PI * ((i + 0.5) / SEGS);
+          if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
           const thick = Math.max(0.0045, (Math.PI / SEGS) * pipeR * 0.95);
           const lat = pipeR * Math.cos(amid);
           const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
+          if (y > -0.0012) continue;
           const ang = amid - Math.PI / 2;
           const q = new CANNON.Quaternion();
           if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
@@ -233,9 +235,7 @@ function buildChannelWorld() {
       const qYaw = new CANNON.Quaternion();
       qYaw.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.atan2(tangX, tangZ));
       addShapeBox(channelBody, arcLen / 2, 0.003, pipeR * 1.05, clx, floorY - 0.003, clz, qYaw);
-      const railH = pipeR * 0.55, railY = floorY + railH / 2, railOff = pipeR * 1.05;
-      addShapeBox(channelBody, arcLen / 2, railH / 2, 0.0022, clx + radX * railOff, railY, clz + radZ * railOff, qYaw);
-      addShapeBox(channelBody, arcLen / 2, railH / 2, 0.0022, clx - radX * railOff, railY, clz - radZ * railOff, qYaw);
+      // No side rails (flush mouths)
     }
   };
 
@@ -253,11 +253,12 @@ function buildChannelWorld() {
   addHalfPipeStraight(straightLen, matHalf + pipeR, 0, false);
   addHalfPipeCorner(1, 1); addHalfPipeCorner(-1, -1); addHalfPipeCorner(1, -1);
 
-  // Mat pedestal
+  // Mat pedestal — inset (no lip wall at mat→channel mouth)
   {
     const ped = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: woodMat });
     ped.position.set(0, PLAY_SURFACE_Y, 0);
-    ped.addShape(new CANNON.Box(new CANNON.Vec3(matHalf - 0.001, pipeR / 2, matHalf - 0.001)),
+    const inset = Math.max(0.012, pipeR * 0.95);
+    ped.addShape(new CANNON.Box(new CANNON.Vec3(matHalf - inset, pipeR / 2, matHalf - inset)),
       new CANNON.Vec3(0, -pipeR / 2, 0));
     world.addBody(ped);
   }
@@ -366,15 +367,20 @@ function applyDrain(body) {
   }
   const localY = body.position.y - PLAY_SURFACE_Y;
   if (localY > -L4_PIPE_R * 0.18 + MARBLE_RADIUS) return;
-  body.linearDamping = 0.02;
+  body.linearDamping = 0.015;
   const hole = l4HoleCentersLocal()[0];
   const holeR = L4_HOLE_RADIUS;
   if (Math.hypot(x - hole.x, z - hole.z) < holeR * 1.05) {
-    body.velocity.y = Math.min(body.velocity.y, -0.35);
+    body.velocity.y = Math.min(body.velocity.y, -0.45);
     return;
   }
   const dt = 1 / 120;
-  const speed = 0.16;
+  const cruiseSpeed = 0.34;
+  const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.2);
+  const depthK = Math.min(1, depth / (L4_PIPE_R * 0.55));
+  const dist = l4ChannelArcDistToSW(x, z) ?? 1;
+  const alongK = Math.min(1, Math.max(0.25, 1 - dist / 1.6));
+  const speed = cruiseSpeed * (0.45 + 0.55 * depthK) * (0.7 + 0.3 * alongK);
   const next = l4ChannelStepTowardSW(x, z, speed * dt);
   if (!next) return;
   const bias = l4ChannelHeightBias(next.x, next.z);
@@ -386,6 +392,10 @@ function applyDrain(body) {
     body.velocity.x = dir.x * speed;
     body.velocity.z = dir.z * speed;
     body.velocity.y = Math.min(0, body.velocity.y);
+    const invR = 1 / MARBLE_RADIUS;
+    body.angularVelocity.x = -dir.z * speed * invR;
+    body.angularVelocity.y = 0;
+    body.angularVelocity.z = dir.x * speed * invR;
   }
   body.previousPosition.copy(body.position);
 }

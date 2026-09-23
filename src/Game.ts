@@ -2983,15 +2983,15 @@ private spawnShootersInitial(): void {
   }
 
   /**
-   * L4 field marbles in the half-pipe: kinematic centerline conveyor toward the
-   * SW hole (arc-length path). Geometric trough bias + low friction still apply;
-   * this guarantees marbles reach the open SW shaft. Shooters are unaffected (bridges).
+   * L4 field marbles in the half-pipe: CPU centerline convoy toward the SW hole.
+   * Ease-in speed (~0.34 m/s cruise) along the arc path + rolling spin so motion
+   * looks like gravity, not a magnetic snap. Shooters unchanged (bridges).
    */
   private applyL4ChannelDrain(): void {
     if (this.sceneLevel !== 4) return;
-    // Fixed physics step matches world.step(1/120, ...); conveyor ds uses that rate.
+    // Fixed physics step matches world.step(1/120, ...); convoy ds uses that rate.
     const dt = 1 / 120;
-    const speed = 0.16; // m/s along centerline toward SW
+    const cruiseSpeed = 0.34; // m/s along centerline toward SW (was 0.16)
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
@@ -3007,20 +3007,26 @@ private spawnShootersInitial(): void {
       }
       const localY = body.position.y - PLAY_SURFACE_Y;
       if (localY > -L4_PIPE_R * 0.18 + MARBLE_RADIUS) continue;
-      body.linearDamping = 0.02;
+      body.linearDamping = 0.015;
       body.wakeUp();
 
       const dist = l4ChannelArcDistToSW(x, z);
       if (dist === null) continue;
       // Near SW hole — let gravity pull through the open shaft
       if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.05) {
-        body.velocity.y = Math.min(body.velocity.y, -0.35);
+        body.velocity.y = Math.min(body.velocity.y, -0.45);
         continue;
       }
 
+      // Ease-in: slower when just entering the trough, cruise further along the ring
+      const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.2);
+      const depthK = Math.min(1, depth / (L4_PIPE_R * 0.55));
+      const alongK = Math.min(1, Math.max(0.25, 1 - dist / 1.6));
+      const speed = cruiseSpeed * (0.45 + 0.55 * depthK) * (0.7 + 0.3 * alongK);
+
       const next = l4ChannelStepTowardSW(x, z, speed * dt);
       if (!next) continue;
-      // Place on trough floor (support) at new centerline point
+      // Place on trough floor (support) at new centerline point — small lerp feel via velocity
       const support = l4SupportLocalY(next.x, next.z);
       body.position.x = next.x;
       body.position.z = next.z;
@@ -3032,6 +3038,11 @@ private spawnShootersInitial(): void {
         body.velocity.x = dir.x * speed;
         body.velocity.z = dir.z * speed;
         body.velocity.y = Math.min(0, body.velocity.y);
+        // Rolling spin matching travel (ω = v × n / r) so mesh rotation looks natural
+        const invR = 1 / MARBLE_RADIUS;
+        body.angularVelocity.x = -dir.z * speed * invR;
+        body.angularVelocity.y = 0;
+        body.angularVelocity.z = dir.x * speed * invR;
       }
       body.previousPosition.copy(body.position);
     }

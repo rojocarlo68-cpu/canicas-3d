@@ -7,7 +7,8 @@
  * - ONE scoring through-hole only at the SW corner of the ring (historic dual-hole spot).
  * - Channel-only downhill along the RING PATH (arc-length height → SW hole) so trough
  *   marbles reliably roll to the hole from any side; mat/desk wood remain level.
- * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges).
+ * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges /
+*   no mat-pedestal or outer-frame vertical thickness walls at the mouths).
  * - Solid Cannon bodies on clutter props.
  * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
  *   marbles fall into the trough / score via the single hole, while player+AI shooters
@@ -731,10 +732,13 @@ export function buildOfficeDesk(
   const leftMaxX = leftCX + leftLen / 2;
   const leftMinZ = leftCZ - leftDepth / 2;
   const leftMaxZ = leftCZ + leftDepth / 2;
-  const wMinX = -outerHalf;
-  const wMaxX = outerHalf;
-  const wMinZ = -outerHalf;
-  const wMaxZ = outerHalf;
+  // Recess outer wood slightly past the half-pipe outer lip so the channel→desk
+  // mouth has no vertical mahogany wall (flush transition; shooters still use bridges).
+  const outerLipRecess = Math.max(0.006, pipeR * 0.45);
+  const wMinX = -outerHalf - outerLipRecess;
+  const wMaxX = outerHalf + outerLipRecess;
+  const wMinZ = -outerHalf - outerLipRecess;
+  const wMaxZ = outerHalf + outerLipRecess;
   const topYc = -deskThick / 2;
 
   const frameBody = mkStatic(woodMat);
@@ -811,11 +815,13 @@ export function buildOfficeDesk(
     }
   }
 
-  // Mat pedestal — top flush with desk (Y=0). Full rectangle; all four sides open into the half-pipe.
+  // Mat pedestal — inset under the mat so NO vertical wood face shows at the
+  // mat→channel mouth (Carlo red-X lips). Half-pipe facets meet the mat plane flush.
   {
     const pedH = gutterDepth;
     const pedCy = -pedH / 2;
-    const inset = 0.001;
+    // Keep sides well inside matHalf so the bowl opens with no wall / collision lip.
+    const inset = Math.max(0.012, pipeR * 0.95);
     const full = matHalf * 2 - inset * 2;
     mkBoard(full, pedH, full, 0, pedCy, 0);
     const ped = mkStatic(woodMat);
@@ -924,19 +930,25 @@ export function buildOfficeDesk(
         const scx = alongX ? alongMid : cx;
         const scz = alongX ? cz : alongMid;
 
-        // Visual half-pipe via many thin boxes (matches physics)
+        // Visual half-pipe via many thin boxes (matches physics).
+        // Skip near-lip segments (nearly vertical) so mat↔channel↔desk mouths stay flush —
+        // no raised wall beads at the inner/outer lips Carlo marked with red X.
         for (let i = 0; i < SEGS; i++) {
           const t0 = i / SEGS;
           const t1 = (i + 1) / SEGS;
           const a0 = Math.PI * t0; // 0 = outer lip (+perp), π = inner lip (−perp)
           const a1 = Math.PI * t1;
           const amid = 0.5 * (a0 + a1);
+          // Open mouths: omit facets in the outer ~12% arc near each lip
+          if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
           const arc = (a1 - a0) * pipeR;
           const thick = Math.max(0.0045, arc * 0.95);
           // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
           const lat = pipeR * Math.cos(amid);
           // Channel-only slope: per-slice centerline bias → continuous downhill to SW hole
           const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
+          // Never let a facet center sit above the desk plane (no ridge)
+          if (y > -0.0012) continue;
           // Tangent angle for facet
           const ang = amid - Math.PI / 2; // rotate facet to follow circle
 
@@ -1002,14 +1014,16 @@ export function buildOfficeDesk(
       const tangZ = Math.cos(tmid);
       const bias = l4ChannelHeightBias(clx, clz);
 
-      // Visual curved half-pipe (unchanged look)
+      // Visual curved half-pipe — open lips (skip near-vertical mouth facets)
       for (let i = 0; i < SEGS; i++) {
         const a0 = Math.PI * (i / SEGS);
         const a1 = Math.PI * ((i + 1) / SEGS);
         const amid = 0.5 * (a0 + a1);
+        if (amid < Math.PI * 0.12 || amid > Math.PI * 0.88) continue;
         const thick = Math.max(0.004, (a1 - a0) * pipeR * 0.92);
         const lat = pipeR * Math.cos(amid);
         const y = -pipeR * Math.sin(amid) + bias;
+        if (y > -0.0012) continue;
         const px = clx + lat * radX;
         const pz = clz + lat * radZ;
         const ang = amid - Math.PI / 2;
@@ -1035,30 +1049,8 @@ export function buildOfficeDesk(
         clz,
         qYaw,
       );
-      // Soft side rails so the marble stays in the gutter through the bend
-      const railH = pipeR * 0.55;
-      const railY = floorY + railH / 2;
-      const railOff = pipeR * 1.05;
-      addShapeBox(
-        channelBody,
-        arcLen / 2,
-        railH / 2,
-        0.0018,
-        clx + radX * railOff,
-        railY,
-        clz + radZ * railOff,
-        qYaw,
-      );
-      addShapeBox(
-        channelBody,
-        arcLen / 2,
-        railH / 2,
-        0.0022,
-        clx - radX * railOff,
-        railY,
-        clz - radZ * railOff,
-        qYaw,
-      );
+      // No side rails — rails acted as raised lips at mat/outer mouths (Carlo red-X).
+      // Flat gutter plank + conveyor keep field marbles on the centerline.
     }
   };
 
@@ -1131,7 +1123,7 @@ export function buildOfficeDesk(
     const apronBody = mkStatic(woodMat);
     // North outer strip (between channel outer lip and left desk north edge) already framed;
     // fill SE/SW former dual-hole voids with continuous wood south of the ring except the hole gap.
-    const southZ0 = outer;
+    const southZ0 = outer + outerLipRecess;
     const southZ1 = leftMaxZ;
     const southD = southZ1 - southZ0;
     if (southD > 0.01) {
@@ -1141,6 +1133,30 @@ export function buildOfficeDesk(
         new CANNON.Vec3(leftCX, apronCy, (southZ0 + southZ1) / 2),
       );
     }
+  }
+
+  // Paper-thin flush decks over the outerLipRecess gap — visual continuity at Y=0 with
+  // NO vertical thickness into the trough (removes channel→desk raised rim).
+  // Thin physics so shooters stepping off bridges onto outer wood don't fall through.
+  {
+    const t = 0.0022;
+    const cy = -t / 2;
+    const band = outerLipRecess + 0.001;
+    const span = outerHalf * 2 + band * 2;
+    const lipBody = mkStatic(woodMat);
+    const addLip = (w: number, d: number, cx: number, cz: number) => {
+      mkBoard(w, t, d, cx, cy, cz);
+      lipBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(w / 2, t / 2, d / 2)),
+        new CANNON.Vec3(cx, cy, cz),
+      );
+    };
+    // N / S bands
+    addLip(span, band, 0, -(outerHalf + band / 2));
+    addLip(span, band, 0, outerHalf + band / 2);
+    // W / E bands
+    addLip(band, outerHalf * 2, -(outerHalf + band / 2), 0);
+    addLip(band, outerHalf * 2, outerHalf + band / 2, 0);
   }
 
   // ——— Shooter-only invisible BRIDGES over the full half-pipe ring + hole ———
