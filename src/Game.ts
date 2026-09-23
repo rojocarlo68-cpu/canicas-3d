@@ -911,6 +911,7 @@ export class Game {
       this.scene.fog = new THREE.FogExp2(0xd8c8b0, 0.012);
       if (this.sky) this.sky.visible = false;
       this.groundMesh.visible = false;
+      if (this.circleMesh) this.circleMesh.visible = false;
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
@@ -1596,7 +1597,12 @@ private spawnShootersInitial(): void {
         'banner-ai',
         2200,
       );
-      const mode = this.sceneLevel === 3 ? 'hole_in' : 'circle_out';
+      const mode =
+        this.sceneLevel === 3
+          ? 'hole_in'
+          : this.sceneLevel === 4
+            ? 'channel_out'
+            : 'circle_out';
       this.aiPlan = planAIShot(
         shooter,
         this.fieldMarbles,
@@ -2451,11 +2457,16 @@ private spawnShootersInitial(): void {
       const personalLoss = this.checkPersonalMarbleFail();
       if (personalLoss) return true;
     }
+    // L4: personal marble off desk / into corner hole = perdiste / opponent loses
+    if (l4) {
+      const personalLoss = this.checkL4PersonalMarbleFail();
+      if (personalLoss) return true;
+    }
 
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const fallen = m.body.position.y < -0.05;
+      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
       // L1/L2: out of chalk circle. L3: into the center hole. L4: corner channel holes.
       const scored = l3
@@ -2511,7 +2522,7 @@ private spawnShootersInitial(): void {
         this.scoringMarbles.delete(m);
       }
 
-      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl))) {
+      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl)) || (l4 && scored)) {
         m.active = false;
         m.mesh.visible = false;
         m.body.velocity.setZero();
@@ -4044,7 +4055,7 @@ private spawnShootersInitial(): void {
       if (!m.active) continue;
       if (!this.scoringMarbles.has(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const fallen = m.body.position.y < -0.05;
+      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
@@ -4061,7 +4072,7 @@ private spawnShootersInitial(): void {
         preferLower: true,
       });
 
-      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl))) {
+      if (fallen || dist > DESPAWN_DIST || (l3 && (scored || leftBowl)) || (l4 && scored)) {
         m.active = false;
         m.mesh.visible = false;
         m.body.velocity.setZero();
@@ -4423,6 +4434,59 @@ private spawnShootersInitial(): void {
         if (y < PLAY_SURFACE_Y + MARBLE_RADIUS * 1.5) return true;
       }
     }
+    return false;
+  }
+
+
+  /** L4: marble left the desk footprint or dropped below the top (fell off south / sides). */
+  private isOffL4Desk(x: number, y: number, z: number): boolean {
+    const desk = this.officeDesk;
+    if (!desk) return y < PLAY_SURFACE_Y - 0.06;
+    if (y < PLAY_SURFACE_Y - 0.06) return true;
+    const b = desk.deskBounds;
+    const margin = MARBLE_RADIUS * 0.5;
+    return x < b.minX - margin || x > b.maxX + margin || z < b.minZ - margin || z > b.maxZ + margin;
+  }
+
+  /**
+   * L4 lose conditions for a personal (shooter) marble:
+   * falls into a corner hole OR off the desk → that side loses the match ("perdiste").
+   */
+  private checkL4PersonalMarbleFail(): boolean {
+    const check = (m: MarbleEntity | null, side: Side): boolean => {
+      if (!m || !m.active) return false;
+      const { x, y, z } = m.body.position;
+      const inHole = this.isInL4Hole(x, y, z);
+      const offDesk = this.isOffL4Desk(x, y, z);
+      if (!(inHole || offDesk)) return false;
+
+      m.active = false;
+      m.mesh.visible = false;
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      m.body.type = CANNON.Body.STATIC;
+      if (side === 'player') this.clearPlayerOutline();
+
+      this.forcedWinner = side === 'player' ? 'ai' : 'player';
+      const why = inHole ? 'cayó al hoyo' : 'se cayó del escritorio';
+      if (side === 'player') {
+        this.flashLocationBanner(
+          `¡Perdiste! Canica de ${this.playerName} ${why}`,
+          'banner-player',
+          2800,
+        );
+      } else {
+        this.flashLocationBanner(
+          `Canica de ${this.opponentName} ${why} — ¡ganas!`,
+          'banner-ai',
+          2800,
+        );
+      }
+      this.endGame();
+      return true;
+    };
+    if (check(this.playerMarble, 'player')) return true;
+    if (check(this.aiMarble, 'ai')) return true;
     return false;
   }
 
