@@ -272,7 +272,7 @@ export function buildOfficeDesk(
   if (leftMaxZ > wMaxZ + 0.01) {
     const d = leftMaxZ - wMaxZ;
     const cz = (wMaxZ + leftMaxZ) / 2;
-    const holeGap = holeR * 3.2;
+    const holeGap = holeR * 2.2;
     const swX = holeCentersLocal[0]!.x;
     const seX = holeCentersLocal[1]!.x;
     const segs: [number, number][] = [
@@ -313,7 +313,7 @@ export function buildOfficeDesk(
     );
   }
 
-  // Playmat visual — coplanar with desk top (tiny epsilon)
+  // Playmat visual — coplanar with desk top (tiny epsilon above Y=0)
   const matGeo = new THREE.PlaneGeometry(matHalf * 2, matHalf * 2);
   const matVis = new THREE.MeshStandardMaterial({
     color: 0x4a7a32,
@@ -322,105 +322,158 @@ export function buildOfficeDesk(
   });
   const matMesh = new THREE.Mesh(matGeo, matVis);
   matMesh.rotation.x = -Math.PI / 2;
-  matMesh.position.y = 0.0012; // clearly above pedestal top (same plane family, no clip)
+  matMesh.position.y = 0.0004;
   matMesh.receiveShadow = true;
   matMesh.renderOrder = 1;
   desk.add(matMesh);
-  // Pedestal top must not z-fight the mat: nudge material
   matVis.polygonOffset = true;
   matVis.polygonOffsetFactor = -1;
   matVis.polygonOffsetUnits = -1;
 
-  // Mat physics (high friction), flush
+  // Mat physics: box top face exactly at local Y=0 (matches visual / desk plane)
   {
     const matBody = mkStatic(matMat);
+    const hh = 0.004;
     matBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(matHalf, 0.003, matHalf)),
-      new CANNON.Vec3(0, -0.0025, 0),
+      new CANNON.Box(new CANNON.Vec3(matHalf, hh, matHalf)),
+      new CANNON.Vec3(0, -hh, 0),
     );
   }
 
-  // ——— U channels: bed + OUTER lip only (NO inner lip toward mat) ———
+  // ——— Concave U channels (W/N/E) + L-corner fills + holes flush with trough ———
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
   const lipMat = woodStandard(0x4a2410, { map: grain.clone(), roughness: 0.5 });
-  const bedT = 0.008;
-  const bedY = -gutterDepth + bedT / 2;
-  const outerLipT = 0.012;
-  const outerLipW = 0.007;
+  const bankMat = woodStandard(0x522814, { map: grain.clone(), roughness: 0.5 });
   const channelBody = mkStatic(woodMat);
 
-  const addBed = (length: number, width: number, cx: number, cz: number, alongX: boolean) => {
-    const fw = alongX ? length : width;
-    const fd = alongX ? width : length;
-    const floorM = new THREE.Mesh(new THREE.BoxGeometry(fw, bedT, fd), chMat);
-    floorM.position.set(cx, bedY, cz);
-    floorM.receiveShadow = true;
-    desk.add(floorM);
-    channelBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(fw / 2, bedT / 2, fd / 2)),
-      new CANNON.Vec3(cx, bedY, cz),
-    );
+  /** Visual/physics trough floor top (marble rests at troughY + radius). */
+  const troughY = -gutterDepth;
+  const floorT = 0.007;
+  const floorW = chW * 0.4;
+  const bankW = (chW - floorW) * 0.5;
+  const bankAng = 0.5; // ~29° banks → readable concave U
+
+  const addShapeBox = (
+    body: CANNON.Body,
+    hx: number,
+    hy: number,
+    hz: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    quat?: CANNON.Quaternion,
+  ) => {
+    if (hx < 0.002 || hy < 0.001 || hz < 0.002) return;
+    const shape = new CANNON.Box(new CANNON.Vec3(hx, hy, hz));
+    if (quat) body.addShape(shape, new CANNON.Vec3(ox, oy, oz), quat);
+    else body.addShape(shape, new CANNON.Vec3(ox, oy, oz));
   };
 
-  const addOuterLip = (
+  /** Concave U segment. alongX=true → runs along X (north gutter). outerSign: lip on +/− side. */
+  const addUChannel = (
     length: number,
     cx: number,
     cz: number,
     alongX: boolean,
-    outwardSign: number,
+    outerSign: number,
   ) => {
+    if (length < 0.03) return;
+    const fw = alongX ? length : floorW;
+    const fd = alongX ? floorW : length;
+    const floorCy = troughY + floorT / 2;
+    const floorM = new THREE.Mesh(new THREE.BoxGeometry(fw, floorT, fd), chMat);
+    floorM.position.set(cx, floorCy, cz);
+    floorM.receiveShadow = true;
+    desk.add(floorM);
+    // Physics floor top = troughY + floorT (matches visual)
+    addShapeBox(channelBody, fw / 2, floorT / 2, fd / 2, cx, floorCy, cz);
+
+    // Visual concave banks (NO physics — avoid raised shelf that floats marbles)
+    for (const side of [-1, 1] as const) {
+      const isOuter = side === outerSign;
+      const bankDepth = bankW * 1.05;
+      const bankThick = 0.01;
+      const bank = alongX
+        ? new THREE.Mesh(new THREE.BoxGeometry(length, bankThick, bankDepth), isOuter ? lipMat : bankMat)
+        : new THREE.Mesh(new THREE.BoxGeometry(bankDepth, bankThick, length), isOuter ? lipMat : bankMat);
+      const mid = floorW / 2 + bankW * 0.45;
+      const ox = alongX ? 0 : side * mid;
+      const oz = alongX ? side * mid : 0;
+      const by = troughY + gutterDepth * 0.42;
+      bank.position.set(cx + ox, by, cz + oz);
+      if (alongX) bank.rotation.x = -side * bankAng;
+      else bank.rotation.z = side * bankAng;
+      bank.castShadow = true;
+      bank.receiveShadow = true;
+      desk.add(bank);
+    }
+
+    // Physics: thin vertical side walls at channel edges (true trough, no shelf)
+    {
+      const wallH = gutterDepth * 0.92;
+      const wallT = 0.005;
+      const wallCy = troughY + wallH / 2;
+      for (const side of [-1, 1] as const) {
+        const ox = alongX ? 0 : side * (chW / 2 - wallT / 2);
+        const oz = alongX ? side * (chW / 2 - wallT / 2) : 0;
+        addShapeBox(
+          channelBody,
+          alongX ? length / 2 : wallT / 2,
+          wallH / 2,
+          alongX ? wallT / 2 : length / 2,
+          cx + ox,
+          wallCy,
+          cz + oz,
+        );
+      }
+    }
+
+    // Thin outer lip at desk-top edge (visual + physics)
+    const lipH = 0.01;
+    const lipT = 0.006;
     const lip = alongX
-      ? new THREE.Mesh(new THREE.BoxGeometry(length, outerLipT, outerLipW), lipMat)
-      : new THREE.Mesh(new THREE.BoxGeometry(outerLipW, outerLipT, length), lipMat);
-    const ox = alongX ? 0 : outwardSign * (chW / 2 - outerLipW / 2);
-    const oz = alongX ? outwardSign * (chW / 2 - outerLipW / 2) : 0;
-    lip.position.set(cx + ox, -outerLipT / 2 + 0.0002, cz + oz);
+      ? new THREE.Mesh(new THREE.BoxGeometry(length, lipH, lipT), lipMat)
+      : new THREE.Mesh(new THREE.BoxGeometry(lipT, lipH, length), lipMat);
+    const lox = alongX ? 0 : outerSign * (chW / 2 - lipT / 2);
+    const loz = alongX ? outerSign * (chW / 2 - lipT / 2) : 0;
+    lip.position.set(cx + lox, -lipH / 2 + 0.0002, cz + loz);
     lip.castShadow = true;
     desk.add(lip);
-    channelBody.addShape(
-      new CANNON.Box(
-        new CANNON.Vec3(
-          alongX ? length / 2 : outerLipW / 2,
-          outerLipT / 2,
-          alongX ? outerLipW / 2 : length / 2,
-        ),
-      ),
-      new CANNON.Vec3(cx + ox, -outerLipT / 2, cz + oz),
+    addShapeBox(
+      channelBody,
+      alongX ? length / 2 : lipT / 2,
+      lipH / 2,
+      alongX ? lipT / 2 : length / 2,
+      cx + lox,
+      -lipH / 2,
+      cz + loz,
     );
   };
 
-  // North (-Z) full including corners
+  // North (-Z) full run including NW/NE corners
   {
     const cz = -(matHalf + chW / 2);
-    addBed(matHalf * 2 + chW * 2, chW, 0, cz, true);
-    addOuterLip(matHalf * 2 + chW * 2, 0, cz, true, -1);
+    addUChannel(matHalf * 2 + chW * 2, 0, cz, true, -1);
   }
 
-  // West / East: stop before holes so marbles fall through
+  // West / East: trough runs to hole rim (open terminus — marble drops in)
   {
-    const holeClear = holeR * 2.4;
+    const holeClear = holeR * 1.05;
     const weZ0 = -(matHalf + chW);
     const weZ1 = matHalf + chW / 2 - holeClear;
     const weLen = weZ1 - weZ0;
     const weCz = (weZ0 + weZ1) / 2;
     if (weLen > 0.04) {
-      addBed(weLen, chW, -(matHalf + chW / 2), weCz, false);
-      addBed(weLen, chW, matHalf + chW / 2, weCz, false);
-      addOuterLip(weLen, -(matHalf + chW / 2), weCz, false, -1);
-      addOuterLip(weLen, matHalf + chW / 2, weCz, false, +1);
-    }
-    // Outer cheeks beside holes (funnel in; open toward south)
-    for (const h of holeCentersLocal) {
-      const side = Math.sign(h.x) || 1;
-      addOuterLip(holeR * 2.2, h.x, h.z, false, side);
+      addUChannel(weLen, -(matHalf + chW / 2), weCz, false, -1);
+      addUChannel(weLen, matHalf + chW / 2, weCz, false, +1);
     }
   }
 
   // South flush bridge between holes (NO south gutter)
   {
     const bridgeZ = matHalf + chW / 2;
-    const gap = holeR * 3.2;
+    const gap = holeR * 2.2;
     const bridgeW = Math.max(0.04, matHalf * 2 - gap * 2);
     if (bridgeW > 0.02) {
       mkBoard(bridgeW, gutterDepth, chW, 0, -gutterDepth / 2, bridgeZ);
@@ -432,43 +485,194 @@ export function buildOfficeDesk(
     }
   }
 
-  // ——— Real through-holes (visual shaft + open physics) ———
-  for (const h of holeCentersLocal) {
+  // Fill L-shaped corner voids + place through-holes flush with trough floor
+  const fillCorner = (hx: number, hz: number) => {
+    const side = Math.sign(hx) || 1;
+    const cornerBody = mkStatic(woodMat);
+
+    // Full corner rectangle of the play well (mat edge → outer channel edge)
+    const xMat = side * matHalf;
+    const xOut = side * outerHalf;
+    const zMat = matHalf;
+    const zOut = outerHalf;
+    const xLo = Math.min(xMat, xOut);
+    const xHi = Math.max(xMat, xOut);
+
+    // Channel approach corridor kept recessed (not filled to desk top)
+    const corridorW = chW * 0.9;
+    const corridorHalf = corridorW / 2;
+
+    // 1) Trough floor across the whole corner except the hole disk
+    {
+      const apronT = floorT;
+      const apronCy = troughY + apronT / 2;
+      // Cover corner with a few slabs avoiding the hole (north / south / west / east of hole)
+      const slabs: [number, number, number, number][] = [
+        // north of hole
+        [xLo, xHi, zMat, hz - holeR * 1.02],
+        // south of hole
+        [xLo, xHi, hz + holeR * 1.02, zOut],
+        // west of hole (between north/south bands already cover; fill mid flanks)
+        [xLo, hx - holeR * 1.02, hz - holeR * 1.02, hz + holeR * 1.02],
+        // east of hole
+        [hx + holeR * 1.02, xHi, hz - holeR * 1.02, hz + holeR * 1.02],
+      ];
+      for (const [xa, xb, za, zb] of slabs) {
+        const w = xb - xa;
+        const d = zb - za;
+        if (w < 0.004 || d < 0.004) continue;
+        const cx = (xa + xb) / 2;
+        const cz = (za + zb) / 2;
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, apronT, d), chMat);
+        m.position.set(cx, apronCy, cz);
+        m.receiveShadow = true;
+        desk.add(m);
+        addShapeBox(channelBody, w / 2, apronT / 2, d / 2, cx, apronCy, cz);
+      }
+    }
+
+    // 2) Desk-top wood fill for the whole corner EXCEPT hole + channel corridor
+    //    This is what kills the L-shaped floor peek-through.
+    {
+      const fillH = gutterDepth;
+      const fillCy = -fillH / 2; // top at Y=0
+      // Split corner into grid cells; skip corridor cells and hole cells
+      const xs = [xLo, hx - corridorHalf, hx - holeR * 1.05, hx + holeR * 1.05, hx + corridorHalf, xHi].sort(
+        (a, b) => a - b,
+      );
+      const zs = [zMat, hz - holeR * 1.05, hz + holeR * 1.05, zOut].sort((a, b) => a - b);
+      // Unique
+      const uniq = (arr: number[]) => {
+        const o: number[] = [];
+        for (const v of arr) {
+          if (!o.length || Math.abs(o[o.length - 1]! - v) > 0.002) o.push(v);
+        }
+        return o;
+      };
+      const X = uniq(xs);
+      const Z = uniq(zs);
+      for (let i = 0; i < X.length - 1; i++) {
+        for (let j = 0; j < Z.length - 1; j++) {
+          const xa = X[i]!;
+          const xb = X[i + 1]!;
+          const za = Z[j]!;
+          const zb = Z[j + 1]!;
+          const cx = (xa + xb) / 2;
+          const cz = (za + zb) / 2;
+          const w = xb - xa;
+          const d = zb - za;
+          if (w < 0.003 || d < 0.003) continue;
+          // Skip cells whose center is inside the hole
+          if (Math.hypot(cx - hx, cz - hz) < holeR * 1.05) continue;
+          // Skip channel corridor (recessed path into hole) north of hole center
+          if (Math.abs(cx - hx) < corridorHalf && cz < hz + holeR * 0.2 && cz > zMat - 0.01) {
+            // leave recessed — trough apron already provides floor
+            continue;
+          }
+          mkBoard(w, fillH, d, cx, fillCy, cz);
+          addShapeBox(cornerBody, w / 2, fillH / 2, d / 2, cx, fillCy, cz);
+        }
+      }
+    }
+
+    // 3) Outer desk apron south of the well (continuous wood; notch only at hole)
+    {
+      const z0 = outerHalf;
+      const z1 = leftMaxZ;
+      const d = z1 - z0;
+      if (d > 0.015) {
+        const cz = (z0 + z1) / 2;
+        const topH = deskThick;
+        const topCy = -topH / 2;
+        const holeGap = holeR * 2.2;
+        if (side < 0) {
+          const a = leftMinX;
+          const b = hx - holeGap / 2;
+          const w = b - a;
+          if (w > 0.02) {
+            mkBoard(w, topH, d, (a + b) / 2, topCy, cz);
+            addShapeBox(cornerBody, w / 2, topH / 2, d / 2, (a + b) / 2, topCy, cz);
+          }
+          const a2 = hx + holeGap / 2;
+          const b2 = 0;
+          const w2 = b2 - a2;
+          if (w2 > 0.02) {
+            mkBoard(w2, topH, d, (a2 + b2) / 2, topCy, cz);
+            addShapeBox(cornerBody, w2 / 2, topH / 2, d / 2, (a2 + b2) / 2, topCy, cz);
+          }
+        } else {
+          const a = 0;
+          const b = hx - holeGap / 2;
+          const w = b - a;
+          if (w > 0.02) {
+            mkBoard(w, topH, d, (a + b) / 2, topCy, cz);
+            addShapeBox(cornerBody, w / 2, topH / 2, d / 2, (a + b) / 2, topCy, cz);
+          }
+          const a2 = hx + holeGap / 2;
+          const b2 = leftMaxX;
+          const w2 = b2 - a2;
+          if (w2 > 0.02) {
+            mkBoard(w2, topH, d, (a2 + b2) / 2, topCy, cz);
+            addShapeBox(cornerBody, w2 / 2, topH / 2, d / 2, (a2 + b2) / 2, topCy, cz);
+          }
+        }
+      }
+    }
+
+    // 4) Through-hole visual — rim FLUSH with trough floor (not desk top)
     const pit = new THREE.Mesh(
-      new THREE.CircleGeometry(holeR * 1.08, 28),
+      new THREE.CircleGeometry(holeR * 1.05, 28),
       new THREE.MeshBasicMaterial({ color: 0x000000 }),
     );
     pit.rotation.x = -Math.PI / 2;
-    pit.position.set(h.x, -gutterDepth - 0.001, h.z);
+    pit.position.set(hx, troughY - 0.0005, hz);
     desk.add(pit);
 
+    const shaftH = gutterDepth + deskThick + 0.16;
     const shaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        holeR * 0.98,
-        holeR * 1.08,
-        gutterDepth + deskThick + 0.14,
-        20,
-        1,
-        true,
-      ),
+      new THREE.CylinderGeometry(holeR * 0.98, holeR * 1.06, shaftH, 22, 1, true),
       new THREE.MeshStandardMaterial({
         color: 0x120805,
         roughness: 0.95,
         side: THREE.DoubleSide,
       }),
     );
-    shaft.position.set(h.x, -(gutterDepth + deskThick + 0.14) / 2, h.z);
+    shaft.position.set(hx, troughY - shaftH / 2, hz);
     desk.add(shaft);
 
     const rim = new THREE.Mesh(
-      new THREE.RingGeometry(holeR * 1.05, holeR * 1.28, 28),
+      new THREE.RingGeometry(holeR * 0.98, holeR * 1.22, 28),
       new THREE.MeshStandardMaterial({ color: 0x1a0c06, roughness: 0.92, metalness: 0 }),
     );
     rim.rotation.x = -Math.PI / 2;
-    rim.position.set(h.x, 0.0003, h.z);
+    // Rim sits on trough floor — marble rolls over it into the hole
+    rim.position.set(hx, troughY + floorT + 0.0002, hz);
     desk.add(rim);
-    // NO catcher — marble falls freely; Game despawns on Y drop / hole test
-  }
+
+    // Outer cheek keeps marble in channel → hole
+    {
+      const cheekW = 0.007;
+      const cheekH = 0.012;
+      const cheek = new THREE.Mesh(
+        new THREE.BoxGeometry(cheekW, cheekH, holeR * 2.4),
+        lipMat,
+      );
+      cheek.position.set(hx + side * (chW / 2 - cheekW / 2), -cheekH / 2, hz);
+      cheek.castShadow = true;
+      desk.add(cheek);
+      addShapeBox(
+        channelBody,
+        cheekW / 2,
+        cheekH / 2,
+        holeR * 1.2,
+        hx + side * (chW / 2 - cheekW / 2),
+        -cheekH / 2,
+        hz,
+      );
+    }
+  };
+
+  for (const h of holeCentersLocal) fillCorner(h.x, h.z);
 
   // Right wing top — MUST sit fully east of the play well (no overlap with mat/channels/holes)
   const rightCX = leftMaxX + rightWidth / 2 + 0.01; // ≈ 0.895
@@ -761,7 +965,7 @@ export function buildOfficeDesk(
     matVis.color.setHex(0xffffff);
     matVis.needsUpdate = true;
     // Keep mat flush after texture swap
-    matMesh.position.set(0, 0.0005, 0);
+    matMesh.position.set(0, 0.0004, 0);
     matMesh.rotation.set(-Math.PI / 2, 0, 0);
   };
 

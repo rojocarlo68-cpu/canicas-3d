@@ -58,7 +58,7 @@ import {
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
 import { buildDentistOffice, type DentistOfficeBuild, L3_BOWL_INNER_R } from './dentistOffice';
-import { buildOfficeDesk, type OfficeDeskBuild } from './officeDesk';
+import { buildOfficeDesk, type OfficeDeskBuild, L4_TILT } from './officeDesk';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
   createSpyBriefcase,
@@ -753,7 +753,12 @@ export class Game {
       material: this.groundMat,
     });
     groundBody.position.set(0, PLAY_SURFACE_Y - groundHalfH, 0);
-    this.world.addBody(groundBody);
+    // L4: desk assembly owns all play colliders (tilted mat + U-channels + holes).
+    // A flat ground body at PLAY_SURFACE_Y would float marbles above the tilted desk
+    // and block entry into recessed channels / through-holes.
+    if (this.sceneLevel !== 4) {
+      this.world.addBody(groundBody);
+    }
     // Keep visual plane flush with physics top (park dirt / camp sand share this Y)
     this.groundMesh.position.y = 0;
 
@@ -1378,17 +1383,27 @@ export class Game {
   /** Snap body Y onto the play surface, clear bad velocities / penetration. */
   private snapMarblePhysics(m: MarbleEntity, hardStop: boolean): void {
     const p = m.body.position;
+    const l4 = this.sceneLevel === 4;
+    // L4 desk is tilted with recessed channels — never force MARBLE_REST_Y.
     const restY = MARBLE_REST_Y;
+    const minY = l4 ? PLAY_SURFACE_Y - 1.25 : restY;
     const maxY = PLAY_SURFACE_Y + MARBLE_RADIUS * 4;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
       p.set(0, restY, 0);
     }
     if (hardStop) {
-      // Freeze flush on dirt: center = surface + radius (contact, no gap)
-      p.y = restY;
+      if (!l4) {
+        // Freeze flush on dirt: center = surface + radius (contact, no gap)
+        p.y = restY;
+      } else {
+        // L4: freeze ON the tilted desk top (not mid-air). Channels are entered
+        // during play; hardStop is only used after drop / turn cleanup on the mat.
+        const surfaceY = PLAY_SURFACE_Y - Math.sin(L4_TILT) * p.z;
+        p.y = surfaceY + MARBLE_RADIUS;
+      }
       m.body.velocity.setZero();
       m.body.angularVelocity.setZero();
-    } else {
+    } else if (!l4) {
       // Anti-sink / flyaway; also pull tiny float gaps down onto contact
       if (p.y < restY || p.y > maxY || (p.y < restY + 0.001 && m.body.velocity.length() < SETTLE_SPEED * 3)) {
         p.y = restY;
@@ -1396,6 +1411,10 @@ export class Game {
       if (m.body.velocity.y < 0 && p.y <= restY + 1e-4) {
         m.body.velocity.y = 0;
       }
+    } else {
+      // L4: only rescue deep falls / flyaways; leave channel/hole heights alone
+      if (p.y < minY) p.y = minY;
+      if (p.y > maxY + 0.5) p.y = restY;
     }
     m.body.wakeUp();
     if (hardStop) m.body.sleep();
@@ -2372,25 +2391,31 @@ private spawnShootersInitial(): void {
 
     // Both personal marbles must be DYNAMIC so they share field-marble physics
     // (can be struck / moved by any marble, including each other).
+    const l4impulse = this.sceneLevel === 4;
     for (const m of [this.playerMarble, this.aiMarble]) {
       if (!m || !m.active) continue;
       m.body.type = CANNON.Body.DYNAMIC;
-      if (!Number.isFinite(m.body.position.y) || m.body.position.y < MARBLE_REST_Y) {
+      // L4: don't yank shooters up out of channels; only fix NaN / deep sinks
+      if (!Number.isFinite(m.body.position.y) || (!l4impulse && m.body.position.y < MARBLE_REST_Y)) {
         m.body.position.y = MARBLE_REST_Y;
       }
-      m.body.previousPosition.y = Math.max(m.body.previousPosition.y, MARBLE_REST_Y);
+      if (!l4impulse) {
+        m.body.previousPosition.y = Math.max(m.body.previousPosition.y, MARBLE_REST_Y);
+      }
       m.body.wakeUp();
     }
 
     const body = shooter.body;
     // Resync onto surface before impulse — kinematic→dynamic can inherit sink
-    if (!Number.isFinite(body.position.y) || body.position.y < MARBLE_REST_Y) {
+    if (!Number.isFinite(body.position.y) || (!l4impulse && body.position.y < MARBLE_REST_Y)) {
       body.position.y = MARBLE_REST_Y;
     }
-    body.previousPosition.y = Math.max(body.previousPosition.y, MARBLE_REST_Y);
-    if (body.position.y < MARBLE_REST_Y + 1e-5) {
-      body.position.y = MARBLE_REST_Y;
-      body.previousPosition.y = MARBLE_REST_Y;
+    if (!l4impulse) {
+      body.previousPosition.y = Math.max(body.previousPosition.y, MARBLE_REST_Y);
+      if (body.position.y < MARBLE_REST_Y + 1e-5) {
+        body.position.y = MARBLE_REST_Y;
+        body.previousPosition.y = MARBLE_REST_Y;
+      }
     }
     body.wakeUp();
 
@@ -2864,7 +2889,10 @@ private spawnShootersInitial(): void {
    * Runs every frame after world.step (park grass + L2 sand share PLAY_SURFACE_Y).
    */
   private preventMarbleTunneling(): void {
-    const minY = MARBLE_REST_Y;
+    // L4: mat/channels/holes live below PLAY_SURFACE_Y in places (tilted desk + troughs).
+    // Only rescue marbles that have fallen far through the world — never pin to MARBLE_REST_Y.
+    const l4 = this.sceneLevel === 4;
+    const minY = l4 ? PLAY_SURFACE_Y - 1.25 : MARBLE_REST_Y;
     const list: MarbleEntity[] = this.fieldMarbles.slice();
     if (this.playerMarble) list.push(this.playerMarble);
     if (this.aiMarble) list.push(this.aiMarble);
@@ -2876,8 +2904,8 @@ private spawnShootersInitial(): void {
       const p = body.position;
 
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
-        p.set(0, minY, 0);
-        body.previousPosition.set(0, minY, 0);
+        p.set(0, l4 ? MARBLE_REST_Y : minY, 0);
+        body.previousPosition.set(0, l4 ? MARBLE_REST_Y : minY, 0);
         body.velocity.setZero();
         body.angularVelocity.setZero();
         body.wakeUp();
@@ -2893,24 +2921,26 @@ private spawnShootersInitial(): void {
         clamped = true;
       }
 
-      // Soft sticky contact: if barely above surface with downward vel, pin it
-      if (
-        body.type === CANNON.Body.DYNAMIC &&
-        p.y <= minY + MARBLE_RADIUS * 0.35 &&
-        body.velocity.y < 0
-      ) {
-        p.y = minY;
-        body.previousPosition.y = minY;
-        body.velocity.y = 0;
-        clamped = true;
-      }
+      if (!l4) {
+        // Soft sticky contact: if barely above surface with downward vel, pin it
+        if (
+          body.type === CANNON.Body.DYNAMIC &&
+          p.y <= minY + MARBLE_RADIUS * 0.35 &&
+          body.velocity.y < 0
+        ) {
+          p.y = minY;
+          body.previousPosition.y = minY;
+          body.velocity.y = 0;
+          clamped = true;
+        }
 
-      // Escape deep underground / rock-wedge jams (camp bumps intersecting ground)
-      if (p.y < PLAY_SURFACE_Y) {
-        p.y = minY;
-        body.previousPosition.y = minY;
-        body.velocity.y = Math.max(0, body.velocity.y);
-        clamped = true;
+        // Escape deep underground / rock-wedge jams (camp bumps intersecting ground)
+        if (p.y < PLAY_SURFACE_Y) {
+          p.y = minY;
+          body.previousPosition.y = minY;
+          body.velocity.y = Math.max(0, body.velocity.y);
+          clamped = true;
+        }
       }
 
       if (clamped) body.wakeUp();
@@ -2918,7 +2948,8 @@ private spawnShootersInitial(): void {
   }
 
   private syncMeshes(): void {
-    const floorY = MARBLE_REST_Y;
+    // L4: allow mesh Y below MARBLE_REST_Y (channels / holes / tilted desk).
+    const floorY = this.sceneLevel === 4 ? PLAY_SURFACE_Y - 1.25 : MARBLE_REST_Y;
     for (const m of this.fieldMarbles) {
       if (!m.active && !m.mesh.visible) continue;
       let y = m.body.position.y;
@@ -2977,7 +3008,7 @@ private spawnShootersInitial(): void {
       m.body.type = CANNON.Body.DYNAMIC;
       this.snapMarblePhysics(m, true);
       this.syncOneMesh(m);
-      if (m.body.position.y < MARBLE_REST_Y) {
+      if (this.sceneLevel !== 4 && m.body.position.y < MARBLE_REST_Y) {
         m.body.position.y = MARBLE_REST_Y;
       }
       if (
