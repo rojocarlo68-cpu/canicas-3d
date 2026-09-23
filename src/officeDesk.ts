@@ -6,7 +6,7 @@
  * - Mat is coplanar with desk top (full rectangle visible; never independently tilted).
  * - Concave U channels W/N/E only; NO south gutter; NO raised lip between mat and channel.
  * - Real through-holes at BOTH SW and SE channel termini.
- * - Soft south tilt (−2°) so off-mat wood/channel drift toward holes.
+ * - Soft south tilt (−1°) so off-mat wood/channel drift toward holes.
  * - Open mat→channel mouths (no corner muritos); continuous south wood except scoring holes.
  * - Solid Cannon bodies on clutter props.
  */
@@ -27,13 +27,92 @@ export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Soft south tilt (rad) — downhill toward +Z (−1° only). */
 export const L4_TILT = (1 * Math.PI) / 180;
 
-/** Approx desk footprint in untilted XZ (for off-desk elimination). */
+/** Recessed U-channel trough depth (local Y below desk top). */
+export const L4_GUTTER_DEPTH = Math.max(MARBLE_RADIUS * 3.2, 0.026);
+
+/** Room floor Y relative to desk top assembly (legs). */
+export const L4_ROOM_FLOOR_Y = -0.74;
+
+/**
+ * Tight desk footprint in untilted XZ (left slab + right wing).
+ * Used for coarse off-desk checks; prefer l4SupportLocalY for physics.
+ */
 export const L4_DESK_BOUNDS = {
-  minX: -0.88,
-  maxX: 0.98,
-  minZ: -0.50,
-  maxZ: 0.78,
+  minX: -0.83,
+  maxX: 1.26,
+  minZ: -0.43,
+  maxZ: 0.71,
 };
+
+/**
+ * Local desk-top Y of the collider under (x, z), or null if open air / hole.
+ * Desk top = 0; channel trough = −L4_GUTTER_DEPTH. World Y ≈ PLAY_SURFACE_Y + local − sin(tilt)·z.
+ */
+export function l4SupportLocalY(x: number, z: number): number | null {
+  const mh = L4_MAT_HALF;
+  const cw = L4_CHANNEL_W;
+  const hr = L4_HOLE_RADIUS;
+  const outer = mh + cw;
+  const trough = -L4_GUTTER_DEPTH;
+
+  // Scoring holes — open (fall through)
+  const holes = [
+    { x: -(mh + cw / 2), z: mh + cw / 2 },
+    { x: mh + cw / 2, z: mh + cw / 2 },
+  ];
+  for (const h of holes) {
+    if (Math.hypot(x - h.x, z - h.z) < hr) return null;
+  }
+
+  // Playmat top
+  if (Math.abs(x) <= mh && Math.abs(z) <= mh) return 0;
+
+  // Concave channels W / N / E (trough floor)
+  if (z >= -outer && z <= -mh && Math.abs(x) <= outer) return trough; // north
+  if (x >= -outer && x <= -mh && z >= -outer && z <= outer) return trough; // west
+  if (x >= mh && x <= outer && z >= -outer && z <= outer) return trough; // east
+
+  // South-of-mat: center wood bridge (desk top); SW/SE mouths open into side troughs
+  if (z > mh && z <= outer && Math.abs(x) <= outer) {
+    const cornerOpen = cw * 0.95;
+    const bridgeHalf = Math.max(0.04, mh - cornerOpen);
+    if (Math.abs(x) <= bridgeHalf) return 0;
+    return trough;
+  }
+
+  // Left desk slab wood margins (outside the play well)
+  const leftMinX = -0.825;
+  const leftMaxX = 0.525;
+  const leftMinZ = -0.425;
+  const leftMaxZ = 0.525;
+  if (x >= leftMinX && x <= leftMaxX && z >= leftMinZ && z <= leftMaxZ) {
+    return 0;
+  }
+
+  // Right wing
+  const rightCX = 0.895;
+  const rightWidth = 0.72;
+  const rightLen = 0.85;
+  const rightCZ = 0.28;
+  if (
+    x >= rightCX - rightWidth / 2 &&
+    x <= rightCX + rightWidth / 2 &&
+    z >= rightCZ - rightLen / 2 &&
+    z <= rightCZ + rightLen / 2
+  ) {
+    return 0;
+  }
+
+  return null;
+}
+
+/** World-space resting center Y for a marble on L4 support (or null if unsupported). */
+export function l4MarbleRestY(x: number, z: number): number | null {
+  const local = l4SupportLocalY(x, z);
+  if (local === null) return null;
+  // Match existing tilt convention used elsewhere in Game.ts
+  return PLAY_SURFACE_Y + local - Math.sin(L4_TILT) * z + MARBLE_RADIUS;
+}
 
 const MAT_PRESETS: { id: string; label: string; url: string | null }[] = [
   { id: 'avocado', label: 'Aguacate kawaii', url: 'ui/mat-avocado.png' },
@@ -162,6 +241,19 @@ export function buildOfficeDesk(
   floor.receiveShadow = true;
   root.add(floor);
 
+  // Physics room floor — marbles that leave the desk fall here (no mid-air shelf).
+  {
+    const floorBody = new CANNON.Body({
+      mass: 0,
+      type: CANNON.Body.STATIC,
+      material: woodMat,
+    });
+    const halfH = 0.04;
+    floorBody.addShape(new CANNON.Box(new CANNON.Vec3(4, halfH, 4)));
+    floorBody.position.set(0, floorY - halfH, 0);
+    bodies.push(floorBody);
+  }
+
   const lino = new THREE.Mesh(
     new THREE.PlaneGeometry(5.5, 5.5),
     woodStandard(0xb8a888, { roughness: 0.9 }),
@@ -217,7 +309,7 @@ export function buildOfficeDesk(
   const matHalf = L4_MAT_HALF;
   const chW = L4_CHANNEL_W;
   const holeR = L4_HOLE_RADIUS;
-  const gutterDepth = Math.max(MARBLE_RADIUS * 3.2, 0.026);
+  const gutterDepth = L4_GUTTER_DEPTH;
   const outerHalf = matHalf + chW;
 
   // Holes at SW / SE ends of side channels (channel centerline X, south channel Z)

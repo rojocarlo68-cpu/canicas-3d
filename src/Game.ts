@@ -58,7 +58,15 @@ import {
 } from './levelSelect';
 import { buildDesertCamp, type DesertCampBuild } from './desertCamp';
 import { buildDentistOffice, type DentistOfficeBuild, L3_BOWL_INNER_R } from './dentistOffice';
-import { buildOfficeDesk, type OfficeDeskBuild, L4_TILT } from './officeDesk';
+import {
+  buildOfficeDesk,
+  type OfficeDeskBuild,
+  L4_MAT_HALF,
+  L4_GUTTER_DEPTH,
+  L4_ROOM_FLOOR_Y,
+  l4SupportLocalY,
+  l4MarbleRestY,
+} from './officeDesk';
 import { playMarbleClack, unlockMarbleAudio, installMarbleAudioUnlock } from './marbleSounds';
 import {
   createSpyBriefcase,
@@ -822,6 +830,11 @@ export class Game {
 
     // Spy briefcase dropper (all levels) — starts upside-down above the circle
     this.briefcase = createSpyBriefcase();
+    // L4 only: drop 2 cm closer to the mat / play surface
+    if (this.sceneLevel === 4) {
+      this.briefcase.restY -= 0.02;
+      this.briefcase.root.position.y = this.briefcase.restY;
+    }
     this.scene.add(this.briefcase.root);
 
     this.buildInvisibleBoundary();
@@ -889,19 +902,20 @@ export class Game {
       for (const b of this.officeDesk.bodies) {
         this.world.addBody(b);
       }
-      // Mat: higher friction / harder texture — slower roll than wood channels
+      // Mat: plush / antiderrape — grippier than wood, low bounce
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
-          friction: 0.82,
-          restitution: 0.22,
+          friction: 1.35,
+          restitution: 0.08,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
         }),
       );
+      // Wood channels stay slipperier so marbles roll once off the mat
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.woodMat, getMarbleCannonMaterial(), {
-          friction: 0.28,
-          restitution: 0.36,
+          friction: 0.22,
+          restitution: 0.32,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
         }),
@@ -1281,7 +1295,8 @@ export class Game {
       const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
-      const y = DROP_HEIGHT + 0.01 + Math.floor(i / 5) * (MARBLE_RADIUS * 2.2);
+      const dropBase = this.sceneLevel === 4 ? DROP_HEIGHT - 0.02 : DROP_HEIGHT;
+      const y = dropBase + 0.01 + Math.floor(i / 5) * (MARBLE_RADIUS * 2.2);
       const entity = createMarbleEntity(
         designs[i]!,
         new CANNON.Vec3(x, y, z),
@@ -1342,13 +1357,29 @@ export class Game {
     this.lastScorer = null;
     this.updateScoreHUD();
 
+    const l4 = this.sceneLevel === 4;
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      this.snapMarblePhysics(m, true);
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const out = dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05;
+      const offL4 =
+        l4 &&
+        (this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z) ||
+          this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z));
+      const out =
+        dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05 || offL4;
+      if (offL4) {
+        // Fell off desk / through hole during drop — eliminate, never float
+        m.active = false;
+        m.mesh.visible = false;
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.position.y = -1;
+        m.body.type = CANNON.Body.STATIC;
+        continue;
+      }
+      this.snapMarblePhysics(m, true);
       if (out) {
-        // Left during drop/settle — no score, keep visible but inert
+        // Left circle during drop/settle — no score, keep visible but inert ON support
         m.body.velocity.setZero();
         m.body.angularVelocity.setZero();
         m.body.sleep();
@@ -1384,9 +1415,9 @@ export class Game {
   private snapMarblePhysics(m: MarbleEntity, hardStop: boolean): void {
     const p = m.body.position;
     const l4 = this.sceneLevel === 4;
-    // L4 desk is tilted with recessed channels — never force MARBLE_REST_Y.
+    // L4 desk is tilted with recessed channels — never force MARBLE_REST_Y off support.
     const restY = MARBLE_REST_Y;
-    const minY = l4 ? PLAY_SURFACE_Y - 1.25 : restY;
+    const minY = l4 ? L4_ROOM_FLOOR_Y + MARBLE_RADIUS : restY;
     const maxY = PLAY_SURFACE_Y + MARBLE_RADIUS * 4;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
       p.set(0, restY, 0);
@@ -1395,14 +1426,25 @@ export class Game {
       if (!l4) {
         // Freeze flush on dirt: center = surface + radius (contact, no gap)
         p.y = restY;
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
       } else {
-        // L4: freeze ON the tilted desk top (not mid-air). Channels are entered
-        // during play; hardStop is only used after drop / turn cleanup on the mat.
-        const surfaceY = PLAY_SURFACE_Y - Math.sin(L4_TILT) * p.z;
-        p.y = surfaceY + MARBLE_RADIUS;
+        // L4: snap onto real support (mat / wood / trough). Never invent a mid-air shelf.
+        const supported = l4MarbleRestY(p.x, p.z);
+        if (supported !== null) {
+          p.y = supported;
+          m.body.velocity.setZero();
+          m.body.angularVelocity.setZero();
+        } else {
+          // Unsupported — do NOT sleep at desk height; drop under gravity
+          m.body.angularVelocity.setZero();
+          m.body.velocity.x = 0;
+          m.body.velocity.z = 0;
+          if (m.body.velocity.y > -0.15) m.body.velocity.y = -0.35;
+          m.body.wakeUp();
+          return;
+        }
       }
-      m.body.velocity.setZero();
-      m.body.angularVelocity.setZero();
     } else if (!l4) {
       // Anti-sink / flyaway; also pull tiny float gaps down onto contact
       if (p.y < restY || p.y > maxY || (p.y < restY + 0.001 && m.body.velocity.length() < SETTLE_SPEED * 3)) {
@@ -1412,9 +1454,12 @@ export class Game {
         m.body.velocity.y = 0;
       }
     } else {
-      // L4: only rescue deep falls / flyaways; leave channel/hole heights alone
+      // L4: only rescue deep underground / extreme flyaways; never pin to desk Y in air
       if (p.y < minY) p.y = minY;
-      if (p.y > maxY + 0.5) p.y = restY;
+      if (p.y > maxY + 0.5) {
+        const supported = l4MarbleRestY(p.x, p.z);
+        p.y = supported ?? restY;
+      }
     }
     m.body.wakeUp();
     if (hardStop) m.body.sleep();
@@ -1433,12 +1478,17 @@ export class Game {
 private spawnShootersInitial(): void {
     this.removeShooter('player');
     this.removeShooter('ai');
-    // L1/L2: outside chalk circle. L3: inside cuspidor on the annular floor.
+    // L1/L2: outside chalk circle. L3: inside cuspidor. L4: ON the mat (not mid-channel).
     const dist =
       this.sceneLevel === 3
         ? (L3_BOWL_INNER_R + L3_HOLE_RADIUS) * 0.55
-        : CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
-    const y = MARBLE_REST_Y;
+        : this.sceneLevel === 4
+          ? L4_MAT_HALF - MARBLE_RADIUS * 5
+          : CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+    const y =
+      this.sceneLevel === 4
+        ? (l4MarbleRestY(dist, 0) ?? MARBLE_REST_Y)
+        : MARBLE_REST_Y;
 
     const player = createMarbleEntity(
       this.playerDesign,
@@ -1639,22 +1689,43 @@ private spawnShootersInitial(): void {
   /** Keep shooter body in a renderable, finite pose for camera framing. */
   private sanitizeShooterPose(shooter: MarbleEntity): void {
     const p = shooter.body.position;
+    const l4 = this.sceneLevel === 4;
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
-      const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+      const sideDist = l4
+        ? L4_MAT_HALF - MARBLE_RADIUS * 5
+        : CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
       const x = this.turn === 'player' ? sideDist : -sideDist;
-      p.set(x, MARBLE_REST_Y, 0);
+      p.set(x, l4MarbleRestY(x, 0) ?? MARBLE_REST_Y, 0);
     }
-    if (p.y < PLAY_SURFACE_Y + MARBLE_RADIUS * 0.5 || p.y > 1) {
-      p.y = MARBLE_REST_Y;
-    }
-    // Soft clamp extreme flyaways so turn handoff stays on-arena
-    const horiz = Math.hypot(p.x, p.z);
-    const maxR =
-      this.sceneLevel === 3 ? CIRCLE_RADIUS * 0.92 : CIRCLE_RADIUS * 3.5;
-    if (horiz > maxR) {
-      const s = maxR / horiz;
-      p.x *= s;
-      p.z *= s;
+    if (l4) {
+      // Never yank to desk-top mid-air. Pull onto real support (mat/wood/trough).
+      let rest = l4MarbleRestY(p.x, p.z);
+      if (rest === null) {
+        // Off desk — clamp onto mat so we don't create floaters outside the desk
+        const maxOnMat = L4_MAT_HALF - MARBLE_RADIUS * 2;
+        const horiz = Math.hypot(p.x, p.z) || 1;
+        const s = Math.min(1, maxOnMat / horiz);
+        p.x *= s;
+        p.z *= s;
+        rest = l4MarbleRestY(p.x, p.z) ?? MARBLE_REST_Y;
+      }
+      // Only lift/drop onto support when near it or below floor; leave falling alone if deep
+      if (p.y > 1 || p.y < L4_ROOM_FLOOR_Y + MARBLE_RADIUS * 2 || Math.abs(p.y - rest) < 0.08) {
+        p.y = rest;
+      }
+    } else {
+      if (p.y < PLAY_SURFACE_Y + MARBLE_RADIUS * 0.5 || p.y > 1) {
+        p.y = MARBLE_REST_Y;
+      }
+      // Soft clamp extreme flyaways so turn handoff stays on-arena
+      const horiz = Math.hypot(p.x, p.z);
+      const maxR =
+        this.sceneLevel === 3 ? CIRCLE_RADIUS * 0.92 : CIRCLE_RADIUS * 3.5;
+      if (horiz > maxR) {
+        const s = maxR / horiz;
+        p.x *= s;
+        p.z *= s;
+      }
     }
     shooter.body.velocity.setZero();
     shooter.body.angularVelocity.setZero();
@@ -2890,9 +2961,9 @@ private spawnShootersInitial(): void {
    */
   private preventMarbleTunneling(): void {
     // L4: mat/channels/holes live below PLAY_SURFACE_Y in places (tilted desk + troughs).
-    // Only rescue marbles that have fallen far through the world — never pin to MARBLE_REST_Y.
+    // Only rescue marbles that tunnel through the room floor — never pin to desk Y in air.
     const l4 = this.sceneLevel === 4;
-    const minY = l4 ? PLAY_SURFACE_Y - 1.25 : MARBLE_REST_Y;
+    const minY = l4 ? L4_ROOM_FLOOR_Y + MARBLE_RADIUS : MARBLE_REST_Y;
     const list: MarbleEntity[] = this.fieldMarbles.slice();
     if (this.playerMarble) list.push(this.playerMarble);
     if (this.aiMarble) list.push(this.aiMarble);
@@ -2904,8 +2975,9 @@ private spawnShootersInitial(): void {
       const p = body.position;
 
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
-        p.set(0, l4 ? MARBLE_REST_Y : minY, 0);
-        body.previousPosition.set(0, l4 ? MARBLE_REST_Y : minY, 0);
+        const ry = l4 ? (l4MarbleRestY(0, 0) ?? MARBLE_REST_Y) : minY;
+        p.set(0, ry, 0);
+        body.previousPosition.set(0, ry, 0);
         body.velocity.setZero();
         body.angularVelocity.setZero();
         body.wakeUp();
@@ -2913,7 +2985,7 @@ private spawnShootersInitial(): void {
       }
 
       let clamped = false;
-      // Hard floor — also rewind previousPosition so next integrate doesn't re-sink
+      // Hard floor (room floor on L4) — rewind previousPosition so next integrate doesn't re-sink
       if (p.y < minY) {
         p.y = minY;
         body.previousPosition.y = Math.max(body.previousPosition.y, minY);
@@ -2941,6 +3013,16 @@ private spawnShootersInitial(): void {
           body.velocity.y = Math.max(0, body.velocity.y);
           clamped = true;
         }
+      } else {
+        // L4: if marble is sleeping mid-air with no support, wake it so gravity drops it
+        if (
+          body.sleepState === CANNON.Body.SLEEPING &&
+          l4SupportLocalY(p.x, p.z) === null &&
+          p.y > L4_ROOM_FLOOR_Y + MARBLE_RADIUS * 3
+        ) {
+          body.wakeUp();
+          if (body.velocity.y > -0.05) body.velocity.y = -0.2;
+        }
       }
 
       if (clamped) body.wakeUp();
@@ -2948,8 +3030,8 @@ private spawnShootersInitial(): void {
   }
 
   private syncMeshes(): void {
-    // L4: allow mesh Y below MARBLE_REST_Y (channels / holes / tilted desk).
-    const floorY = this.sceneLevel === 4 ? PLAY_SURFACE_Y - 1.25 : MARBLE_REST_Y;
+    // L4: allow mesh Y down to room floor (channels / holes / falls).
+    const floorY = this.sceneLevel === 4 ? L4_ROOM_FLOOR_Y + MARBLE_RADIUS : MARBLE_REST_Y;
     for (const m of this.fieldMarbles) {
       if (!m.active && !m.mesh.visible) continue;
       let y = m.body.position.y;
@@ -3015,9 +3097,16 @@ private spawnShootersInitial(): void {
         !Number.isFinite(m.body.position.x) ||
         !Number.isFinite(m.body.position.z)
       ) {
-        const sideDist = CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
+        const sideDist =
+          this.sceneLevel === 4
+            ? L4_MAT_HALF - MARBLE_RADIUS * 5
+            : CIRCLE_RADIUS + MARBLE_RADIUS * 3.5;
         const x = m.owner === 'player' ? sideDist : -sideDist;
-        m.body.position.set(x, MARBLE_REST_Y, 0);
+        const y =
+          this.sceneLevel === 4
+            ? (l4MarbleRestY(x, 0) ?? MARBLE_REST_Y)
+            : MARBLE_REST_Y;
+        m.body.position.set(x, y, 0);
       }
       m.body.sleep();
     }
@@ -4056,12 +4145,18 @@ private spawnShootersInitial(): void {
    * rarely causes late exits during the next player's aiming window.
    */
   private softSleepSlowFieldMarbles(): void {
-    const list: MarbleEntity[] = [...this.fieldMarbles];
+    const list: MarbleEntity[] = this.fieldMarbles.slice();
     if (this.playerMarble) list.push(this.playerMarble);
     if (this.aiMarble) list.push(this.aiMarble);
+    const l4 = this.sceneLevel === 4;
     for (const m of list) {
       if (!m.active) continue;
       if (m.body.type === CANNON.Body.KINEMATIC) continue;
+      // L4: never sleep mid-air / off-support floaters — let gravity drop them
+      if (l4 && l4SupportLocalY(m.body.position.x, m.body.position.z) === null) {
+        m.body.wakeUp();
+        continue;
+      }
       const v = m.body.velocity.length();
       const w = m.body.angularVelocity.length();
       if (v < SETTLE_SPEED * 2.5 && w < SETTLE_SPEED * 80) {
@@ -4469,14 +4564,13 @@ private spawnShootersInitial(): void {
   }
 
 
-  /** L4: marble left the desk footprint or dropped below the top (fell off south / sides). */
+  /** L4: marble left real desk support or dropped below the top (fell off / through). */
   private isOffL4Desk(x: number, y: number, z: number): boolean {
-    const desk = this.officeDesk;
-    if (!desk) return y < PLAY_SURFACE_Y - 0.06;
-    if (y < PLAY_SURFACE_Y - 0.06) return true;
-    const b = desk.deskBounds;
-    const margin = MARBLE_RADIUS * 0.5;
-    return x < b.minX - margin || x > b.maxX + margin || z < b.minZ - margin || z > b.maxZ + margin;
+    if (!this.officeDesk) return y < PLAY_SURFACE_Y - 0.06;
+    // Below desk trough / into room → fallen
+    if (y < PLAY_SURFACE_Y - L4_GUTTER_DEPTH - MARBLE_RADIUS * 2) return true;
+    // No collider under this XZ (past outer lip, hole opening, or void) → off desk
+    return l4SupportLocalY(x, z) === null;
   }
 
   /**
