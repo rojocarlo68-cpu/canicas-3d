@@ -24,8 +24,8 @@ export const L4_MAT_HALF = CIRCLE_RADIUS;
 export const L4_CHANNEL_W = MARBLE_RADIUS * 7.2;
 /** Hole radius — large enough for one marble. */
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
-/** Soft south tilt (rad) — downhill toward +Z (−2° only). */
-export const L4_TILT = (2 * Math.PI) / 180;
+/** Soft south tilt (rad) — downhill toward +Z (−1° only). */
+export const L4_TILT = (1 * Math.PI) / 180;
 
 /** Approx desk footprint in untilted XZ (for off-desk elimination). */
 export const L4_DESK_BOUNDS = {
