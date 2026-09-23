@@ -5,8 +5,8 @@
  * - Desk / mat / props stay FLAT (L4_TILT = 0). No gravity drift on mat or outer wood.
  * - Continuous HALF-PIPE channel ring on ALL four sides (N/S/E/W) with rounded corners.
  * - ONE scoring through-hole only at the SW corner of the ring (historic dual-hole spot).
- * - Channel-only micro-slope (L4_CHANNEL_TILT ≈ 0.001°) toward the SW hole so trough
- *   marbles roll along the ring to the hole; mat/desk wood remain level.
+ * - Channel-only downhill (L4_CHANNEL_TILT ≈ 0.15°) toward the SW hole so trough
+ *   marbles reliably roll along the ring to the hole; mat/desk wood remain level.
  * - Flush mat→channel and channel→outer wood (no raised lip beads / ridges).
  * - Solid Cannon bodies on clutter props.
  * - Invisible shooter-only BRIDGES over the half-pipe ring (collision groups) so field
@@ -29,8 +29,8 @@ export const L4_CHANNEL_W = MARBLE_RADIUS * 3.6; // ~1.8× diameter — one marb
 export const L4_HOLE_RADIUS = MARBLE_RADIUS * 1.65;
 /** Desk assembly tilt (rad). Always 0 — mat/desk wood stay level. */
 export const L4_TILT = 0;
-/** Channel-only micro-slope (rad) toward the SW scoring hole (~0.001°). */
-export const L4_CHANNEL_TILT = (0.001 * Math.PI) / 180;
+/** Channel-only downhill (rad) toward the SW scoring hole (~0.15°). Desk/mat stay 0°. */
+export const L4_CHANNEL_TILT = (0.15 * Math.PI) / 180;
 
 /** Recessed U-channel trough depth (local Y below desk top). */
 export const L4_GUTTER_DEPTH = L4_CHANNEL_W / 2; // true half-pipe radius
@@ -219,6 +219,8 @@ export type OfficeDeskBuild = {
   root: THREE.Group;
   bodies: CANNON.Body[];
   woodMat: CANNON.Material;
+  /** Low-friction material for half-pipe trough facets only (desk wood stays woodMat). */
+  channelMat: CANNON.Material;
   matMat: CANNON.Material;
   holeCenters: { x: number; z: number }[];
   holeRadius: number;
@@ -307,6 +309,7 @@ export function buildOfficeDesk(
   root.name = 'officeDesk';
   const bodies: CANNON.Body[] = [];
   const woodMat = new CANNON.Material('deskWood');
+  const channelMat = new CANNON.Material('channelTrough');
   const matMat = new CANNON.Material('playMat');
 
   const grain = makeWoodGrainTexture();
@@ -557,7 +560,7 @@ export function buildOfficeDesk(
   // ——— Continuous half-pipe ring (N/S/E/W + rounded corners) + single SW hole ———
   const chMat = woodStandard(0x5a2e16, { map: grain.clone(), roughness: 0.48 });
   (chMat.map as THREE.Texture).repeat.set(1.2, 0.4);
-  const channelBody = mkStatic(woodMat);
+  const channelBody = mkStatic(channelMat);
 
   const addShapeBox = (
     body: CANNON.Body,
@@ -616,53 +619,61 @@ export function buildOfficeDesk(
 
     for (const span of spans) {
       if (span.len < 0.015) continue;
-      const scx = alongX ? span.cAlong : cx;
-      const scz = alongX ? cz : span.cAlong;
+      // Subdivide along the ring so channel height bias is continuous (not one flat shelf).
+      const alongSlices = Math.max(4, Math.ceil(span.len / 0.032));
+      const sliceLen = span.len / alongSlices;
+      const aStart = span.cAlong - span.len / 2;
 
-      // Visual half-pipe via many thin boxes (matches physics)
-      for (let i = 0; i < SEGS; i++) {
-        const t0 = i / SEGS;
-        const t1 = (i + 1) / SEGS;
-        const a0 = Math.PI * t0; // 0 = outer lip (+perp), π = inner lip (−perp)
-        const a1 = Math.PI * t1;
-        const amid = 0.5 * (a0 + a1);
-        const arc = (a1 - a0) * pipeR;
-        const thick = Math.max(0.0045, arc * 0.95);
-        // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
-        const lat = pipeR * Math.cos(amid);
-        // Channel-only slope: bias by centerline (scx,scz), keep half-pipe cross-section
-        const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
-        // Tangent angle for facet
-        const ang = amid - Math.PI / 2; // rotate facet to follow circle
+      for (let si = 0; si < alongSlices; si++) {
+        const alongMid = aStart + sliceLen * (si + 0.5);
+        const scx = alongX ? alongMid : cx;
+        const scz = alongX ? cz : alongMid;
 
-        const bw = alongX ? span.len : thick;
-        const bd = alongX ? thick : span.len;
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.0055, bd), chMat);
-        if (alongX) {
-          mesh.position.set(scx, y, scz + lat);
-          mesh.rotation.x = ang;
-        } else {
-          mesh.position.set(scx + lat, y, scz);
-          mesh.rotation.z = -ang;
+        // Visual half-pipe via many thin boxes (matches physics)
+        for (let i = 0; i < SEGS; i++) {
+          const t0 = i / SEGS;
+          const t1 = (i + 1) / SEGS;
+          const a0 = Math.PI * t0; // 0 = outer lip (+perp), π = inner lip (−perp)
+          const a1 = Math.PI * t1;
+          const amid = 0.5 * (a0 + a1);
+          const arc = (a1 - a0) * pipeR;
+          const thick = Math.max(0.0045, arc * 0.95);
+          // Lateral from centerline: +pipeR at outer (a=0), 0 at bottom (a=π/2), −pipeR at inner (a=π)
+          const lat = pipeR * Math.cos(amid);
+          // Channel-only slope: per-slice centerline bias → continuous downhill to SW hole
+          const y = -pipeR * Math.sin(amid) + l4ChannelHeightBias(scx, scz);
+          // Tangent angle for facet
+          const ang = amid - Math.PI / 2; // rotate facet to follow circle
+
+          const bw = alongX ? sliceLen : thick;
+          const bd = alongX ? thick : sliceLen;
+          const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.0055, bd), chMat);
+          if (alongX) {
+            mesh.position.set(scx, y, scz + lat);
+            mesh.rotation.x = ang;
+          } else {
+            mesh.position.set(scx + lat, y, scz);
+            mesh.rotation.z = -ang;
+          }
+          mesh.receiveShadow = true;
+          mesh.castShadow = true;
+          desk.add(mesh);
+
+          // Physics facet
+          const q = new CANNON.Quaternion();
+          if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
+          else q.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), -ang);
+          addShapeBox(
+            channelBody,
+            alongX ? sliceLen / 2 : thick / 2,
+            0.0028,
+            alongX ? thick / 2 : sliceLen / 2,
+            alongX ? scx : scx + lat,
+            y,
+            alongX ? scz + lat : scz,
+            q,
+          );
         }
-        mesh.receiveShadow = true;
-        mesh.castShadow = true;
-        desk.add(mesh);
-
-        // Physics facet
-        const q = new CANNON.Quaternion();
-        if (alongX) q.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), ang);
-        else q.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), -ang);
-        addShapeBox(
-          channelBody,
-          alongX ? span.len / 2 : thick / 2,
-          0.0028,
-          alongX ? thick / 2 : span.len / 2,
-          alongX ? scx : scx + lat,
-          y,
-          alongX ? scz + lat : scz,
-          q,
-        );
       }
 
       // No raised lip beads — flush mat→channel and channel→outer wood transition.
@@ -1374,6 +1385,7 @@ export function buildOfficeDesk(
     root,
     bodies,
     woodMat,
+    channelMat,
     matMat,
     holeCenters,
     holeRadius: holeR,

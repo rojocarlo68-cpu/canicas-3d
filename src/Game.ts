@@ -835,9 +835,9 @@ export class Game {
 
     // Spy briefcase dropper (all levels) — starts upside-down above the circle
     this.briefcase = createSpyBriefcase();
-    // L4 only: drop 2 cm closer to the mat / play surface
+    // L4 only: drop 4 cm closer to the mat / play surface (prior −2cm + another −2cm)
     if (this.sceneLevel === 4) {
-      this.briefcase.restY -= 0.02;
+      this.briefcase.restY -= 0.04;
       this.briefcase.root.position.y = this.briefcase.restY;
     }
     this.scene.add(this.briefcase.root);
@@ -907,20 +907,31 @@ export class Game {
       for (const b of this.officeDesk.bodies) {
         this.world.addBody(b);
       }
-      // Mat: plush / antiderrape — grippier than wood, low bounce
+      // Mat: plush / antiderrape — even grippier; marbles crawl / stick more
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.matMat, getMarbleCannonMaterial(), {
-          friction: 3.0,
-          restitution: 0.03,
+          friction: 3.8,
+          restitution: 0.015,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
+          frictionEquationStiffness: 1e7,
+          frictionEquationRelaxation: 3,
         }),
       );
-      // Wood channels stay slipperier so marbles roll once off the mat
+      // Desk wood (apron, props, outer) — unchanged grip vs prior L4 wood
       this.world.addContactMaterial(
         new CANNON.ContactMaterial(this.officeDesk.woodMat, getMarbleCannonMaterial(), {
           friction: 0.22,
           restitution: 0.32,
+          contactEquationStiffness: 1e7,
+          contactEquationRelaxation: 3,
+        }),
+      );
+      // Half-pipe trough only — low friction so channel marbles keep rolling to SW hole
+      this.world.addContactMaterial(
+        new CANNON.ContactMaterial(this.officeDesk.channelMat, getMarbleCannonMaterial(), {
+          friction: 0.06,
+          restitution: 0.18,
           contactEquationStiffness: 1e7,
           contactEquationRelaxation: 3,
         }),
