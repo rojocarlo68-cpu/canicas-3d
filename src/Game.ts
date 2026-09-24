@@ -84,37 +84,7 @@ import {
   installMarbleAudioUnlock,
   updateMarbleWoodRoll,
   stopMarbleWoodRoll,
-  ENABLE_MARBLE_SFX,
 } from './marbleSounds';
-import {
-  ENABLE_COLOR_TARGET_EXPERIMENT,
-  EXPERIMENT_FIELD_COUNT,
-  isColorTargetExperimentActive,
-  shouldInterceptL4Hole,
-  beginLoopTransit,
-  isMarbleInLoop,
-  hasActiveLoopTransits,
-  updateLoopTransits,
-  mountExperimentHUD,
-  resetExperimentPoints,
-  mountExperimentVisuals,
-  disposeExperiment,
-  createL4ExperimentFieldDesigns,
-  shuffleExperimentFieldDesigns,
-  getReturnHatchXZ,
-} from './l4ColorTargetExperiment';
-import {
-  isMatchModeActive,
-  mountMatchMode,
-  disposeMatchMode,
-  resetMatchScores,
-  refreshMatchHUD,
-  shouldEndMatch,
-  matchReachedWinScore,
-  showMatchEndOverlay,
-  hideMatchEndOverlay,
-  planMatchAIShot,
-} from './l4MatchMode';
 import {
   createSpyBriefcase,
   resetBriefcase,
@@ -538,11 +508,7 @@ export class Game {
     this.applyEquippedSkinFromSave();
     this.loadPlayerIdentityFromSave();
     this.fieldDesigns =
-      this.sceneLevel === 3
-        ? createLevel3FieldDesigns()
-        : this.sceneLevel === 4 && ENABLE_COLOR_TARGET_EXPERIMENT
-          ? createL4ExperimentFieldDesigns(createFieldDesigns())
-          : createFieldDesigns();
+      this.sceneLevel === 3 ? createLevel3FieldDesigns() : createFieldDesigns();
     // AI skill tier follows map level (L1 easy → L3 strongest)
     this.level = this.sceneLevel;
     this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
@@ -685,8 +651,6 @@ export class Game {
     // Force-hide even if sceneLevel were still 4 during teardown / title return
     document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
     document.getElementById('l4-mat-menu')?.classList.add('hidden');
-    disposeMatchMode();
-    disposeExperiment(this.scene);
     this.commentator?.dispose(); /* caster:dispose */
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
@@ -995,24 +959,6 @@ export class Game {
       if (this.sky) this.sky.visible = false;
       this.groundMesh.visible = false;
       if (this.circleMesh) this.circleMesh.visible = false;
-      if (isColorTargetExperimentActive(4)) {
-        mountExperimentVisuals(this.scene, this.officeDesk);
-        mountExperimentHUD();
-        resetExperimentPoints();
-        if (isMatchModeActive(4)) {
-          mountMatchMode({
-            onReplay: () => this.restart(),
-            onMenu: () => {
-              window.location.href = buildMenuHref();
-            },
-            onTargetScore: (scorer) => this.awardMatchModePoint(scorer),
-            getDisplayNames: () => ({
-              player: this.playerName,
-              ai: this.opponentName,
-            }),
-          });
-        }
-      }
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
@@ -1296,17 +1242,6 @@ export class Game {
   }
 
   private updateTurnHUD(): void {
-    if (isMatchModeActive(this.sceneLevel)) {
-      // Keep #turn-label as the only turn indicator (objective chip is separate).
-      // Never label the AI as "CPU" — use the human opponentName.
-      const label =
-        this.turn === 'player' ? '🎮 TU TURNO' : `TURNO DE ${this.opponentName}`;
-      this.els.turnLabel.textContent = label;
-      this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
-      this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
-      refreshMatchHUD(this.turn);
-      return;
-    }
     const name = this.turn === 'player' ? this.playerName : this.opponentName;
     this.els.turnLabel.textContent = t('hud.turn.player', { name });
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
@@ -1342,8 +1277,6 @@ export class Game {
     this.clearKnockoutCamPunch(false);
     this.exitSlowMo(false);
     this.particles?.clear();
-    if (isColorTargetExperimentActive(this.sceneLevel)) resetExperimentPoints();
-    if (isMatchModeActive(this.sceneLevel)) resetMatchScores();
     this.updateScoreHUD();
   }
 
@@ -1383,56 +1316,15 @@ export class Game {
     triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
   }
 
-  /** Field marble count: L4 color-target experiment uses 20 (5×4); else FIELD_MARBLE_COUNT. */
-  private fieldSpawnCount(): number {
-    return isColorTargetExperimentActive(this.sceneLevel)
-      ? EXPERIMENT_FIELD_COUNT
-      : FIELD_MARBLE_COUNT;
-  }
-
   private spawnFieldFromBriefcase(): void {
-    // Reshuffle L4 experiment palette each drop so colors are not clustered.
-    if (isColorTargetExperimentActive(this.sceneLevel)) {
-      if (this.fieldDesigns.length !== EXPERIMENT_FIELD_COUNT) {
-        this.fieldDesigns = createL4ExperimentFieldDesigns(createFieldDesigns());
-      } else {
-        this.fieldDesigns = shuffleExperimentFieldDesigns(this.fieldDesigns);
-      }
-    }
-    const count = this.fieldSpawnCount();
-    const designs = this.fieldDesigns.slice(0, count);
-    // Pack centers ≥ ~2.3× diameter apart so settle does not freeze overlapped pairs.
-    const spacing = MARBLE_RADIUS * 2.35;
-    const dropBase = this.sceneLevel === 4 ? DROP_HEIGHT - 0.02 : DROP_HEIGHT;
-    const positions: { x: number; z: number; y: number }[] = [];
-    {
-      let placed = 0;
-      let ring = 0;
-      while (placed < count) {
-        const r = ring === 0 ? 0 : spacing * ring;
-        const nOnRing =
-          ring === 0 ? 1 : Math.max(6, Math.floor((2 * Math.PI * r) / spacing));
-        for (let i = 0; i < nOnRing && placed < count; i++) {
-          const angle = (i / nOnRing) * Math.PI * 2 + ring * 0.37;
-          const x = Math.cos(angle) * r;
-          const z = Math.sin(angle) * r;
-          const y = dropBase + 0.01 + ring * (MARBLE_RADIUS * 0.15);
-          positions.push({ x, z, y });
-          placed += 1;
-        }
-        ring += 1;
-        if (ring > 12) break;
-      }
-    }
-    for (let i = 0; i < count; i++) {
-      const p = positions[i] ?? {
-        x: (Math.random() - 0.5) * spacing * 4,
-        z: (Math.random() - 0.5) * spacing * 4,
-        y: dropBase + 0.01,
-      };
-      const x = p.x;
-      const z = p.z;
-      const y = p.y;
+    const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
+    for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
+      const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2;
+      const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
+      const x = Math.cos(angle) * r;
+      const z = Math.sin(angle) * r;
+      const dropBase = this.sceneLevel === 4 ? DROP_HEIGHT - 0.02 : DROP_HEIGHT;
+      const y = dropBase + 0.01 + Math.floor(i / 5) * (MARBLE_RADIUS * 2.2);
       const entity = createMarbleEntity(
         designs[i]!,
         new CANNON.Vec3(x, y, z),
@@ -1462,17 +1354,10 @@ export class Game {
     if (this.aiMarble) list.push(this.aiMarble);
     for (const m of list) {
       if (!m.active) continue;
-      // Kinematic loop bodies report ~0 velocity — wait separately for match mode
-      if (isMarbleInLoop(m)) {
-        if (isMatchModeActive(this.sceneLevel)) return false;
-        continue;
-      }
       const v = m.body.velocity.length();
       const w = m.body.angularVelocity.length();
       if (v > SETTLE_SPEED || w > SETTLE_SPEED * 40) return false;
     }
-    // Match mode: also wait until under-desk loop transits finish
-    if (isMatchModeActive(this.sceneLevel) && hasActiveLoopTransits()) return false;
     return true;
   }
 
@@ -1498,7 +1383,6 @@ export class Game {
     this.playerScore = 0;
     this.aiScore = 0;
     this.lastScorer = null;
-    if (isMatchModeActive(this.sceneLevel)) resetMatchScores();
     this.updateScoreHUD();
 
     const l4 = this.sceneLevel === 4;
@@ -1512,52 +1396,6 @@ export class Game {
       const out =
         dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05 || offL4;
       if (offL4) {
-        // Experiment: hole during drop → put back on mat (do not eliminate).
-        // Real off-desk fall still eliminates as before.
-        const inHole =
-          l4 &&
-          this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
-        if (isColorTargetExperimentActive(4) && inHole) {
-          // Place near hatch without stacking on other recovered marbles
-          const exit = getReturnHatchXZ();
-          const minD = MARBLE_RADIUS * 2.08;
-          let hx = exit.x;
-          let hz = exit.z;
-          for (let attempt = 0; attempt < 24; attempt++) {
-            const ang = (attempt / 24) * Math.PI * 2;
-            const rad = attempt === 0 ? 0 : MARBLE_RADIUS * (2.2 + attempt * 0.35);
-            const tx = exit.x + Math.cos(ang) * rad;
-            const tz = exit.z + Math.sin(ang) * rad;
-            if (Math.abs(tx) > L4_MAT_HALF - MARBLE_RADIUS * 2.5) continue;
-            if (Math.abs(tz) > L4_MAT_HALF - MARBLE_RADIUS * 2.5) continue;
-            let clear = true;
-            for (const o of this.fieldMarbles) {
-              if (o === m || !o.active) continue;
-              if (Math.hypot(o.body.position.x - tx, o.body.position.z - tz) < minD) {
-                clear = false;
-                break;
-              }
-            }
-            if (clear) {
-              hx = tx;
-              hz = tz;
-              break;
-            }
-          }
-          const ry = l4MarbleRestY(hx, hz) ?? MARBLE_REST_Y;
-          m.body.position.set(hx, ry, hz);
-          m.body.velocity.setZero();
-          m.body.angularVelocity.setZero();
-          m.body.type = CANNON.Body.DYNAMIC;
-          m.body.collisionResponse = true;
-          m.body.collisionFilterGroup = 1;
-          m.body.collisionFilterMask = -1;
-          m.active = true;
-          m.mesh.visible = true;
-          this.scoringMarbles.add(m);
-          this.syncOneMesh(m);
-          continue;
-        }
         // Fell off desk / through hole during drop — eliminate, never float
         m.active = false;
         m.mesh.visible = false;
@@ -1579,14 +1417,6 @@ export class Game {
         m.body.angularVelocity.setZero();
         m.body.sleep();
       }
-      this.syncOneMesh(m);
-    }
-
-    // Separar solapes residuales del drop antes de dormir (evita fantasma en el mat)
-    this.resolveMarbleSphereOverlaps();
-    for (const m of this.fieldMarbles) {
-      if (!m.active) continue;
-      if (m.body.type === CANNON.Body.DYNAMIC) m.body.sleep();
       this.syncOneMesh(m);
     }
 
@@ -1866,24 +1696,19 @@ private spawnShootersInitial(): void {
         'banner-ai',
         2200,
       );
-      if (isMatchModeActive(this.sceneLevel)) {
-        // Match AI: target-color aware, channel aim, open-edge avoidance
-        this.aiPlan = planMatchAIShot(shooter, this.fieldMarbles);
-      } else {
-        const mode =
-          this.sceneLevel === 3
-            ? 'hole_in'
-            : this.sceneLevel === 4
-              ? 'channel_out'
-              : 'circle_out';
-        this.aiPlan = planAIShot(
-          shooter,
-          this.fieldMarbles,
-          this.sceneLevel,
-          mode,
-          L3_HOLE_RADIUS,
-        );
-      }
+      const mode =
+        this.sceneLevel === 3
+          ? 'hole_in'
+          : this.sceneLevel === 4
+            ? 'channel_out'
+            : 'circle_out';
+      this.aiPlan = planAIShot(
+        shooter,
+        this.fieldMarbles,
+        this.sceneLevel,
+        mode,
+        L3_HOLE_RADIUS,
+      );
       // Thinking pause ~2s before shooting
       this.aiThinkUntil = performance.now() + AI_THINK_MS + Math.random() * 250;
       this.setPhase('ai_thinking');
@@ -2771,25 +2596,9 @@ private spawnShootersInitial(): void {
 
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      if (isMarbleInLoop(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
+      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
-      // Experiment: channel→hole becomes under-desk loop (no eliminate / no knockout money).
-      if (
-        l4 &&
-        inL4Hole &&
-        isColorTargetExperimentActive(4) &&
-        shouldInterceptL4Hole(m)
-      ) {
-        beginLoopTransit(m, this.officeDesk, this.scene, undefined, this.lastScorer);
-        continue;
-      }
-      // Off-desk floor fall: treat hole as NOT off-desk when experiment is on (handled above).
-      const offDeskFloor =
-        l4 &&
-        !inL4Hole &&
-        this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z);
-      const fallen = m.body.position.y < -0.05 || offDeskFloor || (l4 && !isColorTargetExperimentActive(4) && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       // L1/L2: out of chalk circle. L3: into the center hole. L4: single south channel hole.
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
@@ -2808,12 +2617,6 @@ private spawnShootersInitial(): void {
         !this.aiKnocked.has(m);
 
       if (eligible) {
-        // Match mode: only target-color hole awards via beginLoopTransit → onTargetScore.
-        // Off-desk / wrong-path field exits do NOT increment the name-vs-name board.
-        if (isMatchModeActive(this.sceneLevel)) {
-          this.scoringMarbles.delete(m);
-          // Fall through to despawn / continue without knockout points
-        } else {
         const scorer = this.lastScorer ?? this.turn;
         const kx = m.body.position.x;
         const ky = Math.max(MARBLE_RADIUS * 2, m.body.position.y);
@@ -2845,7 +2648,6 @@ private spawnShootersInitial(): void {
             preferLower: false,
           }); /* caster:clutch */
         }
-        } // end non-match knockout scoring
       } else if (leftBowl && this.scoringMarbles.has(m)) {
         // Left bowl without hole — no score, remove from scoring set
         this.scoringMarbles.delete(m);
@@ -2863,8 +2665,6 @@ private spawnShootersInitial(): void {
 
     // End when no scoring-set marbles remain in play (all knocked or none ever eligible)
     if (this.scoringMarbles.size === 0 && this.fieldMarbles.length > 0) {
-      // Match mode uses its own end condition (playable-on-mat) after settle
-      if (isMatchModeActive(this.sceneLevel)) return false;
       this.endGame();
       return true;
     }
@@ -2913,54 +2713,6 @@ private spawnShootersInitial(): void {
     return false;
   }
 
-
-  /**
-   * L4 match-mode end: simple score overlay, no money/gacha/rankings.
-   * Called only after settle + loops finished (tryFinishShotTurn).
-   */
-  /**
-   * Award +1 on the EXISTING name-vs-name scoreboard (playerScore/aiScore).
-   * Called from color-target score hook when a TARGET_COLOR marble enters the hole.
-   * Does not create a parallel scorer.
-   */
-  private awardMatchModePoint(scorer: 'player' | 'ai' | null): void {
-    if (this.phase === 'ended') return;
-    if (scorer === 'player') {
-      this.playerScore += 1;
-      this.commentator?.say('knockout', {
-        side: 'player',
-        force: true,
-        preferLower: false,
-      });
-    } else if (scorer === 'ai') {
-      this.aiScore += 1;
-      this.commentator?.say('knockout', {
-        side: 'ai',
-        force: true,
-        preferLower: false,
-      });
-    }
-    this.updateScoreHUD();
-    // Win is resolved after settle + loops in tryFinishShotTurn (first to 5).
-  }
-
-  private endMatchModeGame(): void {
-    this.setPhase('ended');
-    this.canPlayerShoot = false;
-    this.disarmPlayerIdleHint();
-    this.hideLocationBanner();
-    this.cancelAimGesture(true);
-    this.els.powerWrap.classList.add('hidden');
-    this.controls.enabled = true;
-    this.markerGroup.visible = false;
-    this.camEase = null;
-    this.clearKnockoutCamPunch(false);
-    this.stopAIDirector();
-    this.scoringEnabled = false;
-    // Existing identity: playerName vs opponentName (same as scoreboard)
-    showMatchEndOverlay(this.playerScore, this.aiScore);
-    this.updateTurnHUD();
-  }
 
   private endGame(): void {
     this.setPhase('ended');
@@ -3068,7 +2820,6 @@ private spawnShootersInitial(): void {
     }
     this.forcedWinner = null;
     this.commentator?.hide(); /* caster:restart */
-    hideMatchEndOverlay();
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
     this.hideVictoryScreen();
@@ -3191,8 +2942,8 @@ private spawnShootersInitial(): void {
   }
 
   private recordFrame(): void {
-    const frame = makeEmptyFrame(this.liveTime, this.fieldSpawnCount());
-    for (let i = 0; i < frame.field.length; i++) {
+    const frame = makeEmptyFrame(this.liveTime);
+    for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
       const m = this.fieldMarbles[i];
       if (m) {
         frame.field[i] = this.snapMarble(m)!;
@@ -3254,100 +3005,66 @@ private spawnShootersInitial(): void {
     if (this.sceneLevel !== 4) return;
     // Match simulated time from world.step(1/120, physDt, 10)
     const dt = Math.max(1 / 240, Math.min(frameDt, 10 / 120));
-    /** Independent of color-target experiment — Carlo asked for slower channel roll. Was 0.65. */
-    const L4_CHANNEL_CRUISE_SPEED = 0.32;
-    const cruiseSpeed = L4_CHANNEL_CRUISE_SPEED;
+    const cruiseSpeed = 0.65; // m/s — fast travel through channel (was 0.34, felt stuck live)
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
-    const minGap = MARBLE_RADIUS * 2.08;
-
-    type ChanCand = { m: MarbleEntity; dist: number; x: number; z: number; localY: number };
-    const cands: ChanCand[] = [];
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      if (isMarbleInLoop(m)) continue;
       const body = m.body;
       if (body.type !== CANNON.Body.DYNAMIC) continue;
       const x = body.position.x;
       const z = body.position.z;
       const lat = l4ChannelLateral(x, z);
+      // Cover full trough band including corners (N/E/S/W)
       if (lat === null || Math.abs(lat) > L4_PIPE_R * 0.99) {
         if (body.linearDamping < 0.11) body.linearDamping = 0.12;
         continue;
       }
       const localY = body.position.y - PLAY_SURFACE_Y;
+      // Wide gate: any marble whose center is at/below desk-top lip (+ small float).
+      // Old gate (-PIPE_R*0.18+R) skipped shallow wedged sits that still spin from friction.
       if (localY > MARBLE_RADIUS + L4_PIPE_R * 0.12) continue;
+      // Already fell through / under desk — leave alone
       if (localY < -L4_PIPE_R - MARBLE_RADIUS * 4) continue;
-      const dist = l4ChannelArcDistToSW(x, z);
-      if (dist === null) continue;
-      cands.push({ m, dist, x, z, localY });
-    }
-    // Closest to SW first so trailers cannot step into leaders (centerline pack).
-    cands.sort((a, b) => a.dist - b.dist);
-    const placed: { x: number; z: number }[] = [];
-
-    for (const c of cands) {
-      const body = c.m.body;
       body.linearDamping = 0.008;
       body.angularDamping = 0.12;
       body.wakeUp();
 
+      const dist = l4ChannelArcDistToSW(x, z);
+      if (dist === null) continue;
       // Near SW hole — let gravity pull through the open shaft
-      if (hole && Math.hypot(c.x - hole.x, c.z - hole.z) < holeR * 1.15) {
+      if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.15) {
         body.velocity.y = Math.min(body.velocity.y, -0.55);
-        body.velocity.x += (hole.x - c.x) * 2.5;
-        body.velocity.z += (hole.z - c.z) * 2.5;
-        placed.push({ x: c.x, z: c.z });
+        // Still nudge XZ into hole center so they don't orbit the rim
+        body.velocity.x += (hole.x - x) * 2.5;
+        body.velocity.z += (hole.z - z) * 2.5;
         continue;
       }
 
-      const depth = Math.max(0, -c.localY - MARBLE_RADIUS * 0.15);
+      // Mild ease: always translate meaningfully (min ~78% cruise)
+      const depth = Math.max(0, -localY - MARBLE_RADIUS * 0.15);
       const depthK = Math.min(1, depth / (L4_PIPE_R * 0.45));
-      const alongK = Math.min(1, Math.max(0.35, 1 - c.dist / 1.8));
+      const alongK = Math.min(1, Math.max(0.35, 1 - dist / 1.8));
       const speed = cruiseSpeed * (0.78 + 0.22 * depthK) * (0.85 + 0.15 * alongK);
 
-      const next = l4ChannelStepTowardSW(c.x, c.z, speed * dt);
-      if (!next) {
-        placed.push({ x: c.x, z: c.z });
-        continue;
-      }
-
-      let nx = next.x;
-      let nz = next.z;
-      // Enforce gap vs marbles already placed ahead (closer to SW)
-      let blocked = false;
-      for (const p of placed) {
-        const d = Math.hypot(nx - p.x, nz - p.z);
-        if (d < minGap) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) {
-        // Hold behind leader — keep gentle drain velocity, no centerline teleport
-        const dir = l4ChannelDrainDirXZ(c.x, c.z);
-        if (dir) {
-          body.velocity.x = dir.x * speed * 0.35;
-          body.velocity.z = dir.z * speed * 0.35;
-          body.velocity.y = Math.min(0, body.velocity.y);
-        }
-        placed.push({ x: c.x, z: c.z });
-        continue;
-      }
-
-      const support = l4SupportLocalY(nx, nz);
-      body.position.x = nx;
-      body.position.z = nz;
+      const next = l4ChannelStepTowardSW(x, z, speed * dt);
+      if (!next) continue;
+      // Force onto trough floor at new centerline — kinematic override after solver
+      const support = l4SupportLocalY(next.x, next.z);
+      body.position.x = next.x;
+      body.position.z = next.z;
       if (support !== null) {
         body.position.y = PLAY_SURFACE_Y + support + MARBLE_RADIUS;
       } else {
+        // Fallback: half-pipe floor at lat=0
         body.position.y = PLAY_SURFACE_Y - L4_PIPE_R + MARBLE_RADIUS;
       }
-      const dir = l4ChannelDrainDirXZ(nx, nz);
+      const dir = l4ChannelDrainDirXZ(next.x, next.z);
       if (dir) {
         body.velocity.x = dir.x * speed;
         body.velocity.z = dir.z * speed;
         body.velocity.y = Math.min(0, body.velocity.y);
+        // Rolling spin matching travel (ω = v × n / r)
         const invR = 1 / MARBLE_RADIUS;
         body.angularVelocity.x = -dir.z * speed * invR;
         body.angularVelocity.y = 0;
@@ -3355,101 +3072,15 @@ private spawnShootersInitial(): void {
       }
       body.previousPosition.copy(body.position);
       if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
-      placed.push({ x: nx, z: nz });
     }
   }
-
 
   /**
    * Safety net vs discrete collision tunneling: keep every active marble's
    * center at/above the play surface and kill downward velocity when clamped.
    * Runs every frame after world.step (park grass + L2 sand share PLAY_SURFACE_Y).
    */
-  /**
-   * Push apart overlapping marble spheres so they never rest interpenetrating.
-   * Field↔field and shooter↔field only. Shooter↔shooter intentionally skipped
-   * (L4 applyL4ShooterCollisionFilter omits SHOOTER from the mask).
-   */
-  private resolveMarbleSphereOverlaps(): void {
-    const minD = MARBLE_RADIUS * 2;
-    const field: MarbleEntity[] = [];
-    for (const m of this.fieldMarbles) {
-      if (!m.active || !m.mesh.visible) continue;
-      if (isMarbleInLoop(m)) continue;
-      if (m.body.type === CANNON.Body.STATIC) continue;
-      field.push(m);
-    }
-    for (let i = 0; i < field.length; i++) {
-      for (let j = i + 1; j < field.length; j++) {
-        this.separateSpherePair(field[i]!, field[j]!, minD);
-      }
-    }
-    const shooters: MarbleEntity[] = [];
-    if (this.playerMarble?.active) shooters.push(this.playerMarble);
-    if (this.aiMarble?.active) shooters.push(this.aiMarble);
-    for (const s of shooters) {
-      // Aiming kinematic shooters still need field contacts when dynamic mid-shot
-      if (s.body.type === CANNON.Body.STATIC) continue;
-      for (const f of field) {
-        this.separateSpherePair(s, f, minD);
-      }
-    }
-  }
-
-  /** Split positional correction along the contact normal for one overlapping pair. */
-  private separateSpherePair(a: MarbleEntity, b: MarbleEntity, minD: number): void {
-    const pa = a.body.position;
-    const pb = b.body.position;
-    let dx = pa.x - pb.x;
-    let dy = pa.y - pb.y;
-    let dz = pa.z - pb.z;
-    let d = Math.hypot(dx, dy, dz);
-    if (d >= minD - 1e-8) return;
-    if (d < 1e-9) {
-      // Coincident centers — pick a unit XZ direction (d MUST be 1, not epsilon)
-      const ang = Math.random() * Math.PI * 2;
-      dx = Math.cos(ang);
-      dy = 0;
-      dz = Math.sin(ang);
-      d = 1;
-    }
-    const inv = 1 / d;
-    const nx = dx * inv;
-    const ny = dy * inv;
-    const nz = dz * inv;
-    const overlap = minD - d;
-    const aDyn = a.body.type === CANNON.Body.DYNAMIC;
-    const bDyn = b.body.type === CANNON.Body.DYNAMIC;
-    // Prefer XZ separation so marbles stay seated on the mat/desk
-    const yScale = 0.2;
-    if (aDyn && bDyn) {
-      const h = overlap * 0.5;
-      pa.x += nx * h;
-      pa.y += ny * h * yScale;
-      pa.z += nz * h;
-      pb.x -= nx * h;
-      pb.y -= ny * h * yScale;
-      pb.z -= nz * h;
-    } else if (aDyn) {
-      pa.x += nx * overlap;
-      pa.y += ny * overlap * yScale;
-      pa.z += nz * overlap;
-    } else if (bDyn) {
-      pb.x -= nx * overlap;
-      pb.y -= ny * overlap * yScale;
-      pb.z -= nz * overlap;
-    } else {
-      return;
-    }
-    a.body.wakeUp();
-    b.body.wakeUp();
-    a.body.previousPosition.copy(pa);
-    b.body.previousPosition.copy(pb);
-    if (a.body.interpolatedPosition) a.body.interpolatedPosition.copy(pa);
-    if (b.body.interpolatedPosition) b.body.interpolatedPosition.copy(pb);
-  }
-
-    private preventMarbleTunneling(): void {
+  private preventMarbleTunneling(): void {
     // L4: mat/channels/holes live below PLAY_SURFACE_Y in places (tilted desk + troughs).
     // Only rescue marbles that tunnel through the room floor — never pin to desk Y in air.
     const l4 = this.sceneLevel === 4;
@@ -3460,7 +3091,6 @@ private spawnShootersInitial(): void {
 
     for (const m of list) {
       if (!m.active) continue;
-      if (isMarbleInLoop(m)) continue;
       const body = m.body;
       if (body.type === CANNON.Body.STATIC) continue;
       const p = body.position;
@@ -3555,8 +3185,7 @@ private spawnShootersInitial(): void {
     if (now - this.shotSettleTimer < 450) return;
     if (!this.allRelevantSettled()) {
       if (now - this.shotSettleTimer > SETTLE_MAX_MS) {
-        // force continue — except never while match-mode loop transit is active
-        if (isMatchModeActive(this.sceneLevel) && hasActiveLoopTransits()) return;
+        // force continue
       } else {
         return;
       }
@@ -3605,17 +3234,6 @@ private spawnShootersInitial(): void {
 
     // cullExitsWithoutScore may have ended the match
     if (this.phase !== 'shot_flying') return;
-
-    // L4 match mode: end after settle + loops — first to 5 primary; mat count secondary
-    if (isMatchModeActive(this.sceneLevel)) {
-      if (
-        matchReachedWinScore(this.playerScore, this.aiScore) ||
-        shouldEndMatch(this.fieldMarbles)
-      ) {
-        this.endMatchModeGame();
-        return;
-      }
-    }
 
     this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */
 
@@ -3671,7 +3289,7 @@ private spawnShootersInitial(): void {
    * Speed-gated; ducked under clacks inside marbleSounds.
    */
   private updateL4WoodRollSfx(): void {
-    if (!ENABLE_MARBLE_SFX || this.sceneLevel !== 4) {
+    if (this.sceneLevel !== 4) {
       stopMarbleWoodRoll();
       return;
     }
@@ -4370,17 +3988,10 @@ private spawnShootersInitial(): void {
     // Finer fixed step + more substeps reduces sphere–ground tunneling on hard hits
     this.world.step(1 / 120, physDt, 10);
     this.preventMarbleTunneling();
-    // Solid sphere contacts can leave residual penetration (sleep + dense pack +
-    // discrete steps). Depenetrate field↔field and shooter↔field every frame.
-    // Do NOT separate shooter↔shooter (intentional L4 no-push).
-    this.resolveMarbleSphereOverlaps();
     // L4 convoy AFTER physics: kinematic centerline drive so the contact solver cannot
     // cancel translation (root cause of live spin-in-place). Uses simulated dt.
     const simDt = Math.min(physDt, 10 / 120);
     this.applyL4ChannelDrain(simDt);
-    // Convoy may force centerline sits — resolve again so channel packs stay solid.
-    if (this.sceneLevel === 4) this.resolveMarbleSphereOverlaps();
-    updateLoopTransits(simDt, this.fieldMarbles);
     this.updateL4WoodRollSfx();
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
@@ -4750,30 +4361,10 @@ private spawnShootersInitial(): void {
 
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
-      if (isMarbleInLoop(m)) continue;
       if (!this.scoringMarbles.has(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
+      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
-      // Experiment: hole during aim window → loop (keep scoring eligibility)
-      if (
-        l4 &&
-        inL4Hole &&
-        isColorTargetExperimentActive(4) &&
-        shouldInterceptL4Hole(m)
-      ) {
-        beginLoopTransit(m, this.officeDesk, this.scene, undefined, this.lastScorer);
-        continue;
-      }
-      const offDeskFloor =
-        l4 &&
-        !inL4Hole &&
-        this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z);
-      const fallen =
-        m.body.position.y < -0.05 ||
-        offDeskFloor ||
-        (l4 &&
-          !isColorTargetExperimentActive(4) &&
-          this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
         : l4
@@ -4813,8 +4404,7 @@ private spawnShootersInitial(): void {
       this.phase !== 'dropping' &&
       this.phase !== 'settling'
     ) {
-      // Match mode: defer to settle handoff (shouldEndMatch)
-      if (!isMatchModeActive(this.sceneLevel)) this.endGame();
+      this.endGame();
     }
   }
 

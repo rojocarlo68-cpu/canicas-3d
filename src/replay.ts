@@ -79,10 +79,10 @@ export class ReplayBuffer {
   }
 }
 
-export function makeEmptyFrame(t: number, fieldCount = FIELD_MARBLE_COUNT): ReplayFrame {
+export function makeEmptyFrame(t: number): ReplayFrame {
   return {
     t,
-    field: Array.from({ length: fieldCount }, () => emptySnap()),
+    field: Array.from({ length: FIELD_MARBLE_COUNT }, () => emptySnap()),
     player: null,
     ai: null,
     camX: 0,
