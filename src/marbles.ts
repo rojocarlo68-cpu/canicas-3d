@@ -474,6 +474,10 @@ export type MarbleEntity = {
   design: MarbleDesign;
   owner: MarbleOwner;
   active: boolean;
+  /** L4 channel-rescue experiment (optional; ignored when flag off). */
+  role?: 'healthy' | 'zombie';
+  channelState?: 'none' | 'in_channel' | 'in_loop';
+  team?: 'player' | 'ai' | 'neutral';
 };
 
 const marbleMaterial = new CANNON.Material('marble');

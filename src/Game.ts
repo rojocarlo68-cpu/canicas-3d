@@ -125,6 +125,32 @@ import {
   getMarbleCannonMaterial,
   type MarbleEntity,
 } from './marbles';
+import {
+  isL4ChannelRescueExperimentActive,
+  experimentFieldCount,
+  createExperimentFieldPlan,
+  initExperimentMarble,
+  createTeamSolidDesign,
+  mountExperimentVisuals,
+  disposeExperiment,
+  updateLoopTransits,
+  markInChannelIfNeeded,
+  planTurnAfterSettle,
+  shouldIgnoreForSettle,
+  shouldBlockSettleMaxForce,
+  handleMarbleContact,
+  beginLoopTransit,
+  isMarbleInLoop,
+  hasActiveLoopTransits,
+  deactivateMarble,
+  syncHealthyScores,
+  isHealthyTeamMarble,
+  isZombieMarble,
+  experimentAITargetBias,
+  experimentVictoryMessage,
+  burstShatter,
+  type TeamSide,
+} from './l4ChannelRescueExperiment';
 import { planAIShot, impulseFromPower } from './ai';
 import {
   resolveControlMode,
@@ -960,6 +986,9 @@ export class Game {
       if (this.sky) this.sky.visible = false;
       this.groundMesh.visible = false;
       if (this.circleMesh) this.circleMesh.visible = false;
+      if (isL4ChannelRescueExperimentActive(4)) {
+        mountExperimentVisuals(this.scene, this.officeDesk);
+      }
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
@@ -1278,6 +1307,7 @@ export class Game {
     this.clearKnockoutCamPunch(false);
     this.exitSlowMo(false);
     this.particles?.clear();
+    if (this.isChannelRescueActive()) disposeExperiment(this.scene);
     this.updateScoreHUD();
   }
 
@@ -1313,24 +1343,35 @@ export class Game {
     this.setPhase('dropping');
     this.commentator?.say('drop', { force: true, preferLower: false }); /* caster:drop */
 
+    // Remount under-desk loop visuals after clearField disposed them
+    if (this.isChannelRescueActive()) {
+      mountExperimentVisuals(this.scene, this.officeDesk);
+    }
+
     // Briefcase opens → releases marbles at same height → holds 3s → rises away
     triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
   }
 
   private spawnFieldFromBriefcase(): void {
-    const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
-    for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
-      const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2;
+    const exp = isL4ChannelRescueExperimentActive(this.sceneLevel);
+    const plan = exp ? createExperimentFieldPlan() : null;
+    const count = experimentFieldCount(this.sceneLevel, FIELD_MARBLE_COUNT);
+    const designs = this.fieldDesigns.slice(0, count);
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
       const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
       const dropBase = this.sceneLevel === 4 ? DROP_HEIGHT - 0.02 : DROP_HEIGHT;
       const y = dropBase + 0.01 + Math.floor(i / 5) * (MARBLE_RADIUS * 2.2);
+      const owner = plan ? plan[i]!.owner : 'field';
+      const design = plan ? plan[i]!.design : designs[i]!;
       const entity = createMarbleEntity(
-        designs[i]!,
+        design,
         new CANNON.Vec3(x, y, z),
-        'field',
+        owner,
       );
+      if (exp) initExperimentMarble(entity, owner);
       entity.body.velocity.set(
         (Math.random() - 0.5) * 0.02,
         0,
@@ -1353,12 +1394,15 @@ export class Game {
     const list: MarbleEntity[] = [...this.fieldMarbles];
     if (this.playerMarble) list.push(this.playerMarble);
     if (this.aiMarble) list.push(this.aiMarble);
+    const exp = isL4ChannelRescueExperimentActive(this.sceneLevel);
     for (const m of list) {
       if (!m.active) continue;
+      if (exp && shouldIgnoreForSettle(m)) continue;
       const v = m.body.velocity.length();
       const w = m.body.angularVelocity.length();
       if (v > SETTLE_SPEED || w > SETTLE_SPEED * 40) return false;
     }
+    if (exp && hasActiveLoopTransits()) return false;
     return true;
   }
 
@@ -1437,6 +1481,12 @@ export class Game {
           m.body.type = CANNON.Body.STATIC;
         }
       }
+    }
+
+    // Experiment: scoreboard = healthy counts (10/10 after drop if all survived)
+    if (this.isChannelRescueActive()) {
+      // Shooters spawn next; provisional field-only sync, then re-sync after shooters
+      this.syncExperimentScores();
     }
   }
 
@@ -1519,11 +1569,16 @@ private spawnShootersInitial(): void {
         ? (l4MarbleRestY(dist, 0) ?? MARBLE_REST_Y)
         : MARBLE_REST_Y;
 
+    const exp = this.isChannelRescueActive();
+    const playerDesign = exp ? createTeamSolidDesign('player') : this.playerDesign;
+    const aiDesign = exp ? createTeamSolidDesign('ai') : this.aiDesign;
+
     const player = createMarbleEntity(
-      this.playerDesign,
+      playerDesign,
       new CANNON.Vec3(dist, y, 0),
       'player',
     );
+    if (exp) initExperimentMarble(player, 'player');
     player.body.velocity.setZero();
     player.body.angularVelocity.setZero();
     player.body.type = CANNON.Body.KINEMATIC;
@@ -1534,10 +1589,11 @@ private spawnShootersInitial(): void {
     this.attachPlayerOutline(player);
 
     const ai = createMarbleEntity(
-      this.aiDesign,
+      aiDesign,
       new CANNON.Vec3(-dist, y, 0),
       'ai',
     );
+    if (exp) initExperimentMarble(ai, 'ai');
     ai.body.velocity.setZero();
     ai.body.angularVelocity.setZero();
     ai.body.type = CANNON.Body.KINEMATIC;
@@ -1546,6 +1602,7 @@ private spawnShootersInitial(): void {
     this.world.addBody(ai.body);
     this.aiMarble = ai;
 
+    if (exp) this.syncExperimentScores();
   }
 
   /** White silhouette — X-ray ONLY while occluded from camera (never when fully visible). */
@@ -1703,9 +1760,19 @@ private spawnShootersInitial(): void {
           : this.sceneLevel === 4
             ? 'channel_out'
             : 'circle_out';
+      let aiField = this.fieldMarbles;
+      if (this.isChannelRescueActive()) {
+        const bias = experimentAITargetBias(this.fieldMarbles, 'ai');
+        // Prefer rescue targets, else knock enemies into channel; keep imperfect mix
+        if (bias.preferRescue.length > 0) {
+          aiField = [...bias.preferRescue, ...this.fieldMarbles];
+        } else if (bias.preferIntoChannel.length > 0) {
+          aiField = [...bias.preferIntoChannel, ...this.fieldMarbles];
+        }
+      }
       this.aiPlan = planAIShot(
         shooter,
-        this.fieldMarbles,
+        aiField,
         this.sceneLevel,
         mode,
         L3_HOLE_RADIUS,
@@ -2574,10 +2641,177 @@ private spawnShootersInitial(): void {
     );
   }
 
+
+  /** Experiment active on this L4 match? */
+  private isChannelRescueActive(): boolean {
+    return isL4ChannelRescueExperimentActive(this.sceneLevel);
+  }
+
+  /** Sync #score-player / #score-ai to healthy counts (experiment only). */
+  private syncExperimentScores(): void {
+    const s = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+    this.playerScore = s.player;
+    this.aiScore = s.ai;
+    this.updateScoreHUD();
+  }
+
+  /** End match when either side has 0 healthy. */
+  private checkExperimentVictory(): boolean {
+    if (!this.isChannelRescueActive()) return false;
+    this.syncExperimentScores();
+    if (this.playerScore > 0 && this.aiScore > 0) return false;
+    if (this.playerScore <= 0 && this.aiScore <= 0) {
+      this.forcedWinner = null;
+    } else if (this.playerScore <= 0) {
+      this.forcedWinner = 'ai';
+    } else {
+      this.forcedWinner = 'player';
+    }
+    this.endGame();
+    return true;
+  }
+
+  /**
+   * Experiment edge death: ANY healthy team marble (incl. shooter) off open desk edge
+   * → owner −1 healthy, marble removed (not zombie, no opponent point).
+   * Shooter death promotes another healthy teammate; loss only at 0 healthy.
+   */
+  private killHealthyOffEdge(m: MarbleEntity): void {
+    const side: TeamSide | null =
+      m.owner === 'player' || m.owner === 'ai' ? m.owner : null;
+    const wasPlayerShooter = m === this.playerMarble;
+    const wasAiShooter = m === this.aiMarble;
+    const x = m.body.position.x;
+    const y = m.body.position.y;
+    const z = m.body.position.z;
+    deactivateMarble(m);
+    if (wasPlayerShooter) {
+      this.clearPlayerOutline();
+      this.playerMarble = null;
+    }
+    if (wasAiShooter) this.aiMarble = null;
+    this.scoringMarbles.delete(m);
+    this.particles?.spawnSparks(x, y, z, 1.2);
+    if (side) {
+      this.flashLocationBanner(
+        side === 'player'
+          ? `Canica sana de ${this.playerName} cayó del escritorio (−1)`
+          : `Canica sana de ${this.opponentName} cayó del escritorio (−1)`,
+        side === 'player' ? 'banner-player' : 'banner-ai',
+        1800,
+      );
+      if (wasPlayerShooter || wasAiShooter) this.promoteExperimentShooter(side);
+    }
+    this.syncExperimentScores();
+  }
+
+  /** Promote a remaining healthy teammate to shooter after shooter edge-death. */
+  private promoteExperimentShooter(side: TeamSide): void {
+    let pick: MarbleEntity | null = null;
+    for (const m of this.fieldMarbles) {
+      if (!isHealthyTeamMarble(m)) continue;
+      if (m.owner !== side) continue;
+      if (isMarbleInLoop(m)) continue;
+      if (m.channelState === 'in_channel') continue;
+      pick = m;
+      break;
+    }
+    if (!pick) return;
+    this.fieldMarbles = this.fieldMarbles.filter((x) => x !== pick);
+    this.scoringMarbles.delete(pick);
+    pick.body.velocity.setZero();
+    pick.body.angularVelocity.setZero();
+    pick.body.type = CANNON.Body.KINEMATIC;
+    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(pick.body);
+    const dist = L4_MAT_HALF - MARBLE_RADIUS * 5;
+    const x = side === 'player' ? dist : -dist;
+    if (l4IsChannelOrHoleXZ(pick.body.position.x, pick.body.position.z)) {
+      const y = l4MarbleRestY(x, 0) ?? MARBLE_REST_Y;
+      pick.body.position.set(x, y, 0);
+    }
+    this.snapMarblePhysics(pick, true);
+    this.syncOneMesh(pick);
+    if (side === 'player') {
+      this.playerMarble = pick;
+      this.attachPlayerOutline(pick);
+    } else {
+      this.aiMarble = pick;
+    }
+  }
+
+  private removeZombie(m: MarbleEntity): void {
+    deactivateMarble(m);
+    this.scoringMarbles.delete(m);
+  }
+
+  /** Experiment: rescue/convert/zombie/edge scoring (no knockout money). */
+  private updateExperimentScoreAndWin(): boolean {
+    if (this.phase !== 'shot_flying' || !this.scoringEnabled) return false;
+    const turnSide: TeamSide = this.turn === 'player' ? 'player' : 'ai';
+
+    // Shooter open-edge falls
+    for (const m of [this.playerMarble, this.aiMarble]) {
+      if (!m || !m.active) continue;
+      if (!isHealthyTeamMarble(m)) continue;
+      const { x, y, z } = m.body.position;
+      if (this.isOffL4Desk(x, y, z, { shooter: true })) {
+        this.killHealthyOffEdge(m);
+        if (this.checkExperimentVictory()) return true;
+      }
+    }
+
+    for (const m of this.fieldMarbles) {
+      if (!m.active) continue;
+      if (isMarbleInLoop(m)) continue;
+      const { x, y, z } = m.body.position;
+      const inHole = this.isInL4Hole(x, y, z);
+      const offDesk = this.isOffL4Desk(x, y, z);
+      const fallen = y < -0.05 || offDesk;
+
+      markInChannelIfNeeded(m, turnSide);
+
+      if (isZombieMarble(m)) {
+        if (fallen || inHole) this.removeZombie(m);
+        continue;
+      }
+      if (!isHealthyTeamMarble(m)) continue;
+
+      // Open-edge fall (not hole)
+      if (fallen && !inHole) {
+        this.killHealthyOffEdge(m);
+        if (this.checkExperimentVictory()) return true;
+        continue;
+      }
+
+      if (inHole) {
+        const converted = !!(m as MarbleEntity & { experimentConverted?: boolean })
+          .experimentConverted;
+        if (converted) {
+          (m as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = false;
+          beginLoopTransit(m, this.officeDesk, 'converted');
+        } else {
+          // Unrecovered → under-desk loop, exit zombie; healthy count drops
+          beginLoopTransit(m, this.officeDesk, 'zombie');
+          this.syncExperimentScores();
+          if (this.checkExperimentVictory()) return true;
+        }
+      }
+    }
+
+    this.syncExperimentScores();
+    return this.checkExperimentVictory();
+  }
+
+
   private updateScoreAndWin(): boolean {
     // Score only while a shot is in flight (human or opponent). Never during drop/settle.
     if (this.phase !== 'shot_flying' || !this.scoringEnabled) {
       return false;
+    }
+
+    // L4 channel-rescue experiment: healthy counts / zombies / no knockout money
+    if (this.isChannelRescueActive()) {
+      return this.updateExperimentScoreAndWin();
     }
 
     const l3 = this.sceneLevel === 3;
@@ -2742,18 +2976,28 @@ private spawnShootersInitial(): void {
     this.pendingContinueLevel = null;
     this.els.btnContinueLevel.classList.add('hidden');
 
+    const expMsg = this.isChannelRescueActive()
+      ? experimentVictoryMessage(true, this.playerName, this.opponentName)
+      : null;
+    const expLose = this.isChannelRescueActive()
+      ? experimentVictoryMessage(false, this.playerName, this.opponentName)
+      : null;
     const beatMsg =
-      this.sceneLevel === 3
-        ? `Metiste más canicas al hoyo que ${this.opponentName}.`
-        : this.sceneLevel === 4
-          ? `Metiste más canicas a los hoyos del escritorio que ${this.opponentName}.`
-          : `Sacaste más canicas del círculo que ${this.opponentName}.`;
+      expMsg
+        ? expMsg.message
+        : this.sceneLevel === 3
+          ? `Metiste más canicas al hoyo que ${this.opponentName}.`
+          : this.sceneLevel === 4
+            ? `Metiste más canicas a los hoyos del escritorio que ${this.opponentName}.`
+            : `Sacaste más canicas del círculo que ${this.opponentName}.`;
     const loseMsg =
-      this.sceneLevel === 3
-        ? `${this.opponentName} metió más canicas al hoyo. ¡Inténtalo de nuevo!`
-        : this.sceneLevel === 4
-          ? `${this.opponentName} metió más canicas a los hoyos. ¡Inténtalo de nuevo!`
-          : `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
+      expLose
+        ? expLose.message
+        : this.sceneLevel === 3
+          ? `${this.opponentName} metió más canicas al hoyo. ¡Inténtalo de nuevo!`
+          : this.sceneLevel === 4
+            ? `${this.opponentName} metió más canicas a los hoyos. ¡Inténtalo de nuevo!`
+            : `${this.opponentName} sacó más canicas. ¡Inténtalo de nuevo!`;
 
     if (won) {
       this.commentator?.say('win', { force: true, preferLower: false }); /* caster:win */
@@ -3013,6 +3257,9 @@ private spawnShootersInitial(): void {
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
+      if (this.isChannelRescueActive()) {
+        if (isMarbleInLoop(m) || isZombieMarble(m)) continue;
+      }
       const body = m.body;
       if (body.type !== CANNON.Body.DYNAMIC) continue;
       const x = body.position.x;
@@ -3188,6 +3435,13 @@ private spawnShootersInitial(): void {
     if (now - this.shotSettleTimer < 450) return;
     if (!this.allRelevantSettled()) {
       if (now - this.shotSettleTimer > SETTLE_MAX_MS) {
+        // Experiment: never force-end while a marble is still in_channel (intervention window)
+        if (
+          this.isChannelRescueActive() &&
+          shouldBlockSettleMaxForce(this.fieldMarbles)
+        ) {
+          return;
+        }
         // force continue
       } else {
         return;
@@ -3240,7 +3494,11 @@ private spawnShootersInitial(): void {
 
     this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */
 
-    const next: Side = this.turn === 'player' ? 'ai' : 'player';
+    let next: Side = this.turn === 'player' ? 'ai' : 'player';
+    if (this.isChannelRescueActive()) {
+      const planned = planTurnAfterSettle(this.fieldMarbles, next);
+      next = planned.next;
+    }
     this.beginTurn(next);
   }
 
@@ -3376,6 +3634,44 @@ private spawnShootersInitial(): void {
           this.commentator?.say('hit', { side: this.turn }); /* caster:hit */
         } else if (impact >= 0.18) {
           this.commentator?.say('softTap', { side: this.turn, preferLower: true });
+        }
+
+        // Experiment: rescue/convert in-channel OR zombie destroys healthy
+        if (this.isChannelRescueActive() && this.phase === 'shot_flying') {
+          const ea = this.entityFromBody(bi);
+          const eb = this.entityFromBody(bj);
+          if (ea && eb) {
+            const result = handleMarbleContact(ea, eb, now);
+            if (result.kind === 'convert') {
+              this.syncExperimentScores();
+              this.flashLocationBanner(
+                result.by === 'player'
+                  ? `¡Rescate! Convertiste una canica (${this.playerScore}-${this.aiScore})`
+                  : `¡${this.opponentName} convirtió una canica! (${this.playerScore}-${this.aiScore})`,
+                result.by === 'player' ? 'banner-player' : 'banner-ai',
+                1600,
+              );
+            } else if (result.kind === 'zombie_kill') {
+              const vx = result.victim.body.position.x;
+              const vy = result.victim.body.position.y;
+              const vz = result.victim.body.position.z;
+              const wasPlayerShooter = result.victim === this.playerMarble;
+              const wasAiShooter = result.victim === this.aiMarble;
+              burstShatter(this.particles, vx, vy, vz, 0xb3e5fc);
+              deactivateMarble(result.victim);
+              this.scoringMarbles.delete(result.victim);
+              if (wasPlayerShooter) {
+                this.clearPlayerOutline();
+                this.playerMarble = null;
+                this.promoteExperimentShooter('player');
+              } else if (wasAiShooter) {
+                this.aiMarble = null;
+                this.promoteExperimentShooter('ai');
+              }
+              this.syncExperimentScores();
+              this.checkExperimentVictory();
+            }
+          }
         }
       }
 
@@ -3995,6 +4291,12 @@ private spawnShootersInitial(): void {
     // cancel translation (root cause of live spin-in-place). Uses simulated dt.
     const simDt = Math.min(physDt, 10 / 120);
     this.applyL4ChannelDrain(simDt);
+    if (this.isChannelRescueActive()) {
+      updateLoopTransits(simDt);
+      // Keep channel residency marked even between turns (cruise continues)
+      const side = this.turn === 'player' ? 'player' : 'ai';
+      for (const m of this.fieldMarbles) markInChannelIfNeeded(m, side);
+    }
     this.updateL4WoodRollSfx();
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
@@ -4358,6 +4660,7 @@ private spawnShootersInitial(): void {
    * WITHOUT awarding anyone. Fixes residual-momentum wrong attribution.
    */
   private cullExitsWithoutScore(): void {
+    if (this.isChannelRescueActive()) return;
     const l3 = this.sceneLevel === 3;
     const l4 = this.sceneLevel === 4;
     const holeOpen = l3 && !!this.dentistOffice?.holeOpen;

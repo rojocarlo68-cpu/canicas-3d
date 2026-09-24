@@ -16,6 +16,17 @@ type DirtParticle = {
   size: number;
 };
 
+
+type ShatterParticle = {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  life: number;
+  maxLife: number;
+  size: number;
+  color: THREE.Color;
+  spin: THREE.Vector3;
+};
+
 type MoneyParticle = {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
@@ -34,6 +45,7 @@ type MoneyParticle = {
 const SPARK_MAX = 96;
 const DIRT_MAX = 48;
 const MONEY_MAX = 48;
+const SHATTER_MAX = 64;
 
 /** Procedural 2D dollar-bill texture (green paper, border, $). */
 function makeBillTexture(): THREE.CanvasTexture {
@@ -135,11 +147,15 @@ export class ParticleFX {
   private sparks: SparkParticle[] = [];
   private dirt: DirtParticle[] = [];
   private money: MoneyParticle[] = [];
+  private shatter: ShatterParticle[] = [];
 
   private sparkPos: Float32Array;
   private sparkCol: Float32Array;
   private dirtPos: Float32Array;
   private dirtCol: Float32Array;
+  private shatterPos: Float32Array;
+  private shatterCol: Float32Array;
+  readonly shatterPoints: THREE.Points;
 
   private hudTarget = new THREE.Vector3(0, 0.12, 0);
   private tmp = new THREE.Vector3();
@@ -185,6 +201,25 @@ export class ParticleFX {
     this.dirtPoints.frustumCulled = false;
     scene.add(this.dirtPoints);
 
+    this.shatterPos = new Float32Array(SHATTER_MAX * 3);
+    this.shatterCol = new Float32Array(SHATTER_MAX * 3);
+    const shatterGeo = new THREE.BufferGeometry();
+    shatterGeo.setAttribute('position', new THREE.BufferAttribute(this.shatterPos, 3));
+    shatterGeo.setAttribute('color', new THREE.BufferAttribute(this.shatterCol, 3));
+    shatterGeo.setDrawRange(0, 0);
+    const shatterMat = new THREE.PointsMaterial({
+      size: 0.008,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    this.shatterPoints = new THREE.Points(shatterGeo, shatterMat);
+    this.shatterPoints.frustumCulled = false;
+    scene.add(this.shatterPoints);
+
+
     // Paper bill quads (aspect ~2:1 like a banknote)
     this.billTex = makeBillTexture();
     const billGeo = new THREE.PlaneGeometry(0.028, 0.013);
@@ -199,6 +234,7 @@ export class ParticleFX {
     this.moneyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.moneyMesh.frustumCulled = false;
     this.moneyMesh.count = 0;
+    if (this.shatterPoints) this.shatterPoints.geometry.setDrawRange(0, 0);
     // Hide unused instances below ground
     this.dummy.position.set(0, -10, 0);
     this.dummy.scale.setScalar(0.001);
@@ -311,6 +347,48 @@ export class ParticleFX {
     }
   }
 
+
+  /**
+   * Crystal/glass shatter burst — used when a zombie destroys a healthy marble.
+   * Reuses spark/dirt style points with sharper colors and outward shards.
+   */
+  spawnShatter(x: number, y: number, z: number, colorHex = 0xb3e5fc, intensity = 1): void {
+    const n = Math.min(28, Math.floor(14 + intensity * 12));
+    const base = new THREE.Color(colorHex);
+    for (let i = 0; i < n; i++) {
+      if (this.shatter.length >= SHATTER_MAX) this.shatter.shift();
+      const speed = 0.35 + Math.random() * 1.1 * intensity;
+      const theta = Math.random() * Math.PI * 2;
+      const elev = 0.35 + Math.random() * 1.15;
+      const tint = base.clone().offsetHSL((Math.random() - 0.5) * 0.08, 0, (Math.random() - 0.5) * 0.25);
+      this.shatter.push({
+        pos: new THREE.Vector3(
+          x + (Math.random() - 0.5) * 0.006,
+          y + (Math.random() - 0.5) * 0.006,
+          z + (Math.random() - 0.5) * 0.006,
+        ),
+        vel: new THREE.Vector3(
+          Math.cos(theta) * speed * (0.5 + Math.random()),
+          elev * speed * 0.7,
+          Math.sin(theta) * speed * (0.5 + Math.random()),
+        ),
+        life: 0.22 + Math.random() * 0.35,
+        maxLife: 0.45,
+        size: 0.003 + Math.random() * 0.007,
+        color: tint,
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 12,
+          (Math.random() - 0.5) * 12,
+          (Math.random() - 0.5) * 12,
+        ),
+      });
+      const p = this.shatter[this.shatter.length - 1]!;
+      p.maxLife = p.life;
+    }
+    // Also kick a few sparks for punch
+    this.spawnSparks(x, y, z, intensity * 1.2);
+  }
+
   update(dt: number): void {
     // Sparks
     for (let i = this.sparks.length - 1; i >= 0; i--) {
@@ -401,7 +479,41 @@ export class ParticleFX {
     (this.dirtPoints.material as THREE.PointsMaterial).size = 0.004;
 
     // Money bills — burst, tumble/flutter, then home toward HUD
-    for (let i = this.money.length - 1; i >= 0; i--) {
+    
+    // Shatter crystal shards
+    for (let i = this.shatter.length - 1; i >= 0; i--) {
+      const p = this.shatter[i]!;
+      p.life -= dt;
+      if (p.life <= 0) {
+        this.shatter.splice(i, 1);
+        continue;
+      }
+      p.vel.y -= 4.5 * dt;
+      p.pos.addScaledVector(p.vel, dt);
+      p.vel.multiplyScalar(0.98);
+    }
+    {
+      const n = this.shatter.length;
+      this.shatterPoints.geometry.setDrawRange(0, n);
+      for (let i = 0; i < n; i++) {
+        const p = this.shatter[i]!;
+        const o = i * 3;
+        this.shatterPos[o] = p.pos.x;
+        this.shatterPos[o + 1] = p.pos.y;
+        this.shatterPos[o + 2] = p.pos.z;
+        const fade = Math.max(0, p.life / p.maxLife);
+        this.shatterCol[o] = p.color.r * fade;
+        this.shatterCol[o + 1] = p.color.g * fade;
+        this.shatterCol[o + 2] = p.color.b * fade;
+      }
+      (this.shatterPoints.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+      (this.shatterPoints.geometry.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
+      const sm = this.shatterPoints.material as THREE.PointsMaterial;
+      sm.opacity = n > 0 ? 0.95 : 0;
+      sm.size = 0.007;
+    }
+
+for (let i = this.money.length - 1; i >= 0; i--) {
       const p = this.money[i]!;
       p.life -= dt;
       if (p.life <= 0) {
@@ -472,6 +584,7 @@ export class ParticleFX {
     this.sparks.length = 0;
     this.dirt.length = 0;
     this.money.length = 0;
+    this.shatter.length = 0;
     this.sparkPoints.geometry.setDrawRange(0, 0);
     this.dirtPoints.geometry.setDrawRange(0, 0);
     this.moneyMesh.count = 0;
