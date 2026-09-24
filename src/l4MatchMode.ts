@@ -1,5 +1,5 @@
 /**
- * L4 reversible competitive MATCH MODE (PLAYER vs CPU) on top of the
+ * L4 reversible competitive MATCH MODE (PLAYER vs AI rival) on top of the
  * color-target experiment.
  *
  * When ENABLE_MATCH_MODE is false (or color experiment is off), call sites
@@ -12,9 +12,9 @@
  * Win: first to POINTS_TO_WIN (5). Secondary fallback: playable-on-mat < 2
  * if neither side ever reaches 5.
  *
- * Scoreboard: NEVER draws its own JUGADOR/CPU counters — the existing
+ * Scoreboard: NEVER draws its own scorer counters — the existing
  * name-vs-name HUD (score-player / score-ai) is the only scorer display.
- * This HUD only shows 🎯 OBJETIVO + turn labels.
+ * This HUD is a tiny 🎯 COLOR chip only (turn lives in #turn-label).
  */
 import {
   ENABLE_COLOR_TARGET_EXPERIMENT,
@@ -104,7 +104,7 @@ export function shouldEndMatch(field: MarbleEntity[]): boolean {
 }
 
 /**
- * CPU target pool for L4 match:
+ * AI target pool for L4 match:
  * 1) current target-color playable on mat (always prefer when any exist)
  * 2) else any playable on mat
  * 3) else any active non-loop field marble
@@ -132,7 +132,8 @@ function targetLabel(): string {
 }
 
 /**
- * Match HUD: OBJETIVO + turn only.
+ * Match HUD: tiny objective chip only (🎯 VERDE).
+ * Turn indication stays on #turn-label — do NOT duplicate TU TURNO here.
  * Does NOT draw score counters (existing name-vs-name scoreboard owns that).
  */
 export function refreshMatchHUD(turn: SideScorer): void {
@@ -142,16 +143,13 @@ export function refreshMatchHUD(turn: SideScorer): void {
   if (!el) {
     el = document.createElement('div');
     el.id = HUD_ID;
-    el.className = 'l4-color-target-hud';
     const host = document.getElementById('hud') ?? document.body;
     host.appendChild(el);
   }
-  const turnText = turn === 'player' ? '🎮 TU TURNO' : '🤖 TURNO DE LA CPU';
   const color = getTargetColor();
+  el.className = 'l4-color-target-hud l4-ct-chip';
   el.innerHTML = `
-    <div class="l4-ct-title">🎯 OBJETIVO</div>
-    <div class="l4-ct-color l4-ct-${color}">${targetLabel()}</div>
-    <div class="l4-ct-turn ${turn === 'player' ? 'l4-ct-turn-player' : 'l4-ct-turn-ai'}">${turnText}</div>
+    <div class="l4-ct-chip-line">🎯 <span class="l4-ct-color l4-ct-${color}">${targetLabel()}</span></div>
   `;
   el.classList.remove('hidden');
 }
@@ -223,7 +221,7 @@ function ensureEndOverlay(): HTMLElement {
  */
 export function showMatchEndOverlay(playerScore: number, aiScore: number): void {
   matchOver = true;
-  const names = getDisplayNames?.() ?? { player: 'Jugador', ai: 'CPU' };
+  const names = getDisplayNames?.() ?? { player: 'Jugador', ai: 'Rival' };
   const el = ensureEndOverlay();
   const scores = el.querySelector('#l4-match-end-scores');
   const winner = el.querySelector('#l4-match-end-winner');

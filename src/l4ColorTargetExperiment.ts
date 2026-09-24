@@ -19,6 +19,7 @@ import {
   L4_PIPE_R,
   L4_ROOM_FLOOR_Y,
   l4HoleCentersLocal,
+  l4IsChannelOrHoleXZ,
   l4MarbleRestY,
   type OfficeDeskBuild,
 } from './officeDesk';
@@ -142,7 +143,7 @@ export function mountExperimentHUD(): void {
   if (!el) {
     el = document.createElement('div');
     el.id = HUD_ID;
-    el.className = 'l4-color-target-hud';
+    el.className = 'l4-color-target-hud l4-ct-chip';
     const host = document.getElementById('hud') ?? document.body;
     host.appendChild(el);
   }
@@ -164,10 +165,10 @@ export function updateExperimentPoints(): void {
           : color === 'amarillo'
             ? 'AMARILLO'
             : 'OTRO';
+  hudEl.className = 'l4-color-target-hud l4-ct-chip';
   hudEl.innerHTML = `
-    <div class="l4-ct-title">🎯 OBJETIVO</div>
-    <div class="l4-ct-color l4-ct-${color}">${label}</div>
-    <div class="l4-ct-points">PUNTOS: ${points}</div>
+    <div class="l4-ct-chip-line">🎯 <span class="l4-ct-color l4-ct-${color}">${label}</span>
+      <span class="l4-ct-chip-pts">${points}</span></div>
   `;
   hudEl.classList.remove('hidden');
 }
@@ -339,7 +340,7 @@ export function beginLoopTransit(
 }
 
 /** Advance all in-loop marbles; call once per frame from Game.update. */
-export function updateLoopTransits(dt: number): void {
+export function updateLoopTransits(dt: number, fieldMarbles?: MarbleEntity[]): void {
   if (!ENABLE_COLOR_TARGET_EXPERIMENT || looping.size === 0) return;
   const now = performance.now();
   const done: MarbleEntity[] = [];
@@ -357,7 +358,7 @@ export function updateLoopTransits(dt: number): void {
     m.mesh.position.set(pos.x, pos.y, pos.z);
     if (u >= 1) done.push(m);
   }
-  for (const m of done) finishLoop(m);
+  for (const m of done) finishLoop(m, fieldMarbles);
 }
 
 function samplePolyline(pts: THREE.Vector3[], u: number): THREE.Vector3 {
@@ -381,28 +382,76 @@ function samplePolyline(pts: THREE.Vector3[], u: number): THREE.Vector3 {
   return pts[pts.length - 1]!.clone();
 }
 
-function finishLoop(marble: MarbleEntity): void {
+/**
+ * Find a free mat spot near the return hatch so loop exits never spawn
+ * overlapping another field marble (root cause of hatch stacking / ghosting).
+ */
+function findClearHatchExit(
+  self: MarbleEntity,
+  fieldMarbles?: MarbleEntity[],
+): { x: number; z: number; y: number } {
+  const exit = getReturnHatchXZ();
+  const minD = MARBLE_RADIUS * 2.08;
+  const margin = MARBLE_RADIUS * 2.5;
+  const candidates: { x: number; z: number }[] = [{ x: exit.x, z: exit.z }];
+  for (let ring = 1; ring <= 7; ring++) {
+    const r = MARBLE_RADIUS * 2.15 * ring;
+    const n = 6 + ring * 2;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + ring * 0.2;
+      candidates.push({ x: exit.x + Math.cos(a) * r, z: exit.z + Math.sin(a) * r });
+    }
+  }
+  const others = fieldMarbles ?? [];
+  for (const c of candidates) {
+    if (Math.abs(c.x) > L4_MAT_HALF - margin) continue;
+    if (Math.abs(c.z) > L4_MAT_HALF - margin) continue;
+    if (l4IsChannelOrHoleXZ(c.x, c.z)) continue;
+    let clear = true;
+    for (const o of others) {
+      if (o === self || !o.active || !o.mesh.visible) continue;
+      if (looping.has(o)) continue;
+      const d = Math.hypot(o.body.position.x - c.x, o.body.position.z - c.z);
+      if (d < minD) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) continue;
+    const y = l4MarbleRestY(c.x, c.z) ?? MARBLE_REST_Y;
+    return { x: c.x, z: c.z, y };
+  }
+  // Last resort: hatch + random planar nudge (still better than perfect stack)
+  const ang = Math.random() * Math.PI * 2;
+  const rad = MARBLE_RADIUS * (2.2 + Math.random() * 3);
+  const x = exit.x + Math.cos(ang) * rad;
+  const z = exit.z + Math.sin(ang) * rad;
+  return { x, z, y: l4MarbleRestY(x, z) ?? MARBLE_REST_Y };
+}
+
+function finishLoop(marble: MarbleEntity, fieldMarbles?: MarbleEntity[]): void {
   const st = looping.get(marble);
   if (!st) return;
   looping.delete(marble);
 
-  const exit = getReturnHatchXZ();
-  const rest = l4MarbleRestY(exit.x, exit.z) ?? MARBLE_REST_Y;
+  const spot = findClearHatchExit(marble, fieldMarbles);
   const body = marble.body;
-  body.position.set(exit.x, rest, exit.z);
+  body.position.set(spot.x, spot.y, spot.z);
   body.previousPosition.copy(body.position);
   if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
   body.velocity.setZero();
   body.angularVelocity.setZero();
   body.type = CANNON.Body.DYNAMIC;
   body.collisionResponse = true;
-  body.collisionFilterGroup = st.savedFilterGroup || 1;
-  body.collisionFilterMask = st.savedFilterMask || 1;
+  // Field marbles only enter the loop — restore solid default world filters
+  // (never leave mask/group at 0 from kinematic transit).
+  body.collisionFilterGroup = 1;
+  body.collisionFilterMask = -1;
   body.wakeUp();
-  // Soft settle — tiny nudge so they don't stack perfectly
-  body.velocity.set((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.04);
+  // Soft settle — tiny nudge so they don't rest perfectly stacked
+  body.velocity.set((Math.random() - 0.5) * 0.05, 0.01, (Math.random() - 0.5) * 0.05);
   marble.mesh.visible = true;
-  marble.mesh.position.set(exit.x, rest, exit.z);
+  marble.mesh.position.set(spot.x, spot.y, spot.z);
   marble.active = true;
 
   scoredThisTransit.delete(marble);
