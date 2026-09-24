@@ -72,6 +72,17 @@ export function applyL4ShooterCollisionFilter(body: CANNON.Body): void {
     L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER_BLOCKER;
 }
 
+/**
+ * Experiment-only shooter filter: same as baseline (bridges, ignore channel) BUT
+ * also collides with other shooters (commanders push each other). Baseline
+ * applyL4ShooterCollisionFilter stays unchanged for flag-off parity with d584ee0.
+ */
+export function applyL4ExperimentShooterCollisionFilter(body: CANNON.Body): void {
+  body.collisionFilterGroup = L4_COL_GROUP_SHOOTER;
+  body.collisionFilterMask =
+    L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER | L4_COL_GROUP_SHOOTER_BLOCKER;
+}
+
 /** Field-only channel collider: shooters (group 2) never touch half-pipe facets. */
 export function applyL4ChannelFieldOnlyFilter(body: CANNON.Body): void {
   body.collisionFilterGroup = L4_COL_GROUP_DEFAULT;

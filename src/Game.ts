@@ -76,6 +76,8 @@ import {
   l4ChannelLateral,
   L4_PIPE_R,
   applyL4ShooterCollisionFilter,
+  applyL4ExperimentShooterCollisionFilter,
+  applyL4FieldMarbleCollisionFilter,
 } from './officeDesk';
 import {
   playMarbleClack,
@@ -136,6 +138,7 @@ import {
   updateLoopTransits,
   markInChannelIfNeeded,
   isPhysicallyInChannel,
+  getChannelState,
   planTurnAfterSettle,
   shouldIgnoreForSettle,
   shouldBlockSettleMaxForce,
@@ -668,11 +671,243 @@ export class Game {
 
   start(): void {
     this.clock.start();
+    // Expose debug helpers for headless probes (?debugChannel=1). Harmless if unused.
+    const w = window as unknown as {
+      __TAMA_CHANNEL_DEBUG__?: {
+        place: (side?: TeamSide, opts?: { farNorth?: boolean }) => ReturnType<Game['debugPlaceNonCommanderInChannel']>;
+        tip: (side?: TeamSide) => ReturnType<Game['debugTipNonCommanderIntoChannel']>;
+        sample: (side?: TeamSide) => ReturnType<Game['debugSampleChannelMarble']>;
+        filters: () => ReturnType<Game['debugCollisionFilters']>;
+        phase: () => string;
+        drop: () => void;
+      };
+    };
+    w.__TAMA_CHANNEL_DEBUG__ = {
+      place: (side: TeamSide = 'player', opts?: { farNorth?: boolean }) =>
+        this.debugPlaceNonCommanderInChannel(side, opts),
+      tip: (side: TeamSide = 'player') => this.debugTipNonCommanderIntoChannel(side),
+      sample: (side: TeamSide = 'player') => this.debugSampleChannelMarble(side),
+      filters: () => this.debugCollisionFilters(),
+      phase: () => this.phase,
+      drop: () => {
+        if (this.phase === 'ready') this.dropMarbles();
+      },
+    };
     const loop = () => {
       this.animId = requestAnimationFrame(loop);
       this.update();
     };
     loop();
+  }
+
+
+  /**
+   * Experiment debug API (harmless when unused). Used by headless channel probe.
+   * Teleports a non-commander healthy team marble onto the north channel centerline,
+   * wakes it DYNAMIC with field collision filter, opens scoring window so hole→loop runs.
+   */
+  debugPlaceNonCommanderInChannel(
+    side: TeamSide = 'player',
+    _opts?: { farNorth?: boolean },
+  ): {
+    ok: boolean;
+    reason?: string;
+    x?: number;
+    y?: number;
+    z?: number;
+  } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const commanders = new Set(
+      [this.playerMarble, this.aiMarble].filter(Boolean) as MarbleEntity[],
+    );
+    const pick =
+      this.fieldMarbles.find(
+        (m) =>
+          m.active &&
+          isHealthyTeamMarble(m) &&
+          m.owner === side &&
+          !commanders.has(m) &&
+          !isMarbleInLoop(m) &&
+          !isZombieMarble(m),
+      ) ?? null;
+    if (!pick) return { ok: false, reason: 'no_field_candidate' };
+
+    // Default: west trough, mid-arc toward SW so cruise + hole are observable in ~10s.
+    // North (far) still available via opts.farNorth.
+    const far = !!_opts?.farNorth;
+    let x: number;
+    let z: number;
+    if (far) {
+      x = 0;
+      z = -(L4_MAT_HALF + L4_PIPE_R);
+    } else {
+      // West centerline, south of mid — ~0.35–0.45 m arc from SW
+      x = -(L4_MAT_HALF + L4_PIPE_R);
+      z = L4_MAT_HALF * 0.15;
+    }
+    const y = l4MarbleRestY(x, z) ?? PLAY_SURFACE_Y - L4_PIPE_R + MARBLE_RADIUS;
+    applyL4FieldMarbleCollisionFilter(pick.body);
+    pick.body.type = CANNON.Body.DYNAMIC;
+    pick.body.allowSleep = false;
+    pick.body.wakeUp();
+    pick.body.position.set(x, y, z);
+    pick.body.previousPosition.copy(pick.body.position);
+    if (pick.body.interpolatedPosition) {
+      pick.body.interpolatedPosition.copy(pick.body.position);
+    }
+    pick.body.velocity.set(0, 0, 0);
+    pick.body.angularVelocity.set(0, 0, 0);
+    pick.mesh.visible = true;
+    pick.mesh.position.set(x, y, z);
+    pick.channelState = 'in_channel';
+    markInChannelIfNeeded(pick, side);
+
+    // Open scoring path so unrecovered hole → loop is processed
+    this.scoringEnabled = true;
+    if (this.phase === 'playing' || this.phase === 'ai_thinking') {
+      this.setPhase('shot_flying');
+      this.shotSettleTimer = performance.now();
+    }
+    this.syncOneMesh(pick);
+    return { ok: true, x, y, z };
+  }
+
+  /**
+   * Experiment debug: sample the first matching non-commander (or any in_channel) marble.
+   */
+
+  /**
+   * Experiment debug: put a non-commander on the mat just inside the north lip and
+   * nudge it outward so gravity/tip into the half-pipe can be observed.
+   */
+  debugTipNonCommanderIntoChannel(side: TeamSide = 'player'): {
+    ok: boolean;
+    reason?: string;
+    x?: number;
+    y?: number;
+    z?: number;
+  } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const commanders = new Set(
+      [this.playerMarble, this.aiMarble].filter(Boolean) as MarbleEntity[],
+    );
+    const pick =
+      this.fieldMarbles.find(
+        (m) =>
+          m.active &&
+          isHealthyTeamMarble(m) &&
+          m.owner === side &&
+          !commanders.has(m) &&
+          !isMarbleInLoop(m),
+      ) ?? null;
+    if (!pick) return { ok: false, reason: 'no_field_candidate' };
+    // On mat, just inside north edge — then push north into trough
+    const x = 0;
+    const z = -(L4_MAT_HALF - MARBLE_RADIUS * 1.2);
+    const y = l4MarbleRestY(x, z) ?? MARBLE_REST_Y;
+    applyL4FieldMarbleCollisionFilter(pick.body);
+    pick.body.type = CANNON.Body.DYNAMIC;
+    pick.body.allowSleep = false;
+    pick.body.wakeUp();
+    pick.body.position.set(x, y, z);
+    pick.body.previousPosition.copy(pick.body.position);
+    pick.body.velocity.set(0, 0, -0.55);
+    pick.body.angularVelocity.set(0, 0, 0);
+    pick.mesh.visible = true;
+    this.scoringEnabled = true;
+    if (this.phase === 'playing' || this.phase === 'ai_thinking') {
+      this.setPhase('shot_flying');
+      this.shotSettleTimer = performance.now();
+    }
+    this.syncOneMesh(pick);
+    return { ok: true, x, y, z };
+  }
+
+  debugSampleChannelMarble(side: TeamSide = 'player'): {
+    found: boolean;
+    owner?: string;
+    role?: string;
+    channelState?: string;
+    inLoop?: boolean;
+    physicallyInChannel?: boolean;
+    x?: number;
+    y?: number;
+    z?: number;
+    speed?: number;
+    arcDistToSW?: number | null;
+    filterGroup?: number;
+    filterMask?: number;
+  } {
+    const commanders = new Set(
+      [this.playerMarble, this.aiMarble].filter(Boolean) as MarbleEntity[],
+    );
+    let pick =
+      this.fieldMarbles.find(
+        (m) =>
+          m.active &&
+          m.owner === side &&
+          !commanders.has(m) &&
+          (getChannelState(m) === 'in_channel' || isPhysicallyInChannel(m) || isMarbleInLoop(m)),
+      ) ?? null;
+    if (!pick) {
+      pick =
+        this.fieldMarbles.find(
+          (m) => m.active && m.owner === side && !commanders.has(m) && isHealthyTeamMarble(m),
+        ) ?? null;
+    }
+    if (!pick) return { found: false };
+    const { x, y, z } = pick.body.position;
+    const vx = pick.body.velocity.x;
+    const vz = pick.body.velocity.z;
+    return {
+      found: true,
+      owner: String(pick.owner),
+      role: pick.role ?? 'healthy',
+      channelState: getChannelState(pick),
+      inLoop: isMarbleInLoop(pick),
+      physicallyInChannel: isPhysicallyInChannel(pick),
+      x,
+      y,
+      z,
+      speed: Math.hypot(vx, vz),
+      arcDistToSW: l4ChannelArcDistToSW(x, z),
+      filterGroup: pick.body.collisionFilterGroup,
+      filterMask: pick.body.collisionFilterMask,
+    };
+  }
+
+  /** Experiment debug: collision filter snapshot for commanders + one field marble. */
+  debugCollisionFilters(): {
+    player?: { group: number; mask: number };
+    ai?: { group: number; mask: number };
+    field?: { group: number; mask: number; owner: string };
+  } {
+    const out: {
+      player?: { group: number; mask: number };
+      ai?: { group: number; mask: number };
+      field?: { group: number; mask: number; owner: string };
+    } = {};
+    if (this.playerMarble) {
+      out.player = {
+        group: this.playerMarble.body.collisionFilterGroup,
+        mask: this.playerMarble.body.collisionFilterMask,
+      };
+    }
+    if (this.aiMarble) {
+      out.ai = {
+        group: this.aiMarble.body.collisionFilterGroup,
+        mask: this.aiMarble.body.collisionFilterMask,
+      };
+    }
+    const f = this.fieldMarbles.find((m) => m.active && isHealthyTeamMarble(m));
+    if (f) {
+      out.field = {
+        group: f.body.collisionFilterGroup,
+        mask: f.body.collisionFilterMask,
+        owner: String(f.owner),
+      };
+    }
+    return out;
   }
 
   dispose(): void {
@@ -1584,7 +1819,7 @@ private spawnShootersInitial(): void {
     player.body.velocity.setZero();
     player.body.angularVelocity.setZero();
     player.body.type = CANNON.Body.KINEMATIC;
-    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(player.body);
+    if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(player.body);
     this.scene.add(player.mesh);
     this.world.addBody(player.body);
     this.playerMarble = player;
@@ -1599,7 +1834,7 @@ private spawnShootersInitial(): void {
     ai.body.velocity.setZero();
     ai.body.angularVelocity.setZero();
     ai.body.type = CANNON.Body.KINEMATIC;
-    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(ai.body);
+    if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(ai.body);
     this.scene.add(ai.mesh);
     this.world.addBody(ai.body);
     this.aiMarble = ai;
@@ -2649,6 +2884,16 @@ private spawnShootersInitial(): void {
     return isL4ChannelRescueExperimentActive(this.sceneLevel);
   }
 
+  /** L4 shooter filter: experiment commanders collide with each other; baseline does not. */
+  private applyActiveShooterCollisionFilter(body: CANNON.Body): void {
+    if (this.sceneLevel !== 4) return;
+    if (this.isChannelRescueActive()) {
+      applyL4ExperimentShooterCollisionFilter(body);
+    } else {
+      applyL4ShooterCollisionFilter(body);
+    }
+  }
+
   /** Sync #score-player / #score-ai to healthy counts (experiment only). */
   private syncExperimentScores(): void {
     const s = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
@@ -2724,7 +2969,7 @@ private spawnShootersInitial(): void {
     pick.body.velocity.setZero();
     pick.body.angularVelocity.setZero();
     pick.body.type = CANNON.Body.KINEMATIC;
-    if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(pick.body);
+    if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(pick.body);
     const dist = L4_MAT_HALF - MARBLE_RADIUS * 5;
     const x = side === 'player' ? dist : -dist;
     if (l4IsChannelOrHoleXZ(pick.body.position.x, pick.body.position.z)) {
@@ -5004,7 +5249,7 @@ private spawnShootersInitial(): void {
         new CANNON.Vec3(snap.player.x, snap.player.y, snap.player.z),
         'player',
       );
-      if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(player.body);
+      if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(player.body);
       this.scene.add(player.mesh);
       this.world.addBody(player.body);
       this.playerMarble = player;
@@ -5017,7 +5262,7 @@ private spawnShootersInitial(): void {
         new CANNON.Vec3(snap.ai.x, snap.ai.y, snap.ai.z),
         'ai',
       );
-      if (this.sceneLevel === 4) applyL4ShooterCollisionFilter(ai.body);
+      if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(ai.body);
       this.scene.add(ai.mesh);
       this.world.addBody(ai.body);
       this.aiMarble = ai;
