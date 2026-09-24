@@ -153,6 +153,8 @@ import {
   experimentAITargetBias,
   experimentVictoryMessage,
   burstShatter,
+  abortLoopTransit,
+  applyTeamAppearance,
   finishEliminationFX,
   type TeamSide,
 } from './l4ChannelRescueExperiment';
@@ -336,6 +338,8 @@ export class Game {
   private scoringMarbles = new Set<MarbleEntity>();
   /** Only award score for knockouts during a player/AI shot. */
   private scoringEnabled = false;
+  /** Experiment: marbles returned to mat during drop/settle (pre-first-turn). */
+  private experimentPregameRescues = 0;
 
   /** Physics time scale (1 = normal, <1 = cámara lenta). */
   private timeScale = 1;
@@ -680,6 +684,15 @@ export class Game {
         filters: () => ReturnType<Game['debugCollisionFilters']>;
         phase: () => string;
         drop: () => void;
+        startCounts: () => {
+          player: number;
+          ai: number;
+          fieldActive: number;
+          rescues: number;
+          inChannel: number;
+          inLoop: number;
+          phase: string;
+        };
       };
     };
     w.__TAMA_CHANNEL_DEBUG__ = {
@@ -691,6 +704,25 @@ export class Game {
       phase: () => this.phase,
       drop: () => {
         if (this.phase === 'ready') this.dropMarbles();
+      },
+      startCounts: () => {
+        const s = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+        let inChannel = 0;
+        let inLoop = 0;
+        for (const m of this.fieldMarbles) {
+          if (!m.active) continue;
+          if (m.channelState === 'in_channel') inChannel += 1;
+          if (m.channelState === 'in_loop' || isMarbleInLoop(m)) inLoop += 1;
+        }
+        return {
+          player: s.player,
+          ai: s.ai,
+          fieldActive: this.fieldMarbles.filter((m) => m.active && m.mesh.visible).length,
+          rescues: this.experimentPregameRescues,
+          inChannel,
+          inLoop,
+          phase: this.phase,
+        };
       },
     };
     const loop = () => {
@@ -1577,6 +1609,7 @@ export class Game {
     this.particles?.clear();
     this.dirtCooldown.clear();
     this.rollOpponentName();
+    this.experimentPregameRescues = 0;
     this.setPhase('dropping');
     this.commentator?.say('drop', { force: true, preferLower: false }); /* caster:drop */
 
@@ -1678,7 +1711,16 @@ export class Game {
       const out =
         dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05 || offL4;
       if (offL4) {
-        // Fell off desk / through hole during drop — eliminate, never float
+        if (this.isChannelRescueActive()) {
+          // Experiment: no pre-game losses — return to mat, keep team
+          this.rescueExperimentMarbleToMat(m);
+          this.snapMarblePhysics(m, true);
+          this.scoringMarbles.add(m);
+          m.body.sleep();
+          this.syncOneMesh(m);
+          continue;
+        }
+        // Baseline: fell off desk / through hole during drop — eliminate, never float
         m.active = false;
         m.mesh.visible = false;
         m.body.velocity.setZero();
@@ -1720,8 +1762,32 @@ export class Game {
       }
     }
 
-    // Experiment: scoreboard = healthy counts (10/10 after drop if all survived)
+    // Experiment: force every field marble onto mat (no channel/loop), then 9/9 → 10/10 after shooters
     if (this.isChannelRescueActive()) {
+      for (const m of this.fieldMarbles) {
+        abortLoopTransit(m);
+        m.channelState = 'none';
+        const { x, y, z } = m.body.position;
+        const needs =
+          !m.active ||
+          !m.mesh.visible ||
+          this.isOffL4Desk(x, y, z) ||
+          this.isInL4Hole(x, y, z) ||
+          isPhysicallyInChannel(m) ||
+          Math.abs(x) > L4_MAT_HALF - MARBLE_RADIUS * 3 ||
+          Math.abs(z) > L4_MAT_HALF - MARBLE_RADIUS * 3 ||
+          y < PLAY_SURFACE_Y - L4_PIPE_R * 0.35;
+        if (needs) this.rescueExperimentMarbleToMat(m);
+        m.active = true;
+        m.mesh.visible = true;
+        m.body.type = CANNON.Body.DYNAMIC;
+        this.snapMarblePhysics(m, true);
+        m.body.velocity.setZero();
+        m.body.angularVelocity.setZero();
+        m.body.sleep();
+        this.scoringMarbles.add(m);
+        this.syncOneMesh(m);
+      }
       // Shooters spawn next; provisional field-only sync, then re-sync after shooters
       this.syncExperimentScores();
     }
@@ -2893,6 +2959,108 @@ private spawnShootersInitial(): void {
       applyL4ShooterCollisionFilter(body);
     }
   }
+
+
+  /** True during briefcase drop / settle — before first beginTurn. */
+  private isExperimentPregame(): boolean {
+    return (
+      this.isChannelRescueActive() &&
+      (this.phase === 'dropping' || this.phase === 'settling')
+    );
+  }
+
+  /** Random free spot on L4 mat interior (clear of channel lip + other marbles). */
+  private findFreeExperimentMatSpot(exclude: MarbleEntity | null): { x: number; z: number } {
+    const lipMargin = MARBLE_RADIUS * 4.5;
+    const maxCoord = Math.max(0.02, L4_MAT_HALF - lipMargin);
+    const others = this.fieldMarbles.filter((m) => m !== exclude && m.active && m.mesh.visible);
+    const minSep = MARBLE_RADIUS * 2.6;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * maxCoord; // denser toward center
+      const x = Math.cos(ang) * r;
+      const z = Math.sin(ang) * r;
+      if (Math.abs(x) > maxCoord || Math.abs(z) > maxCoord) continue;
+      // Stay in mat square, not channel band
+      if (Math.abs(x) > L4_MAT_HALF - lipMargin || Math.abs(z) > L4_MAT_HALF - lipMargin) continue;
+      let ok = true;
+      for (const o of others) {
+        if (Math.hypot(o.body.position.x - x, o.body.position.z - z) < minSep) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return { x, z };
+    }
+    // Deterministic fallback grid
+    for (let gx = -3; gx <= 3; gx++) {
+      for (let gz = -3; gz <= 3; gz++) {
+        const x = (gx / 3) * maxCoord * 0.85;
+        const z = (gz / 3) * maxCoord * 0.85;
+        let ok = true;
+        for (const o of others) {
+          if (Math.hypot(o.body.position.x - x, o.body.position.z - z) < minSep) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) return { x, z };
+      }
+    }
+    return { x: 0, z: 0 };
+  }
+
+  /**
+   * Experiment pre-game: put a team marble back on the mat (keep team/color).
+   * Clears channel/loop/zombie state — no loss, no score change.
+   */
+  private rescueExperimentMarbleToMat(m: MarbleEntity): void {
+    abortLoopTransit(m);
+    m.channelState = 'none';
+    if (m.role === 'zombie' && (m.owner === 'player' || m.owner === 'ai')) {
+      // Should not happen pre-game; restore healthy team look if it did
+      applyTeamAppearance(m, m.owner as TeamSide);
+    }
+    applyL4FieldMarbleCollisionFilter(m.body);
+    const spot = this.findFreeExperimentMatSpot(m);
+    const y = l4MarbleRestY(spot.x, spot.z) ?? MARBLE_REST_Y;
+    m.active = true;
+    m.mesh.visible = true;
+    m.body.type = CANNON.Body.DYNAMIC;
+    m.body.allowSleep = true;
+    m.body.position.set(spot.x, y, spot.z);
+    m.body.previousPosition.copy(m.body.position);
+    if (m.body.interpolatedPosition) m.body.interpolatedPosition.copy(m.body.position);
+    m.body.velocity.setZero();
+    m.body.angularVelocity.setZero();
+    m.body.wakeUp();
+    m.mesh.position.set(spot.x, y, spot.z);
+    this.syncOneMesh(m);
+    this.experimentPregameRescues += 1;
+  }
+
+  /** Experiment: during drop/settle, return fallen / in-channel / in-hole marbles to mat. */
+  private rescueExperimentFallenDuringPregame(): void {
+    if (!this.isExperimentPregame()) return;
+    for (const m of this.fieldMarbles) {
+      if (!m.mesh) continue;
+      // Reactivate if somehow deactivated mid-drop
+      const { x, y, z } = m.body.position;
+      const inHole = this.isInL4Hole(x, y, z);
+      const offDesk = this.isOffL4Desk(x, y, z);
+      const inChannel =
+        m.channelState === 'in_channel' ||
+        m.channelState === 'in_loop' ||
+        isMarbleInLoop(m) ||
+        isPhysicallyInChannel(m) ||
+        l4IsChannelOrHoleXZ(x, z);
+      const fallenY = y < PLAY_SURFACE_Y - L4_PIPE_R * 0.5;
+      if (!m.active || !m.mesh.visible || offDesk || inHole || inChannel || fallenY) {
+        this.rescueExperimentMarbleToMat(m);
+      }
+    }
+  }
+
 
   /** Sync #score-player / #score-ai to healthy counts (experiment only). */
   private syncExperimentScores(): void {
@@ -4552,13 +4720,18 @@ private spawnShootersInitial(): void {
     // L4 convoy AFTER physics: kinematic centerline drive so the contact solver cannot
     // cancel translation (root cause of live spin-in-place). Uses simulated dt.
     const simDt = Math.min(physDt, 10 / 120);
-    this.applyL4ChannelDrain(simDt);
-    if (this.isChannelRescueActive()) {
+    // Experiment pre-game: no channel cruise / loop / zombie — keep marbles on mat.
+    if (!this.isExperimentPregame()) {
+      this.applyL4ChannelDrain(simDt);
+    }
+    if (this.isChannelRescueActive() && !this.isExperimentPregame()) {
       updateLoopTransits(simDt);
       finishEliminationFX();
       // Keep channel residency marked even between turns (cruise continues)
       const side = this.turn === 'player' ? 'player' : 'ai';
       for (const m of this.fieldMarbles) markInChannelIfNeeded(m, side);
+    } else if (this.isExperimentPregame()) {
+      this.rescueExperimentFallenDuringPregame();
     }
     this.updateL4WoodRollSfx();
     this.updateSlowMo(dt);
@@ -4575,6 +4748,7 @@ private spawnShootersInitial(): void {
 
     if (this.phase === 'settling') {
       const now = performance.now();
+      if (this.isExperimentPregame()) this.rescueExperimentFallenDuringPregame();
       // Always wait DROP_FREEZE_MS after drop, then hard-stop field marbles in place.
       if (now - this.settleStart >= DROP_FREEZE_MS) {
         this.beginPlaying();

@@ -660,6 +660,21 @@ function finishLoop(marble: MarbleEntity): void {
   applyL4FieldMarbleCollisionFilter(marble.body);
 }
 
+/** Cancel an in-progress under-desk loop without zombie/convert finish (pre-game rescue). */
+export function abortLoopTransit(marble: MarbleEntity): void {
+  const st = looping.get(marble);
+  if (st) {
+    looping.delete(marble);
+    const body = marble.body;
+    body.type = CANNON.Body.DYNAMIC;
+    body.collisionResponse = true;
+    body.collisionFilterGroup = st.savedFilterGroup || 1;
+    body.collisionFilterMask = st.savedFilterMask || 1;
+    applyL4FieldMarbleCollisionFilter(body);
+  }
+  marble.channelState = 'none';
+}
+
 export function deactivateMarble(marble: MarbleEntity): void {
   looping.delete(marble);
   detachSkullSprite(marble.mesh);
