@@ -24,6 +24,7 @@ import {
   l4MarbleRestY,
   l4ChannelLateral,
   type OfficeDeskBuild,
+  applyL4FieldMarbleCollisionFilter,
 } from './officeDesk';
 import type { MarbleDesign, MarbleEntity, MarbleOwner } from './marbles';
 import type { ParticleFX } from './particles';
@@ -175,59 +176,75 @@ function makeSolidGlassDesign(id: string, name: string, color: string): MarbleDe
   return design;
 }
 
+let zombieSkullTexture: THREE.Texture | null = null;
+let zombieSkullTextureLoading = false;
+const zombieSkullReadyWaiters: Array<(t: THREE.Texture) => void> = [];
+
+function loadZombieSkullTexture(onReady?: (t: THREE.Texture) => void): void {
+  if (zombieSkullTexture) {
+    onReady?.(zombieSkullTexture);
+    return;
+  }
+  if (onReady) zombieSkullReadyWaiters.push(onReady);
+  if (zombieSkullTextureLoading) return;
+  zombieSkullTextureLoading = true;
+  const base = (import.meta.env.BASE_URL as string) || '/';
+  const loader = new THREE.TextureLoader();
+  const apply = (t: THREE.Texture) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    t.needsUpdate = true;
+    zombieSkullTexture = t;
+    zombieSkullTextureLoading = false;
+    const cached = solidDesignCache.get('zombie-skull');
+    if (cached) {
+      const mat = cached.material as THREE.MeshPhysicalMaterial;
+      mat.map = t;
+      mat.color.setHex(0x000000);
+      mat.needsUpdate = true;
+    }
+    const waiters = zombieSkullReadyWaiters.splice(0, zombieSkullReadyWaiters.length);
+    for (const w of waiters) w(t);
+  };
+  loader.load(
+    `${base}ui/zombie-skull.webp`,
+    apply,
+    undefined,
+    () => {
+      loader.load(`${base}ui/zombie-skull.jpg`, apply, undefined, () => {
+        zombieSkullTextureLoading = false;
+        zombieSkullReadyWaiters.length = 0;
+      });
+    },
+  );
+}
+
+/** Fully black marble; skull image sphere-mapped (asset already has black surround). */
 function makeZombieDesign(): MarbleDesign {
   const id = 'zombie-skull';
   const cached = solidDesignCache.get(id);
   if (cached) return cached;
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  const s = 256;
-  const g = ctx.createRadialGradient(s * 0.4, s * 0.35, s * 0.05, s / 2, s / 2, s * 0.55);
-  g.addColorStop(0, '#3a3a3a');
-  g.addColorStop(0.35, '#1a1a1a');
-  g.addColorStop(0.8, '#0a0a0a');
-  g.addColorStop(1, '#000000');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, s, s);
-  ctx.strokeStyle = 'rgba(60,90,40,0.55)';
-  ctx.lineWidth = 4;
-  for (let i = 0; i < 6; i++) {
-    ctx.beginPath();
-    ctx.moveTo(s * 0.2, s * (0.2 + i * 0.1));
-    ctx.bezierCurveTo(
-      s * 0.4,
-      s * (0.1 + i * 0.12),
-      s * 0.6,
-      s * (0.4 + i * 0.08),
-      s * 0.85,
-      s * (0.25 + i * 0.1),
-    );
-    ctx.stroke();
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0x000000,
+    roughness: 0.58,
+    metalness: 0.04,
+    clearcoat: 0.35,
+    clearcoatRoughness: 0.45,
+    emissive: new THREE.Color(0x0a1808),
+    emissiveIntensity: 0.12,
+  });
+  if (zombieSkullTexture) {
+    material.map = zombieSkullTexture;
+  } else {
+    loadZombieSkullTexture((t) => {
+      material.map = t;
+      material.needsUpdate = true;
+    });
   }
-  ctx.font = `bold ${Math.floor(s * 0.42)}px serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(240,240,240,0.96)';
-  ctx.fillText('\u{1F480}', s / 2, s / 2 + s * 0.02);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  tex.needsUpdate = true;
   const design: MarbleDesign = {
     id,
     name: 'Zombie',
-    material: new THREE.MeshPhysicalMaterial({
-      map: tex,
-      color: 0x222222,
-      roughness: 0.55,
-      metalness: 0.05,
-      clearcoat: 0.35,
-      clearcoatRoughness: 0.4,
-      emissive: new THREE.Color(0x1a3010),
-      emissiveIntensity: 0.15,
-    }),
+    material,
   };
   solidDesignCache.set(id, design);
   return design;
@@ -240,31 +257,9 @@ export function createTeamSolidDesign(side: TeamSide): MarbleDesign {
   return makeSolidGlassDesign('team-ai-red', 'Equipo rojo', '#c62828');
 }
 
-function attachSkullSprite(mesh: THREE.Mesh): void {
-  detachSkullSprite(mesh);
-  const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 128;
-  const ctx = c.getContext('2d')!;
-  ctx.clearRect(0, 0, 128, 128);
-  ctx.font = '90px serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('\u{1F480}', 64, 70);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.SpriteMaterial({
-    map: tex,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
-  });
-  const sprite = new THREE.Sprite(mat);
-  sprite.name = SKULL_CHILD;
-  sprite.scale.set(MARBLE_RADIUS * 2.8, MARBLE_RADIUS * 2.8, 1);
-  sprite.position.set(0, MARBLE_RADIUS * 1.35, 0);
-  sprite.renderOrder = 10;
-  mesh.add(sprite);
+function attachSkullSprite(_mesh: THREE.Mesh): void {
+  // Intentionally empty: emoji canvas skull caused main-thread freezes on loop exit.
+  // Skull is shown via sphere-mapped texture on a fully black marble instead.
 }
 
 function detachSkullSprite(mesh: THREE.Mesh): void {
@@ -288,12 +283,23 @@ export function applyTeamAppearance(marble: MarbleEntity, side: TeamSide): void 
   marble.role = 'healthy';
   marble.team = side;
   detachSkullSprite(marble.mesh);
+  // Converted / returning healthy are normal field marbles (no channel bridge).
+  applyL4FieldMarbleCollisionFilter(marble.body);
 }
 
 export function applyZombieAppearance(marble: MarbleEntity): void {
   const design = makeZombieDesign();
   const old = marble.mesh.material;
-  marble.mesh.material = design.material.clone();
+  const mat = design.material.clone() as THREE.MeshPhysicalMaterial;
+  mat.color.setHex(0x000000);
+  if (zombieSkullTexture) mat.map = zombieSkullTexture;
+  else {
+    loadZombieSkullTexture((t) => {
+      mat.map = t;
+      mat.needsUpdate = true;
+    });
+  }
+  marble.mesh.material = mat;
   if (Array.isArray(old)) old.forEach((x) => x.dispose());
   else (old as THREE.Material).dispose();
   marble.design = design;
@@ -301,7 +307,9 @@ export function applyZombieAppearance(marble: MarbleEntity): void {
   marble.role = 'zombie';
   marble.team = 'neutral';
   marble.channelState = 'none';
-  attachSkullSprite(marble.mesh);
+  detachSkullSprite(marble.mesh);
+  attachSkullSprite(marble.mesh); // no-op (kept for API stability)
+  applyL4FieldMarbleCollisionFilter(marble.body);
 }
 
 export function createExperimentFieldPlan(): { design: MarbleDesign; owner: MarbleOwner }[] {
@@ -325,6 +333,9 @@ export function initExperimentMarble(m: MarbleEntity, owner: MarbleOwner): void 
   (m as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = false;
   m.team = owner === 'player' || owner === 'ai' ? owner : 'neutral';
   if (owner === 'player' || owner === 'ai') applyTeamAppearance(m, owner);
+  // Non-shooter team marbles must use field collision (fall into channel). Shooter
+  // filter is applied only to playerMarble/aiMarble in Game.
+  applyL4FieldMarbleCollisionFilter(m.body);
 }
 
 export function mountExperimentVisuals(
@@ -332,6 +343,7 @@ export function mountExperimentVisuals(
   desk: OfficeDeskBuild | null,
 ): void {
   if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
+  loadZombieSkullTexture();
   disposeExperimentVisuals(scene);
   const root = new THREE.Group();
   root.name = 'l4ChannelRescueVisuals';
@@ -644,6 +656,8 @@ function finishLoop(marble: MarbleEntity): void {
   } else {
     applyTeamAppearance(marble, st.teamAtExit);
   }
+  // Loop exit always returns a field marble (never the bridge shooter).
+  applyL4FieldMarbleCollisionFilter(marble.body);
 }
 
 export function deactivateMarble(marble: MarbleEntity): void {
@@ -705,12 +719,64 @@ export function experimentVictoryMessage(
   };
 }
 
+/** Pending scale-down eliminations (avoid costly spawnShatter glass burst). */
+type ElimFx = { marble: MarbleEntity; t0: number; duration: number; x: number; y: number; z: number };
+const pendingEliminations: ElimFx[] = [];
+
+/**
+ * Simple readable elimination: flash + sparks + quick scale-down, then caller deactivates.
+ * Kept as burstShatter name so Game call sites stay stable.
+ */
 export function burstShatter(
   particles: ParticleFX | null | undefined,
   x: number,
   y: number,
   z: number,
-  colorHex = 0x90caf9,
+  _colorHex = 0x90caf9,
 ): void {
-  particles?.spawnShatter(x, y, z, colorHex);
+  particles?.spawnSparks(x, y, z, 1.35);
+}
+
+/** Start scale-down/flash on victim mesh; call finishEliminationFX each frame. */
+export function beginEliminationFX(marble: MarbleEntity, particles: ParticleFX | null | undefined): void {
+  const { x, y, z } = marble.body.position;
+  particles?.spawnSparks(x, y, z, 1.35);
+  const mat = marble.mesh.material;
+  if (mat && !Array.isArray(mat) && 'emissive' in mat) {
+    const m = mat as THREE.MeshPhysicalMaterial;
+    m.emissive = new THREE.Color(0xffffff);
+    m.emissiveIntensity = 0.85;
+  }
+  pendingEliminations.push({
+    marble,
+    t0: performance.now(),
+    duration: 160,
+    x,
+    y,
+    z,
+  });
+}
+
+/** Advance elimination animations; returns marbles that finished (ready to deactivate). */
+export function finishEliminationFX(now = performance.now()): MarbleEntity[] {
+  const done: MarbleEntity[] = [];
+  for (let i = pendingEliminations.length - 1; i >= 0; i--) {
+    const fx = pendingEliminations[i]!;
+    const u = Math.min(1, (now - fx.t0) / fx.duration);
+    const s = Math.max(0.05, 1 - u);
+    fx.marble.mesh.scale.setScalar(s);
+    if (u >= 1) {
+      pendingEliminations.splice(i, 1);
+      fx.marble.mesh.scale.set(1, 1, 1);
+      done.push(fx.marble);
+    }
+  }
+  return done;
+}
+
+export function clearEliminationFX(): void {
+  for (const fx of pendingEliminations) {
+    fx.marble.mesh.scale.set(1, 1, 1);
+  }
+  pendingEliminations.length = 0;
 }

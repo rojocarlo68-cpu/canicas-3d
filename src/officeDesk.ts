@@ -79,6 +79,15 @@ export function applyL4ChannelFieldOnlyFilter(body: CANNON.Body): void {
 }
 
 /**
+ * Tag a non-shooter (field) marble: collides with world/channel/props/rails + shooters.
+ * Does NOT collide with shooter bridges (blockers only mask SHOOTER group).
+ */
+export function applyL4FieldMarbleCollisionFilter(body: CANNON.Body): void {
+  body.collisionFilterGroup = L4_COL_GROUP_DEFAULT;
+  body.collisionFilterMask = L4_COL_GROUP_DEFAULT | L4_COL_GROUP_SHOOTER;
+}
+
+/**
  * Tight desk footprint in untilted XZ (left slab + right wing).
  * Used for coarse off-desk checks; prefer l4SupportLocalY for physics.
  */

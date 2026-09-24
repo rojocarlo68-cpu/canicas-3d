@@ -135,6 +135,7 @@ import {
   disposeExperiment,
   updateLoopTransits,
   markInChannelIfNeeded,
+  isPhysicallyInChannel,
   planTurnAfterSettle,
   shouldIgnoreForSettle,
   shouldBlockSettleMaxForce,
@@ -149,6 +150,7 @@ import {
   experimentAITargetBias,
   experimentVictoryMessage,
   burstShatter,
+  finishEliminationFX,
   type TeamSide,
 } from './l4ChannelRescueExperiment';
 import { planAIShot, impulseFromPower } from './ai';
@@ -2707,16 +2709,16 @@ private spawnShootersInitial(): void {
 
   /** Promote a remaining healthy teammate to shooter after shooter edge-death. */
   private promoteExperimentShooter(side: TeamSide): void {
-    let pick: MarbleEntity | null = null;
+    const candidates: MarbleEntity[] = [];
     for (const m of this.fieldMarbles) {
       if (!isHealthyTeamMarble(m)) continue;
       if (m.owner !== side) continue;
       if (isMarbleInLoop(m)) continue;
       if (m.channelState === 'in_channel') continue;
-      pick = m;
-      break;
+      candidates.push(m);
     }
-    if (!pick) return;
+    if (candidates.length === 0) return;
+    const pick = candidates[Math.floor(Math.random() * candidates.length)]!;
     this.fieldMarbles = this.fieldMarbles.filter((x) => x !== pick);
     this.scoringMarbles.delete(pick);
     pick.body.velocity.setZero();
@@ -2776,8 +2778,14 @@ private spawnShootersInitial(): void {
       }
       if (!isHealthyTeamMarble(m)) continue;
 
-      // Open-edge fall (not hole)
-      if (fallen && !inHole) {
+      // Open-edge fall (not hole). Channel trough is NOT an edge — field marbles
+      // must stay alive, take drain cruise, and reach the SW hole.
+      if (
+        fallen &&
+        !inHole &&
+        !isPhysicallyInChannel(m) &&
+        m.channelState !== 'in_channel'
+      ) {
         this.killHealthyOffEdge(m);
         if (this.checkExperimentVictory()) return true;
         continue;
@@ -3657,8 +3665,17 @@ private spawnShootersInitial(): void {
               const vz = result.victim.body.position.z;
               const wasPlayerShooter = result.victim === this.playerMarble;
               const wasAiShooter = result.victim === this.aiMarble;
+              // Simple elimination: sparks + quick flash/scale (no spawnShatter glass burst)
+              const mat = result.victim.mesh.material;
+              if (mat && !Array.isArray(mat) && 'emissive' in mat) {
+                const m = mat as THREE.MeshPhysicalMaterial;
+                m.emissive = new THREE.Color(0xffffff);
+                m.emissiveIntensity = 0.9;
+              }
+              result.victim.mesh.scale.setScalar(0.12);
               burstShatter(this.particles, vx, vy, vz, 0xb3e5fc);
               deactivateMarble(result.victim);
+              result.victim.mesh.scale.set(1, 1, 1);
               this.scoringMarbles.delete(result.victim);
               if (wasPlayerShooter) {
                 this.clearPlayerOutline();
@@ -4293,6 +4310,7 @@ private spawnShootersInitial(): void {
     this.applyL4ChannelDrain(simDt);
     if (this.isChannelRescueActive()) {
       updateLoopTransits(simDt);
+      finishEliminationFX();
       // Keep channel residency marked even between turns (cruise continues)
       const side = this.turn === 'player' ? 'player' : 'ai';
       for (const m of this.fieldMarbles) markInChannelIfNeeded(m, side);
