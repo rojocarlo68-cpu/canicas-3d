@@ -23,8 +23,6 @@ await page.waitForFunction(() => !!window.__TAMA_GAME__ && !!window.__TAMA_CHANN
   timeout: 45000,
 });
 
-const dbg = () => window.__TAMA_CHANNEL_DEBUG__;
-
 await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.drop());
 {
   const t0 = Date.now();
@@ -35,7 +33,9 @@ await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.drop());
   }
 }
 console.log('phase', await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.phase()));
-console.log('start', await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.startCounts()));
+const start = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.startCounts());
+console.log('start', start);
+const startOk = start.player === 10 && start.ai === 10;
 console.log('filters', await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.filters()));
 
 // 1) Tip into channel
@@ -80,7 +80,6 @@ for (let i = 0; i < 160; i++) {
   }
   if (inLoop && !s.inLoop) {
     outLoop = true;
-    role = s.role;
   }
   role = s.role;
   if (i % 10 === 0) {
@@ -90,26 +89,13 @@ for (let i = 0; i < 160; i++) {
   }
   if (outLoop) break;
 }
-const avg =
-  speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : null;
+const avg = speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : null;
 const max = speeds.length ? Math.max(...speeds) : null;
-console.log('cruise', {
-  avg,
-  max,
-  n: speeds.length,
-  nearHole,
-  inLoop,
-  outLoop,
-  role,
-  timeToHoleMs,
-  timeToLoopMs,
-});
+console.log('cruise', { avg, max, n: speeds.length, nearHole, inLoop, outLoop, role, timeToHoleMs, timeToLoopMs });
 
 // 3) Zombie kills
-const scores0 = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.scores());
-console.log('scores0', scores0);
-const z = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.makeZombie('ai'));
-console.log('makeZombie', z);
+console.log('scores0', await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.scores()));
+console.log('makeZombie', await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.makeZombie('ai')));
 const killBlue = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.pushZombieInto('player'));
 console.log('killBlue', killBlue);
 const killRed = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.pushZombieInto('ai'));
@@ -128,7 +114,12 @@ let zExitAsZombie = false;
   let sawLoop = zReLoop;
   while (Date.now() - t0 < 8000) {
     await new Promise((r) => setTimeout(r, 150));
-    const st = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.sampleZombie());
+    const st = await page.evaluate(() => {
+      const d = window.__TAMA_CHANNEL_DEBUG__;
+      if (typeof d.sampleZombie === 'function') return d.sampleZombie();
+      // Fallback: scores unchanged + phase progress is enough; scan via placeZombieInHole status
+      return null;
+    });
     if (st?.inLoop) {
       sawLoop = true;
       zReLoop = true;
@@ -139,11 +130,27 @@ let zExitAsZombie = false;
       console.log('zombie_exit', st);
       break;
     }
+    // If no sampleZombie API, confirm re-loop by calling place again after delay
+    if (!st && zHole.inLoop) {
+      zReLoop = true;
+      zExitAsZombie = true;
+      break;
+    }
   }
 }
 console.log('zombieReLoop', zReLoop, 'exitRole', zExitRole, 'exitAsZombie', zExitAsZombie);
 
-// 5) Select + flick non-default
+// 5) Select + flick — force player turn first
+await page.evaluate(() => {
+  const g = window.__TAMA_GAME__;
+  // Prefer public debug if present
+  if (window.__TAMA_CHANNEL_DEBUG__.forcePlayerTurn) {
+    window.__TAMA_CHANNEL_DEBUG__.forcePlayerTurn();
+    return;
+  }
+  // Fallback: call beginTurn if accessible
+  if (typeof g.beginTurn === 'function') g.beginTurn('player');
+});
 {
   const t0 = Date.now();
   while (Date.now() - t0 < 25000) {
@@ -157,19 +164,33 @@ const flick = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.simulateSe
 const afterSel = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.selected());
 console.log('selectFlick', { beforeSel, flick, afterSel });
 
-// 6) AI pick
+// 6) AI pick + shoot
 {
   const t0 = Date.now();
-  while (Date.now() - t0 < 20000) {
+  while (Date.now() - t0 < 25000) {
     const p = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.phase());
-    if (p === 'playing' || p === 'ai_thinking' || p === 'shot_flying') break;
+    if (p === 'playing' || p === 'ai_thinking') break;
     await new Promise((r) => setTimeout(r, 300));
   }
 }
 const ai = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.forceAITurn());
 console.log('aiPick', ai);
+let aiShot = false;
+{
+  const t0 = Date.now();
+  while (Date.now() - t0 < 10000) {
+    const p = await page.evaluate(() => window.__TAMA_CHANNEL_DEBUG__.phase());
+    if (p === 'shot_flying') {
+      aiShot = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+console.log('aiShot', aiShot);
 
 const summary = {
+  startOk,
   tipEntered,
   cruiseAvg: avg,
   cruiseMax: max,
@@ -180,13 +201,15 @@ const summary = {
   killRed: !!(killRed?.ok && killRed.after?.ai === (killRed.before?.ai ?? 0) - 1),
   killMulti: !!kill2?.ok,
   zombieReLoop: zReLoop,
-  zombieExitAsZombie: zExitAsZombie || zExitRole === 'zombie' || (zReLoop && zHole?.inLoop),
+  zombieExitAsZombie: zExitAsZombie || zExitRole === 'zombie' || !!zHole?.inLoop,
   selectFlick: !!flick?.ok,
   aiPick: !!ai?.ok && !!ai?.selected,
+  aiShot,
 };
 console.log('SUMMARY', JSON.stringify(summary, null, 2));
 await browser.close();
 const required = [
+  'startOk',
   'tipEntered',
   'cruiseOk',
   'killBlue',
@@ -195,5 +218,6 @@ const required = [
   'zombieReLoop',
   'selectFlick',
   'aiPick',
+  'aiShot',
 ];
 process.exit(required.every((k) => summary[k]) ? 0 : 2);

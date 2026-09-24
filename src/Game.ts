@@ -131,7 +131,6 @@ import {
   experimentFieldCount,
   createExperimentFieldPlan,
   initExperimentMarble,
-  createTeamSolidDesign,
   mountExperimentVisuals,
   disposeExperiment,
   updateLoopTransits,
@@ -703,8 +702,16 @@ export class Game {
         selectMarble: (side?: TeamSide, index?: number) => { ok: boolean; reason?: string; x?: number; z?: number };
         selected: () => { player: { x: number; z: number } | null; ai: { x: number; z: number } | null };
         forceAITurn: () => { ok: boolean; selected?: { x: number; z: number } };
+        forcePlayerTurn: () => { ok: boolean };
+        sampleZombie: () => {
+          found: boolean;
+          role?: string;
+          inLoop?: boolean;
+          channelState?: string;
+          x?: number;
+          z?: number;
+        };
         simulateSelectAndFlick: () => { ok: boolean; reason?: string; selected?: { x: number; z: number } };
-        sampleZombie: () => { found: boolean; role?: string; inLoop?: boolean; channelState?: string; x?: number; z?: number };
       };
     };
     w.__TAMA_CHANNEL_DEBUG__ = {
@@ -753,6 +760,10 @@ export class Game {
           : null,
       }),
       forceAITurn: () => this.debugForceAITurn(),
+      forcePlayerTurn: () => {
+        this.beginTurn('player');
+        return { ok: !!this.playerMarble };
+      },
       simulateSelectAndFlick: () => this.debugSimulateSelectAndFlick(),
       sampleZombie: () => this.debugSampleZombie(),
     };
