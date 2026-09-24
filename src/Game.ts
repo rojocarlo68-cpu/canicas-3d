@@ -109,11 +109,11 @@ import {
   disposeMatchMode,
   resetMatchScores,
   refreshMatchHUD,
-  fieldPoolForMatchAI,
   shouldEndMatch,
-  getMatchScores,
+  matchReachedWinScore,
   showMatchEndOverlay,
   hideMatchEndOverlay,
+  planMatchAIShot,
 } from './l4MatchMode';
 import {
   createSpyBriefcase,
@@ -1005,6 +1005,11 @@ export class Game {
             onMenu: () => {
               window.location.href = buildMenuHref();
             },
+            onTargetScore: (scorer) => this.awardMatchModePoint(scorer),
+            getDisplayNames: () => ({
+              player: this.playerName,
+              ai: this.opponentName,
+            }),
           });
         }
       }
@@ -1800,22 +1805,24 @@ private spawnShootersInitial(): void {
         'banner-ai',
         2200,
       );
-      const mode =
-        this.sceneLevel === 3
-          ? 'hole_in'
-          : this.sceneLevel === 4
-            ? 'channel_out'
-            : 'circle_out';
-      const aiField = isMatchModeActive(this.sceneLevel)
-        ? fieldPoolForMatchAI(this.fieldMarbles)
-        : this.fieldMarbles;
-      this.aiPlan = planAIShot(
-        shooter,
-        aiField,
-        this.sceneLevel,
-        mode,
-        L3_HOLE_RADIUS,
-      );
+      if (isMatchModeActive(this.sceneLevel)) {
+        // Match AI: target-color aware, channel aim, open-edge avoidance
+        this.aiPlan = planMatchAIShot(shooter, this.fieldMarbles);
+      } else {
+        const mode =
+          this.sceneLevel === 3
+            ? 'hole_in'
+            : this.sceneLevel === 4
+              ? 'channel_out'
+              : 'circle_out';
+        this.aiPlan = planAIShot(
+          shooter,
+          this.fieldMarbles,
+          this.sceneLevel,
+          mode,
+          L3_HOLE_RADIUS,
+        );
+      }
       // Thinking pause ~2s before shooting
       this.aiThinkUntil = performance.now() + AI_THINK_MS + Math.random() * 250;
       this.setPhase('ai_thinking');
@@ -2740,6 +2747,12 @@ private spawnShootersInitial(): void {
         !this.aiKnocked.has(m);
 
       if (eligible) {
+        // Match mode: only target-color hole awards via beginLoopTransit → onTargetScore.
+        // Off-desk / wrong-path field exits do NOT increment the name-vs-name board.
+        if (isMatchModeActive(this.sceneLevel)) {
+          this.scoringMarbles.delete(m);
+          // Fall through to despawn / continue without knockout points
+        } else {
         const scorer = this.lastScorer ?? this.turn;
         const kx = m.body.position.x;
         const ky = Math.max(MARBLE_RADIUS * 2, m.body.position.y);
@@ -2771,6 +2784,7 @@ private spawnShootersInitial(): void {
             preferLower: false,
           }); /* caster:clutch */
         }
+        } // end non-match knockout scoring
       } else if (leftBowl && this.scoringMarbles.has(m)) {
         // Left bowl without hole — no score, remove from scoring set
         this.scoringMarbles.delete(m);
@@ -2843,6 +2857,32 @@ private spawnShootersInitial(): void {
    * L4 match-mode end: simple score overlay, no money/gacha/rankings.
    * Called only after settle + loops finished (tryFinishShotTurn).
    */
+  /**
+   * Award +1 on the EXISTING name-vs-name scoreboard (playerScore/aiScore).
+   * Called from color-target score hook when a TARGET_COLOR marble enters the hole.
+   * Does not create a parallel scorer.
+   */
+  private awardMatchModePoint(scorer: 'player' | 'ai' | null): void {
+    if (this.phase === 'ended') return;
+    if (scorer === 'player') {
+      this.playerScore += 1;
+      this.commentator?.say('knockout', {
+        side: 'player',
+        force: true,
+        preferLower: false,
+      });
+    } else if (scorer === 'ai') {
+      this.aiScore += 1;
+      this.commentator?.say('knockout', {
+        side: 'ai',
+        force: true,
+        preferLower: false,
+      });
+    }
+    this.updateScoreHUD();
+    // Win is resolved after settle + loops in tryFinishShotTurn (first to 5).
+  }
+
   private endMatchModeGame(): void {
     this.setPhase('ended');
     this.canPlayerShoot = false;
@@ -2856,8 +2896,8 @@ private spawnShootersInitial(): void {
     this.clearKnockoutCamPunch(false);
     this.stopAIDirector();
     this.scoringEnabled = false;
-    const { player, ai } = getMatchScores();
-    showMatchEndOverlay(player, ai);
+    // Existing identity: playerName vs opponentName (same as scoreboard)
+    showMatchEndOverlay(this.playerScore, this.aiScore);
     this.updateTurnHUD();
   }
 
@@ -3388,10 +3428,15 @@ private spawnShootersInitial(): void {
     // cullExitsWithoutScore may have ended the match
     if (this.phase !== 'shot_flying') return;
 
-    // L4 match mode: evaluate end only after full settle + loops done
-    if (isMatchModeActive(this.sceneLevel) && shouldEndMatch(this.fieldMarbles)) {
-      this.endMatchModeGame();
-      return;
+    // L4 match mode: end after settle + loops — first to 5 primary; mat count secondary
+    if (isMatchModeActive(this.sceneLevel)) {
+      if (
+        matchReachedWinScore(this.playerScore, this.aiScore) ||
+        shouldEndMatch(this.fieldMarbles)
+      ) {
+        this.endMatchModeGame();
+        return;
+      }
     }
 
     this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */

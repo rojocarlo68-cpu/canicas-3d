@@ -5,7 +5,7 @@
  * hole elimination/scoring behaves exactly as before this PR.
  *
  * Flow (flag on): MAT → CHANNEL → SW HOLE → under-desk loop → return hatch on mat.
- * Points awarded on hole entry if marble colorTag matches TARGET_COLOR.
+ * Points awarded on hole entry if marble colorTag matches getTargetColor().
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
@@ -29,7 +29,32 @@ export const ENABLE_COLOR_TARGET_EXPERIMENT = true;
 
 export type ColorTag = 'rojo' | 'azul' | 'verde' | 'amarillo' | 'otro';
 
-export const TARGET_COLOR: ColorTag = 'rojo';
+/** Playable match target colors (excludes 'otro'). */
+export type PlayableColorTag = Exclude<ColorTag, 'otro'>;
+
+const PLAYABLE_TARGET_COLORS: PlayableColorTag[] = [
+  'rojo',
+  'azul',
+  'verde',
+  'amarillo',
+];
+
+/**
+ * Current target color for the color-target experiment / match.
+ * Randomized once at match start (does NOT change mid-match or after each point).
+ */
+let currentTargetColor: PlayableColorTag = 'rojo';
+
+export function getTargetColor(): PlayableColorTag {
+  return currentTargetColor;
+}
+
+/** Pick a fresh random target for the whole match. */
+export function randomizeTargetColor(): PlayableColorTag {
+  const i = Math.floor(Math.random() * PLAYABLE_TARGET_COLORS.length);
+  currentTargetColor = PLAYABLE_TARGET_COLORS[i]!;
+  return currentTargetColor;
+}
 
 export type SideScorer = 'player' | 'ai';
 
@@ -128,19 +153,20 @@ export function mountExperimentHUD(): void {
 export function updateExperimentPoints(): void {
   if (!hudEl) hudEl = document.getElementById(HUD_ID);
   if (!hudEl) return;
+  const color = getTargetColor();
   const label =
-    TARGET_COLOR === 'rojo'
+    color === 'rojo'
       ? 'ROJO'
-      : TARGET_COLOR === 'azul'
+      : color === 'azul'
         ? 'AZUL'
-        : TARGET_COLOR === 'verde'
+        : color === 'verde'
           ? 'VERDE'
-          : TARGET_COLOR === 'amarillo'
+          : color === 'amarillo'
             ? 'AMARILLO'
             : 'OTRO';
   hudEl.innerHTML = `
     <div class="l4-ct-title">🎯 OBJETIVO</div>
-    <div class="l4-ct-color l4-ct-${TARGET_COLOR}">${label}</div>
+    <div class="l4-ct-color l4-ct-${color}">${label}</div>
     <div class="l4-ct-points">PUNTOS: ${points}</div>
   `;
   hudEl.classList.remove('hidden');
@@ -271,7 +297,7 @@ export function beginLoopTransit(
 
   const tag = marbleColorTag(marble);
   const resolvedScorer = scorer;
-  if (tag === TARGET_COLOR && !scoredThisTransit.has(marble)) {
+  if (tag === getTargetColor() && !scoredThisTransit.has(marble)) {
     scoredThisTransit.add(marble);
     if (scoreHook) {
       // Match mode (or other layer) owns attribution / HUD
