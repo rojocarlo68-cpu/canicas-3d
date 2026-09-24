@@ -84,6 +84,7 @@ import {
   installMarbleAudioUnlock,
   updateMarbleWoodRoll,
   stopMarbleWoodRoll,
+  ENABLE_MARBLE_SFX,
 } from './marbleSounds';
 import {
   createSpyBriefcase,
@@ -3005,7 +3006,9 @@ private spawnShootersInitial(): void {
     if (this.sceneLevel !== 4) return;
     // Match simulated time from world.step(1/120, physDt, 10)
     const dt = Math.max(1 / 240, Math.min(frameDt, 10 / 120));
-    const cruiseSpeed = 0.65; // m/s — fast travel through channel (was 0.34, felt stuck live)
+    /** Independent of color-target experiment — Carlo asked for slower channel roll. Was 0.65. */
+    const L4_CHANNEL_CRUISE_SPEED = 0.32;
+    const cruiseSpeed = L4_CHANNEL_CRUISE_SPEED;
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
@@ -3289,7 +3292,7 @@ private spawnShootersInitial(): void {
    * Speed-gated; ducked under clacks inside marbleSounds.
    */
   private updateL4WoodRollSfx(): void {
-    if (this.sceneLevel !== 4) {
+    if (!ENABLE_MARBLE_SFX || this.sceneLevel !== 4) {
       stopMarbleWoodRoll();
       return;
     }

@@ -3,6 +3,9 @@
  * AudioContext unlocks on first user gesture; buffers preload after unlock.
  */
 
+/** Master switch: false = all marble SFX no-ops (samples + procedural + wood-roll). */
+export const ENABLE_MARBLE_SFX = false;
+
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let lastPlayMs = 0;
@@ -130,6 +133,7 @@ async function decodeUrl(audio: AudioContext, rel: string): Promise<AudioBuffer 
 
 /** Prefetch + decode all curated banks (idempotent). */
 export function preloadMarbleSfx(): void {
+  if (!ENABLE_MARBLE_SFX) return;
   if (preloadStarted) return;
   const audio = ensureAudio();
   if (!audio) return;
@@ -267,6 +271,7 @@ function playProceduralClack(
  * @param impactAbs absolute impact velocity along contact normal (m/s)
  */
 export function playMarbleClack(impactAbs: number): void {
+  if (!ENABLE_MARBLE_SFX) return;
   if (muted) return;
   if (impactAbs < MIN_IMPACT) return;
   const now = performance.now();
@@ -309,6 +314,7 @@ export function playMarbleClack(impactAbs: number): void {
  * L4: marble landing on room floor / tile after falling off the desk.
  */
 export function playMarbleFloorHit(impactAbs: number): void {
+  if (!ENABLE_MARBLE_SFX) return;
   if (muted) return;
   if (impactAbs < MIN_FLOOR_IMPACT) return;
   const now = performance.now();
@@ -381,6 +387,10 @@ function ensureWoodRollNodes(audio: AudioContext, dest: GainNode): boolean {
  * @param speed01 0 = fade out / stop; ~0.15–1 = roll intensity from marble speed
  */
 export function updateMarbleWoodRoll(speed01: number): void {
+  if (!ENABLE_MARBLE_SFX) {
+    stopMarbleWoodRoll(true);
+    return;
+  }
   if (muted) {
     stopMarbleWoodRoll(true);
     return;
