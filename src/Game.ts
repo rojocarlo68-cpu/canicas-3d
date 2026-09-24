@@ -84,7 +84,22 @@ import {
   installMarbleAudioUnlock,
   updateMarbleWoodRoll,
   stopMarbleWoodRoll,
+  ENABLE_MARBLE_SFX,
 } from './marbleSounds';
+import {
+  ENABLE_COLOR_TARGET_EXPERIMENT,
+  isColorTargetExperimentActive,
+  shouldInterceptL4Hole,
+  beginLoopTransit,
+  isMarbleInLoop,
+  updateLoopTransits,
+  mountExperimentHUD,
+  resetExperimentPoints,
+  mountExperimentVisuals,
+  disposeExperiment,
+  createL4ExperimentFieldDesigns,
+  getReturnHatchXZ,
+} from './l4ColorTargetExperiment';
 import {
   createSpyBriefcase,
   resetBriefcase,
@@ -508,7 +523,11 @@ export class Game {
     this.applyEquippedSkinFromSave();
     this.loadPlayerIdentityFromSave();
     this.fieldDesigns =
-      this.sceneLevel === 3 ? createLevel3FieldDesigns() : createFieldDesigns();
+      this.sceneLevel === 3
+        ? createLevel3FieldDesigns()
+        : this.sceneLevel === 4 && ENABLE_COLOR_TARGET_EXPERIMENT
+          ? createL4ExperimentFieldDesigns(createFieldDesigns())
+          : createFieldDesigns();
     // AI skill tier follows map level (L1 easy → L3 strongest)
     this.level = this.sceneLevel;
     this.els.levelLabel.textContent = sceneLevelLabel(this.sceneLevel);
@@ -651,6 +670,7 @@ export class Game {
     // Force-hide even if sceneLevel were still 4 during teardown / title return
     document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
     document.getElementById('l4-mat-menu')?.classList.add('hidden');
+    disposeExperiment(this.scene);
     this.commentator?.dispose(); /* caster:dispose */
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
@@ -959,6 +979,11 @@ export class Game {
       if (this.sky) this.sky.visible = false;
       this.groundMesh.visible = false;
       if (this.circleMesh) this.circleMesh.visible = false;
+      if (isColorTargetExperimentActive(4)) {
+        mountExperimentVisuals(this.scene, this.officeDesk);
+        mountExperimentHUD();
+        resetExperimentPoints();
+      }
     } else {
       const park = buildPark(this.scene);
       this.streetLamps = park.lamps;
@@ -1277,6 +1302,7 @@ export class Game {
     this.clearKnockoutCamPunch(false);
     this.exitSlowMo(false);
     this.particles?.clear();
+    if (isColorTargetExperimentActive(this.sceneLevel)) resetExperimentPoints();
     this.updateScoreHUD();
   }
 
@@ -1396,6 +1422,24 @@ export class Game {
       const out =
         dist > CIRCLE_RADIUS + OUT_MARGIN || m.body.position.y < -0.05 || offL4;
       if (offL4) {
+        // Experiment: hole during drop → put back on mat (do not eliminate).
+        // Real off-desk fall still eliminates as before.
+        const inHole =
+          l4 &&
+          this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
+        if (isColorTargetExperimentActive(4) && inHole) {
+          const exit = getReturnHatchXZ();
+          const ry = l4MarbleRestY(exit.x, exit.z) ?? MARBLE_REST_Y;
+          m.body.position.set(exit.x, ry, exit.z);
+          m.body.velocity.setZero();
+          m.body.angularVelocity.setZero();
+          m.body.type = CANNON.Body.DYNAMIC;
+          m.active = true;
+          m.mesh.visible = true;
+          this.scoringMarbles.add(m);
+          this.syncOneMesh(m);
+          continue;
+        }
         // Fell off desk / through hole during drop — eliminate, never float
         m.active = false;
         m.mesh.visible = false;
@@ -2596,9 +2640,25 @@ private spawnShootersInitial(): void {
 
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
+      if (isMarbleInLoop(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
+      // Experiment: channel→hole becomes under-desk loop (no eliminate / no knockout money).
+      if (
+        l4 &&
+        inL4Hole &&
+        isColorTargetExperimentActive(4) &&
+        shouldInterceptL4Hole(m)
+      ) {
+        beginLoopTransit(m, this.officeDesk, this.scene);
+        continue;
+      }
+      // Off-desk floor fall: treat hole as NOT off-desk when experiment is on (handled above).
+      const offDeskFloor =
+        l4 &&
+        !inL4Hole &&
+        this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z);
+      const fallen = m.body.position.y < -0.05 || offDeskFloor || (l4 && !isColorTargetExperimentActive(4) && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       // L1/L2: out of chalk circle. L3: into the center hole. L4: single south channel hole.
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
@@ -3005,11 +3065,14 @@ private spawnShootersInitial(): void {
     if (this.sceneLevel !== 4) return;
     // Match simulated time from world.step(1/120, physDt, 10)
     const dt = Math.max(1 / 240, Math.min(frameDt, 10 / 120));
-    const cruiseSpeed = 0.65; // m/s — fast travel through channel (was 0.34, felt stuck live)
+    /** Independent of color-target experiment — Carlo asked for slower channel roll. Was 0.65. */
+    const L4_CHANNEL_CRUISE_SPEED = 0.32;
+    const cruiseSpeed = L4_CHANNEL_CRUISE_SPEED;
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
+      if (isMarbleInLoop(m)) continue;
       const body = m.body;
       if (body.type !== CANNON.Body.DYNAMIC) continue;
       const x = body.position.x;
@@ -3091,6 +3154,7 @@ private spawnShootersInitial(): void {
 
     for (const m of list) {
       if (!m.active) continue;
+      if (isMarbleInLoop(m)) continue;
       const body = m.body;
       if (body.type === CANNON.Body.STATIC) continue;
       const p = body.position;
@@ -3289,7 +3353,7 @@ private spawnShootersInitial(): void {
    * Speed-gated; ducked under clacks inside marbleSounds.
    */
   private updateL4WoodRollSfx(): void {
-    if (this.sceneLevel !== 4) {
+    if (!ENABLE_MARBLE_SFX || this.sceneLevel !== 4) {
       stopMarbleWoodRoll();
       return;
     }
@@ -3992,6 +4056,7 @@ private spawnShootersInitial(): void {
     // cancel translation (root cause of live spin-in-place). Uses simulated dt.
     const simDt = Math.min(physDt, 10 / 120);
     this.applyL4ChannelDrain(simDt);
+    updateLoopTransits(simDt);
     this.updateL4WoodRollSfx();
     this.updateSlowMo(dt);
     this.updateKnockoutCamPunch(dt);
@@ -4361,10 +4426,30 @@ private spawnShootersInitial(): void {
 
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
+      if (isMarbleInLoop(m)) continue;
       if (!this.scoringMarbles.has(m)) continue;
       const dist = Math.hypot(m.body.position.x, m.body.position.z);
-      const fallen = m.body.position.y < -0.05 || (l4 && this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const inL4Hole = l4 && this.isInL4Hole(m.body.position.x, m.body.position.y, m.body.position.z);
+      // Experiment: hole during aim window → loop (keep scoring eligibility)
+      if (
+        l4 &&
+        inL4Hole &&
+        isColorTargetExperimentActive(4) &&
+        shouldInterceptL4Hole(m)
+      ) {
+        beginLoopTransit(m, this.officeDesk, this.scene);
+        continue;
+      }
+      const offDeskFloor =
+        l4 &&
+        !inL4Hole &&
+        this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z);
+      const fallen =
+        m.body.position.y < -0.05 ||
+        offDeskFloor ||
+        (l4 &&
+          !isColorTargetExperimentActive(4) &&
+          this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z));
       const scored = l3
         ? holeOpen && (dist < L3_HOLE_RADIUS + OUT_MARGIN || fallen)
         : l4

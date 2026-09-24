@@ -9,10 +9,14 @@ import {
   MARBLE_ANGULAR_DAMPING,
 } from './constants';
 
+export type MarbleColorTag = 'rojo' | 'azul' | 'verde' | 'amarillo' | 'otro';
+
 export type MarbleDesign = {
   id: string;
   name: string;
   material: THREE.MeshPhysicalMaterial;
+  /** Optional color category for L4 color-target experiment. */
+  colorTag?: MarbleColorTag;
 };
 
 export type MarbleOwner = 'field' | 'player' | 'ai';
@@ -133,6 +137,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'azul-cristal',
       name: 'Azul cristal',
+      colorTag: 'azul',
       material: solidGlass('#1e88e5', {
         roughness: 0.1,
         clearcoat: 1,
@@ -147,6 +152,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'ojo-gato',
       name: 'Ojo de gato',
+      colorTag: 'rojo',
       material: glassMat((ctx, s) => {
         ctx.fillStyle = '#f5f5f5';
         ctx.fillRect(0, 0, s, s);
@@ -169,6 +175,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'verde-bosque',
       name: 'Verde bosque',
+      colorTag: 'verde',
       material: glassMat((ctx, s) => {
         swirlPattern(ctx, s, '#1b5e20', ['#a5d6a7', '#66bb6a', '#004d40', '#c8e6c9']);
       }, { roughness: 0.18 }),
@@ -176,6 +183,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'swirl-morado',
       name: 'Remolino morado',
+      colorTag: 'otro',
       material: glassMat((ctx, s) => {
         swirlPattern(ctx, s, '#4a148c', ['#f9a825', '#ce93d8', '#ffd54f', '#7b1fa2']);
       }),
@@ -183,6 +191,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'ambar',
       name: 'Ámbar',
+      colorTag: 'amarillo',
       material: solidGlass('#ff8f00', {
         transparent: true,
         opacity: 0.9,
@@ -194,6 +203,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'naranja-swirl',
       name: 'Naranja swirl',
+      colorTag: 'amarillo',
       material: glassMat((ctx, s) => {
         swirlPattern(ctx, s, '#e65100', ['#fff3e0', '#ffcc80', '#bf360c', '#ffe0b2']);
       }),
@@ -201,6 +211,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'azul-blanco',
       name: 'Azul y blanco',
+      colorTag: 'azul',
       material: glassMat((ctx, s) => {
         ctx.fillStyle = '#0d47a1';
         ctx.fillRect(0, 0, s, s);
@@ -219,6 +230,7 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'negra-onyx',
       name: 'Ónix',
+      colorTag: 'otro',
       material: glassMat((ctx, s) => {
         swirlPattern(ctx, s, '#121212', ['#616161', '#9e9e9e', '#37474f', '#eceff1']);
       }, { roughness: 0.2, metalness: 0.15 }),
@@ -226,13 +238,28 @@ export function createFieldDesigns(): MarbleDesign[] {
     {
       id: 'amarilla',
       name: 'Amarilla',
+      colorTag: 'amarillo',
       material: glassMat((ctx, s) => {
         swirlPattern(ctx, s, '#f9a825', ['#fffde7', '#ff6f00', '#ffecb3', '#f57f17']);
       }),
     },
     {
+      id: 'roja-cristal',
+      name: 'Roja cristal',
+      colorTag: 'rojo',
+      material: solidGlass('#e53935', {
+        transparent: true,
+        opacity: 0.92,
+        transmission: 0.18,
+        thickness: 0.4,
+        roughness: 0.12,
+        ior: 1.5,
+      }),
+    },
+    {
       id: 'rosa-cristal',
       name: 'Rosa translúcida',
+      colorTag: 'otro',
       material: solidGlass('#ec407a', {
         transparent: true,
         opacity: 0.88,
