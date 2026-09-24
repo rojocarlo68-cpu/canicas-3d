@@ -93,6 +93,7 @@ import {
   shouldInterceptL4Hole,
   beginLoopTransit,
   isMarbleInLoop,
+  hasActiveLoopTransits,
   updateLoopTransits,
   mountExperimentHUD,
   resetExperimentPoints,
@@ -102,6 +103,18 @@ import {
   shuffleExperimentFieldDesigns,
   getReturnHatchXZ,
 } from './l4ColorTargetExperiment';
+import {
+  isMatchModeActive,
+  mountMatchMode,
+  disposeMatchMode,
+  resetMatchScores,
+  refreshMatchHUD,
+  fieldPoolForMatchAI,
+  shouldEndMatch,
+  getMatchScores,
+  showMatchEndOverlay,
+  hideMatchEndOverlay,
+} from './l4MatchMode';
 import {
   createSpyBriefcase,
   resetBriefcase,
@@ -672,6 +685,7 @@ export class Game {
     // Force-hide even if sceneLevel were still 4 during teardown / title return
     document.getElementById('btn-l4-personalizar')?.classList.add('hidden');
     document.getElementById('l4-mat-menu')?.classList.add('hidden');
+    disposeMatchMode();
     disposeExperiment(this.scene);
     this.commentator?.dispose(); /* caster:dispose */
     cancelAnimationFrame(this.animId);
@@ -985,6 +999,14 @@ export class Game {
         mountExperimentVisuals(this.scene, this.officeDesk);
         mountExperimentHUD();
         resetExperimentPoints();
+        if (isMatchModeActive(4)) {
+          mountMatchMode({
+            onReplay: () => this.restart(),
+            onMenu: () => {
+              window.location.href = buildMenuHref();
+            },
+          });
+        }
       }
     } else {
       const park = buildPark(this.scene);
@@ -1269,6 +1291,14 @@ export class Game {
   }
 
   private updateTurnHUD(): void {
+    if (isMatchModeActive(this.sceneLevel)) {
+      const label = this.turn === 'player' ? '🎮 TU TURNO' : '🤖 TURNO DE LA CPU';
+      this.els.turnLabel.textContent = label;
+      this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
+      this.els.turnLabel.classList.toggle('turn-ai', this.turn === 'ai');
+      refreshMatchHUD(this.turn);
+      return;
+    }
     const name = this.turn === 'player' ? this.playerName : this.opponentName;
     this.els.turnLabel.textContent = t('hud.turn.player', { name });
     this.els.turnLabel.classList.toggle('turn-player', this.turn === 'player');
@@ -1305,6 +1335,7 @@ export class Game {
     this.exitSlowMo(false);
     this.particles?.clear();
     if (isColorTargetExperimentActive(this.sceneLevel)) resetExperimentPoints();
+    if (isMatchModeActive(this.sceneLevel)) resetMatchScores();
     this.updateScoreHUD();
   }
 
@@ -1401,10 +1432,17 @@ export class Game {
     if (this.aiMarble) list.push(this.aiMarble);
     for (const m of list) {
       if (!m.active) continue;
+      // Kinematic loop bodies report ~0 velocity — wait separately for match mode
+      if (isMarbleInLoop(m)) {
+        if (isMatchModeActive(this.sceneLevel)) return false;
+        continue;
+      }
       const v = m.body.velocity.length();
       const w = m.body.angularVelocity.length();
       if (v > SETTLE_SPEED || w > SETTLE_SPEED * 40) return false;
     }
+    // Match mode: also wait until under-desk loop transits finish
+    if (isMatchModeActive(this.sceneLevel) && hasActiveLoopTransits()) return false;
     return true;
   }
 
@@ -1430,6 +1468,7 @@ export class Game {
     this.playerScore = 0;
     this.aiScore = 0;
     this.lastScorer = null;
+    if (isMatchModeActive(this.sceneLevel)) resetMatchScores();
     this.updateScoreHUD();
 
     const l4 = this.sceneLevel === 4;
@@ -1767,9 +1806,12 @@ private spawnShootersInitial(): void {
           : this.sceneLevel === 4
             ? 'channel_out'
             : 'circle_out';
+      const aiField = isMatchModeActive(this.sceneLevel)
+        ? fieldPoolForMatchAI(this.fieldMarbles)
+        : this.fieldMarbles;
       this.aiPlan = planAIShot(
         shooter,
-        this.fieldMarbles,
+        aiField,
         this.sceneLevel,
         mode,
         L3_HOLE_RADIUS,
@@ -2671,7 +2713,7 @@ private spawnShootersInitial(): void {
         isColorTargetExperimentActive(4) &&
         shouldInterceptL4Hole(m)
       ) {
-        beginLoopTransit(m, this.officeDesk, this.scene);
+        beginLoopTransit(m, this.officeDesk, this.scene, undefined, this.lastScorer);
         continue;
       }
       // Off-desk floor fall: treat hole as NOT off-desk when experiment is on (handled above).
@@ -2746,6 +2788,8 @@ private spawnShootersInitial(): void {
 
     // End when no scoring-set marbles remain in play (all knocked or none ever eligible)
     if (this.scoringMarbles.size === 0 && this.fieldMarbles.length > 0) {
+      // Match mode uses its own end condition (playable-on-mat) after settle
+      if (isMatchModeActive(this.sceneLevel)) return false;
       this.endGame();
       return true;
     }
@@ -2794,6 +2838,28 @@ private spawnShootersInitial(): void {
     return false;
   }
 
+
+  /**
+   * L4 match-mode end: simple score overlay, no money/gacha/rankings.
+   * Called only after settle + loops finished (tryFinishShotTurn).
+   */
+  private endMatchModeGame(): void {
+    this.setPhase('ended');
+    this.canPlayerShoot = false;
+    this.disarmPlayerIdleHint();
+    this.hideLocationBanner();
+    this.cancelAimGesture(true);
+    this.els.powerWrap.classList.add('hidden');
+    this.controls.enabled = true;
+    this.markerGroup.visible = false;
+    this.camEase = null;
+    this.clearKnockoutCamPunch(false);
+    this.stopAIDirector();
+    this.scoringEnabled = false;
+    const { player, ai } = getMatchScores();
+    showMatchEndOverlay(player, ai);
+    this.updateTurnHUD();
+  }
 
   private endGame(): void {
     this.setPhase('ended');
@@ -2901,6 +2967,7 @@ private spawnShootersInitial(): void {
     }
     this.forcedWinner = null;
     this.commentator?.hide(); /* caster:restart */
+    hideMatchEndOverlay();
     this.els.endScreen.classList.add('hidden');
     this.els.gachaOverlay.classList.add('hidden');
     this.hideVictoryScreen();
@@ -3270,7 +3337,8 @@ private spawnShootersInitial(): void {
     if (now - this.shotSettleTimer < 450) return;
     if (!this.allRelevantSettled()) {
       if (now - this.shotSettleTimer > SETTLE_MAX_MS) {
-        // force continue
+        // force continue — except never while match-mode loop transit is active
+        if (isMatchModeActive(this.sceneLevel) && hasActiveLoopTransits()) return;
       } else {
         return;
       }
@@ -3319,6 +3387,12 @@ private spawnShootersInitial(): void {
 
     // cullExitsWithoutScore may have ended the match
     if (this.phase !== 'shot_flying') return;
+
+    // L4 match mode: evaluate end only after full settle + loops done
+    if (isMatchModeActive(this.sceneLevel) && shouldEndMatch(this.fieldMarbles)) {
+      this.endMatchModeGame();
+      return;
+    }
 
     this.commentator?.say('endTurn', { preferLower: true }); /* caster:endTurn */
 
@@ -4458,7 +4532,7 @@ private spawnShootersInitial(): void {
         isColorTargetExperimentActive(4) &&
         shouldInterceptL4Hole(m)
       ) {
-        beginLoopTransit(m, this.officeDesk, this.scene);
+        beginLoopTransit(m, this.officeDesk, this.scene, undefined, this.lastScorer);
         continue;
       }
       const offDeskFloor =
@@ -4510,7 +4584,8 @@ private spawnShootersInitial(): void {
       this.phase !== 'dropping' &&
       this.phase !== 'settling'
     ) {
-      this.endGame();
+      // Match mode: defer to settle handoff (shouldEndMatch)
+      if (!isMatchModeActive(this.sceneLevel)) this.endGame();
     }
   }
 

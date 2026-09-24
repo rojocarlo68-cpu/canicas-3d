@@ -1909,3 +1909,80 @@ body {
   font-weight: 700;
   color: #ffe08a;
 }
+
+/* L4 match mode HUD extras (reversible via ENABLE_MATCH_MODE) */
+.l4-ct-match-scores {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ffe08a;
+  line-height: 1.25;
+}
+.l4-ct-side {
+  letter-spacing: 0.02em;
+}
+.l4-ct-turn {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.l4-ct-turn-player {
+  color: #7CFC9A;
+}
+.l4-ct-turn-ai {
+  color: #9ecbff;
+}
+
+.l4-match-end-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+.l4-match-end-overlay.hidden {
+  display: none;
+}
+.l4-match-end-card {
+  min-width: 16rem;
+  max-width: 90vw;
+  padding: 1.4rem 1.6rem 1.2rem;
+  border-radius: 16px;
+  background: rgba(12, 8, 6, 0.92);
+  border: 1px solid rgba(255, 90, 60, 0.5);
+  color: #f5e6c8;
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  font-family: system-ui, sans-serif;
+}
+.l4-match-end-scores {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.45;
+  margin-bottom: 0.65rem;
+  color: #ffe08a;
+}
+.l4-match-end-winner {
+  font-size: 1.45rem;
+  font-weight: 900;
+  margin-bottom: 1rem;
+  color: #fff;
+  text-shadow: 0 0 12px rgba(255, 80, 40, 0.45);
+}
+.l4-match-end-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.l4-match-end-actions .premium-btn {
+  min-width: 7rem;
+}

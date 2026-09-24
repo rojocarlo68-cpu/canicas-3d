@@ -31,6 +31,22 @@ export type ColorTag = 'rojo' | 'azul' | 'verde' | 'amarillo' | 'otro';
 
 export const TARGET_COLOR: ColorTag = 'rojo';
 
+export type SideScorer = 'player' | 'ai';
+
+export type ColorTargetScoreInfo = {
+  scorer: SideScorer | null;
+  tag: ColorTag;
+  marble: MarbleEntity;
+};
+
+type ScoreHook = (info: ColorTargetScoreInfo) => void;
+let scoreHook: ScoreHook | null = null;
+
+/** Match mode (or tests) can claim +1 awards; when null, global experiment points are used. */
+export function setColorTargetScoreHook(hook: ScoreHook | null): void {
+  scoreHook = hook;
+}
+
 const LOOP_DURATION_S = 1.55;
 const HUD_ID = 'l4-color-target-hud';
 
@@ -41,6 +57,8 @@ type LoopState = {
   path: THREE.Vector3[];
   savedFilterGroup: number;
   savedFilterMask: number;
+  /** Side that took the shot which caused hole entry — attribute score by this, not current turn. */
+  scorer: SideScorer | null;
   onComplete?: () => void;
 };
 
@@ -66,6 +84,11 @@ export function resetExperimentPoints(): void {
 
 export function isMarbleInLoop(marble: MarbleEntity): boolean {
   return looping.has(marble);
+}
+
+/** True while any marble is in under-desk kinematic loop transit. */
+export function hasActiveLoopTransits(): boolean {
+  return looping.size > 0;
 }
 
 export function shouldInterceptL4Hole(marble: MarbleEntity): boolean {
@@ -241,15 +264,22 @@ export function beginLoopTransit(
   desk: OfficeDeskBuild | null,
   _scene: THREE.Scene,
   onComplete?: () => void,
+  scorer: SideScorer | null = null,
 ): void {
   if (!ENABLE_COLOR_TARGET_EXPERIMENT) return;
   if (looping.has(marble)) return;
 
   const tag = marbleColorTag(marble);
+  const resolvedScorer = scorer;
   if (tag === TARGET_COLOR && !scoredThisTransit.has(marble)) {
-    points += 1;
     scoredThisTransit.add(marble);
-    updateExperimentPoints();
+    if (scoreHook) {
+      // Match mode (or other layer) owns attribution / HUD
+      scoreHook({ scorer: resolvedScorer, tag, marble });
+    } else {
+      points += 1;
+      updateExperimentPoints();
+    }
   }
   // Allow scoring again on a later hole entry after they return
   // (clear after complete — see finishLoop)
@@ -277,6 +307,7 @@ export function beginLoopTransit(
     path,
     savedFilterGroup,
     savedFilterMask,
+    scorer: resolvedScorer,
     onComplete,
   });
 }
@@ -359,6 +390,7 @@ export function disposeExperiment(scene?: THREE.Scene): void {
   }
   looping.clear();
   scoredThisTransit.clear();
+  scoreHook = null;
   disposeExperimentVisuals(scene);
   hideExperimentHUD();
   points = 0;
