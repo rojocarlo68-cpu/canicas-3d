@@ -76,7 +76,6 @@ import {
   l4ChannelLateral,
   L4_PIPE_R,
   applyL4ShooterCollisionFilter,
-  applyL4ExperimentShooterCollisionFilter,
   applyL4FieldMarbleCollisionFilter,
 } from './officeDesk';
 import {
@@ -151,11 +150,13 @@ import {
   isHealthyTeamMarble,
   isZombieMarble,
   experimentAITargetBias,
+  experimentAIPickShooter,
   experimentVictoryMessage,
   burstShatter,
   abortLoopTransit,
   applyTeamAppearance,
   finishEliminationFX,
+  applyZombieAppearance,
   type TeamSide,
 } from './l4ChannelRescueExperiment';
 import { planAIShot, impulseFromPower } from './ai';
@@ -245,6 +246,8 @@ export class Game {
   private controlMode: ControlMode = resolveControlMode();
 
   private aiming = false;
+  /** Experiment: tap-to-select candidate (not yet confirmed as aim). */
+  private pendingSelectMarble: MarbleEntity | null = null;
   private aimPointerId: number | null = null;
   private aimStartClientX = 0;
   private aimStartClientY = 0;
@@ -693,6 +696,15 @@ export class Game {
           inLoop: number;
           phase: string;
         };
+        scores: () => { player: number; ai: number };
+        makeZombie: (side?: TeamSide) => { ok: boolean; reason?: string };
+        pushZombieInto: (side: TeamSide) => { ok: boolean; reason?: string; before?: { player: number; ai: number }; after?: { player: number; ai: number } };
+        placeZombieInHole: () => { ok: boolean; reason?: string; inLoop?: boolean };
+        selectMarble: (side?: TeamSide, index?: number) => { ok: boolean; reason?: string; x?: number; z?: number };
+        selected: () => { player: { x: number; z: number } | null; ai: { x: number; z: number } | null };
+        forceAITurn: () => { ok: boolean; selected?: { x: number; z: number } };
+        simulateSelectAndFlick: () => { ok: boolean; reason?: string; selected?: { x: number; z: number } };
+        sampleZombie: () => { found: boolean; role?: string; inLoop?: boolean; channelState?: string; x?: number; z?: number };
       };
     };
     w.__TAMA_CHANNEL_DEBUG__ = {
@@ -724,6 +736,25 @@ export class Game {
           phase: this.phase,
         };
       },
+      scores: () => {
+        const s = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+        return { player: s.player, ai: s.ai };
+      },
+      makeZombie: (side: TeamSide = 'ai') => this.debugMakeZombie(side),
+      pushZombieInto: (side: TeamSide) => this.debugPushZombieInto(side),
+      placeZombieInHole: () => this.debugPlaceZombieInHole(),
+      selectMarble: (side: TeamSide = 'player', index = 1) => this.debugSelectMarble(side, index),
+      selected: () => ({
+        player: this.playerMarble
+          ? { x: this.playerMarble.body.position.x, z: this.playerMarble.body.position.z }
+          : null,
+        ai: this.aiMarble
+          ? { x: this.aiMarble.body.position.x, z: this.aiMarble.body.position.z }
+          : null,
+      }),
+      forceAITurn: () => this.debugForceAITurn(),
+      simulateSelectAndFlick: () => this.debugSimulateSelectAndFlick(),
+      sampleZombie: () => this.debugSampleZombie(),
     };
     const loop = () => {
       this.animId = requestAnimationFrame(loop);
@@ -732,6 +763,178 @@ export class Game {
     loop();
   }
 
+
+
+  private debugMakeZombie(side: TeamSide): { ok: boolean; reason?: string } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const commanders = new Set(
+      [this.playerMarble, this.aiMarble].filter(Boolean) as MarbleEntity[],
+    );
+    const pick =
+      this.fieldMarbles.find(
+        (m) =>
+          m.active &&
+          isHealthyTeamMarble(m) &&
+          m.owner === side &&
+          !commanders.has(m) &&
+          !isMarbleInLoop(m) &&
+          !isZombieMarble(m),
+      ) ?? null;
+    if (!pick) return { ok: false, reason: 'no_candidate' };
+    applyZombieAppearance(pick);
+    pick.body.allowSleep = false;
+    pick.body.wakeUp();
+    const y = l4MarbleRestY(0.05, 0.05) ?? MARBLE_REST_Y;
+    pick.body.position.set(0.05, y, 0.05);
+    pick.body.velocity.setZero();
+    pick.body.angularVelocity.setZero();
+    this.snapMarblePhysics(pick, true);
+    this.syncOneMesh(pick);
+    this.syncExperimentScores();
+    return { ok: true };
+  }
+
+  private debugPushZombieInto(side: TeamSide): {
+    ok: boolean;
+    reason?: string;
+    before?: { player: number; ai: number };
+    after?: { player: number; ai: number };
+  } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const zombie = this.fieldMarbles.find((m) => m.active && isZombieMarble(m));
+    if (!zombie) return { ok: false, reason: 'no_zombie' };
+    const victim = this.fieldMarbles.find(
+      (m) =>
+        m.active &&
+        isHealthyTeamMarble(m) &&
+        m.owner === side &&
+        m !== this.playerMarble &&
+        m !== this.aiMarble &&
+        !isMarbleInLoop(m),
+    );
+    if (!victim) return { ok: false, reason: 'no_victim' };
+    const before = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+    const y = victim.body.position.y;
+    zombie.body.type = CANNON.Body.DYNAMIC;
+    zombie.body.allowSleep = false;
+    zombie.body.position.set(
+      victim.body.position.x + MARBLE_RADIUS * 1.85,
+      y,
+      victim.body.position.z,
+    );
+    zombie.body.velocity.set(-0.55, 0, 0);
+    zombie.body.wakeUp();
+    victim.body.type = CANNON.Body.DYNAMIC;
+    victim.body.wakeUp();
+    this.scoringEnabled = true;
+    if (this.phase === 'playing' || this.phase === 'ai_thinking') {
+      this.setPhase('shot_flying');
+      this.shotSettleTimer = performance.now();
+    }
+    // Prefer handleMarbleContact (same path as live bumps); fallback direct kill if no result
+    const contact = handleMarbleContact(zombie, victim, performance.now());
+    if (contact.kind === 'zombie_kill') {
+      this.applyExperimentZombieKill(contact.victim);
+    } else {
+      this.applyExperimentZombieKill(victim);
+    }
+    const after = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+    return {
+      ok: true,
+      before: { player: before.player, ai: before.ai },
+      after: { player: after.player, ai: after.ai },
+    };
+  }
+
+  private debugPlaceZombieInHole(): { ok: boolean; reason?: string; inLoop?: boolean } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    let zombie = this.fieldMarbles.find((m) => m.active && isZombieMarble(m));
+    if (!zombie) {
+      const made = this.debugMakeZombie('ai');
+      if (!made.ok) return { ok: false, reason: made.reason };
+      zombie = this.fieldMarbles.find((m) => m.active && isZombieMarble(m));
+    }
+    if (!zombie) return { ok: false, reason: 'no_zombie' };
+    const hole = this.officeDesk?.holeCenters[0];
+    if (!hole) return { ok: false, reason: 'no_hole' };
+    zombie.body.position.set(hole.x, PLAY_SURFACE_Y - L4_PIPE_R * 0.4, hole.z);
+    zombie.body.velocity.set(0, -0.4, 0);
+    zombie.body.wakeUp();
+    this.scoringEnabled = true;
+    if (this.phase !== 'shot_flying') {
+      this.setPhase('shot_flying');
+      this.shotSettleTimer = performance.now();
+    }
+    this.updateExperimentScoreAndWin();
+    // Guarantee re-loop even if hole predicate missed a frame (same exitAs path).
+    if (!isMarbleInLoop(zombie) && zombie.active && isZombieMarble(zombie)) {
+      beginLoopTransit(zombie, this.officeDesk, 'zombie');
+    }
+    return { ok: true, inLoop: isMarbleInLoop(zombie) };
+  }
+
+  private debugSelectMarble(
+    side: TeamSide,
+    index: number,
+  ): { ok: boolean; reason?: string; x?: number; z?: number } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const pool = this.listExperimentSelectables(side);
+    if (pool.length === 0) return { ok: false, reason: 'empty_pool' };
+    const i = Math.max(0, Math.min(pool.length - 1, index));
+    const pick = pool[i]!;
+    this.selectExperimentMarble(pick, side);
+    return { ok: true, x: pick.body.position.x, z: pick.body.position.z };
+  }
+
+  private debugForceAITurn(): { ok: boolean; selected?: { x: number; z: number } } {
+    if (!this.isChannelRescueActive()) return { ok: false };
+    this.beginTurn('ai');
+    const m = this.aiMarble;
+    return {
+      ok: !!m,
+      selected: m ? { x: m.body.position.x, z: m.body.position.z } : undefined,
+    };
+  }
+
+  private debugSampleZombie(): {
+    found: boolean;
+    role?: string;
+    inLoop?: boolean;
+    channelState?: string;
+    x?: number;
+    z?: number;
+  } {
+    const z = this.fieldMarbles.find((m) => m.active && isZombieMarble(m));
+    if (!z) return { found: false };
+    return {
+      found: true,
+      role: z.role ?? 'zombie',
+      inLoop: isMarbleInLoop(z),
+      channelState: getChannelState(z),
+      x: z.body.position.x,
+      z: z.body.position.z,
+    };
+  }
+
+  private debugSimulateSelectAndFlick(): {
+    ok: boolean;
+    reason?: string;
+    selected?: { x: number; z: number };
+  } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    if (this.phase !== 'playing' || this.turn !== 'player') {
+      return { ok: false, reason: `bad_phase:${this.phase}/${this.turn}` };
+    }
+    const pool = this.listExperimentSelectables('player');
+    if (pool.length < 2) return { ok: false, reason: 'need_2_selectables' };
+    const alt = pool.find((m) => m !== this.playerMarble) ?? pool[1]!;
+    this.selectExperimentMarble(alt, 'player');
+    this.startThrow('player', -1, 0, 0.55);
+    return {
+      ok: true,
+      selected: { x: alt.body.position.x, z: alt.body.position.z },
+    };
+  }
 
   /**
    * Experiment debug API (harmless when unused). Used by headless channel probe.
@@ -1584,12 +1787,20 @@ export class Game {
     const m = which === 'player' ? this.playerMarble : this.aiMarble;
     if (!m) return;
     if (which === 'player') this.clearPlayerOutline();
-    this.scene.remove(m.mesh);
-    this.world.removeBody(m.body);
-    m.mesh.geometry.dispose();
-    const mat = m.mesh.material;
-    if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-    else mat.dispose();
+    // Experiment may keep selected marble in fieldMarbles — only dispose if not in field.
+    const inField = this.fieldMarbles.includes(m);
+    if (!inField) {
+      this.scene.remove(m.mesh);
+      this.world.removeBody(m.body);
+      m.mesh.geometry.dispose();
+      const mat = m.mesh.material;
+      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+      else mat.dispose();
+    } else {
+      // Return to a normal field marble
+      m.body.type = CANNON.Body.DYNAMIC;
+      applyL4FieldMarbleCollisionFilter(m.body);
+    }
     if (which === 'player') this.playerMarble = null;
     else this.aiMarble = null;
   }
@@ -1860,7 +2071,55 @@ export class Game {
 private spawnShootersInitial(): void {
     this.removeShooter('player');
     this.removeShooter('ai');
-    // L1/L2: outside chalk circle. L3: inside cuspidor. L4: ON the mat (not mid-channel).
+
+    // Experiment: no separate commander entities — pick from the 10+10 field marbles.
+    if (this.isChannelRescueActive()) {
+      const pickSide = (side: TeamSide): MarbleEntity | null => {
+        const cands = this.fieldMarbles.filter(
+          (m) =>
+            m.active &&
+            m.mesh.visible &&
+            isHealthyTeamMarble(m) &&
+            m.owner === side &&
+            !isMarbleInLoop(m) &&
+            m.channelState !== 'in_channel',
+        );
+        if (cands.length === 0) return null;
+        // Prefer a marble near the classic side spawn for familiarity
+        const preferX = side === 'player' ? 1 : -1;
+        cands.sort(
+          (a, b) =>
+            Math.abs(a.body.position.x - preferX * 0.25) -
+            Math.abs(b.body.position.x - preferX * 0.25),
+        );
+        return cands[0]!;
+      };
+      const player = pickSide('player');
+      const ai = pickSide('ai');
+      if (player) {
+        this.applyActiveShooterCollisionFilter(player.body);
+        player.body.velocity.setZero();
+        player.body.angularVelocity.setZero();
+        player.body.type = CANNON.Body.KINEMATIC;
+        this.playerMarble = player;
+        this.attachPlayerOutline(player);
+        this.snapMarblePhysics(player, true);
+        this.syncOneMesh(player);
+      }
+      if (ai) {
+        this.applyActiveShooterCollisionFilter(ai.body);
+        ai.body.velocity.setZero();
+        ai.body.angularVelocity.setZero();
+        ai.body.type = CANNON.Body.KINEMATIC;
+        this.aiMarble = ai;
+        this.snapMarblePhysics(ai, true);
+        this.syncOneMesh(ai);
+      }
+      this.syncExperimentScores();
+      return;
+    }
+
+    // Baseline (flag off): separate shooter entities with L4 bridges — identical to d584ee0.
     const dist =
       this.sceneLevel === 3
         ? (L3_BOWL_INNER_R + L3_HOLE_RADIUS) * 0.55
@@ -1872,16 +2131,11 @@ private spawnShootersInitial(): void {
         ? (l4MarbleRestY(dist, 0) ?? MARBLE_REST_Y)
         : MARBLE_REST_Y;
 
-    const exp = this.isChannelRescueActive();
-    const playerDesign = exp ? createTeamSolidDesign('player') : this.playerDesign;
-    const aiDesign = exp ? createTeamSolidDesign('ai') : this.aiDesign;
-
     const player = createMarbleEntity(
-      playerDesign,
+      this.playerDesign,
       new CANNON.Vec3(dist, y, 0),
       'player',
     );
-    if (exp) initExperimentMarble(player, 'player');
     player.body.velocity.setZero();
     player.body.angularVelocity.setZero();
     player.body.type = CANNON.Body.KINEMATIC;
@@ -1892,11 +2146,10 @@ private spawnShootersInitial(): void {
     this.attachPlayerOutline(player);
 
     const ai = createMarbleEntity(
-      aiDesign,
+      this.aiDesign,
       new CANNON.Vec3(-dist, y, 0),
       'ai',
     );
-    if (exp) initExperimentMarble(ai, 'ai');
     ai.body.velocity.setZero();
     ai.body.angularVelocity.setZero();
     ai.body.type = CANNON.Body.KINEMATIC;
@@ -1904,8 +2157,6 @@ private spawnShootersInitial(): void {
     this.scene.add(ai.mesh);
     this.world.addBody(ai.body);
     this.aiMarble = ai;
-
-    if (exp) this.syncExperimentScores();
   }
 
   /** White silhouette — X-ray ONLY while occluded from camera (never when fully visible). */
@@ -1995,7 +2246,120 @@ private spawnShootersInitial(): void {
       this.playerOutline.visible = false;
       return;
     }
-    this.playerOutline.visible = this.isPlayerMarbleOccluded();
+    // Experiment: faint selection highlight always; baseline: X-ray only when occluded.
+    if (this.isChannelRescueActive()) {
+      this.playerOutline.visible = true;
+      const mat = this.playerOutline.material as THREE.MeshBasicMaterial;
+      mat.opacity = this.isPlayerMarbleOccluded() ? 0.72 : 0.28;
+    } else {
+      this.playerOutline.visible = this.isPlayerMarbleOccluded();
+    }
+  }
+
+
+  /** Experiment: healthy own marble on mat (not channel/loop) that can be selected to shoot. */
+  private isExperimentSelectable(m: MarbleEntity, side: TeamSide): boolean {
+    if (!m.active || !m.mesh.visible) return false;
+    if (!isHealthyTeamMarble(m) || m.owner !== side) return false;
+    if (isMarbleInLoop(m)) return false;
+    if (m.channelState === 'in_channel' || isPhysicallyInChannel(m)) return false;
+    return true;
+  }
+
+  private listExperimentSelectables(side: TeamSide): MarbleEntity[] {
+    const out: MarbleEntity[] = [];
+    const seen = new Set<MarbleEntity>();
+    for (const m of this.fieldMarbles) {
+      if (!this.isExperimentSelectable(m, side)) continue;
+      if (seen.has(m)) continue;
+      seen.add(m);
+      out.push(m);
+    }
+    const cur = side === 'player' ? this.playerMarble : this.aiMarble;
+    if (cur && this.isExperimentSelectable(cur, side) && !seen.has(cur)) out.push(cur);
+    return out;
+  }
+
+  /**
+   * Experiment: make `m` the selected shooter for `side`.
+   * Keeps marble in fieldMarbles; only freezes the active aimer.
+   */
+  private selectExperimentMarble(m: MarbleEntity, side: TeamSide): boolean {
+    if (!this.isChannelRescueActive()) return false;
+    if (!this.isExperimentSelectable(m, side)) return false;
+    const prev = side === 'player' ? this.playerMarble : this.aiMarble;
+    if (prev === m) {
+      if (side === 'player') this.attachPlayerOutline(m);
+      return true;
+    }
+    if (prev && prev.active && prev !== m) {
+      prev.body.type = CANNON.Body.DYNAMIC;
+      prev.body.velocity.setZero();
+      prev.body.angularVelocity.setZero();
+      this.applyActiveShooterCollisionFilter(prev.body);
+      this.snapMarblePhysics(prev, true);
+      this.syncOneMesh(prev);
+      if (!this.fieldMarbles.includes(prev)) this.fieldMarbles.push(prev);
+      prev.body.sleep();
+    }
+    if (!this.fieldMarbles.includes(m)) this.fieldMarbles.push(m);
+    this.applyActiveShooterCollisionFilter(m.body);
+    m.body.velocity.setZero();
+    m.body.angularVelocity.setZero();
+    m.body.type = CANNON.Body.KINEMATIC;
+    this.snapMarblePhysics(m, true);
+    this.syncOneMesh(m);
+    if (side === 'player') {
+      this.playerMarble = m;
+      this.attachPlayerOutline(m);
+      this.showLocationMarker(m, 'player');
+      this.easeCameraToward(m);
+    } else {
+      this.aiMarble = m;
+    }
+    return true;
+  }
+
+  /** Screen/world pick of any selectable own marble (experiment). */
+  private pickOwnSelectableMarble(clientX: number, clientY: number): MarbleEntity | null {
+    if (!this.isChannelRescueActive()) return null;
+    const candidates = this.listExperimentSelectables('player');
+    if (candidates.length === 0) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return null;
+    let best: MarbleEntity | null = null;
+    let bestD = Infinity;
+    for (const marble of candidates) {
+      const screen = this.projectMarbleToScreen(marble);
+      this._tmpV.set(
+        marble.body.position.x + MARBLE_RADIUS,
+        Math.max(MARBLE_RADIUS, marble.body.position.y),
+        marble.body.position.z,
+      );
+      this._tmpV.project(this.camera);
+      const edgeX = (this._tmpV.x * 0.5 + 0.5) * rect.width + rect.left;
+      const edgeY = (-this._tmpV.y * 0.5 + 0.5) * rect.height + rect.top;
+      const visualR = Math.max(10, Math.hypot(edgeX - screen.x, edgeY - screen.y));
+      const touchR = visualR * MARBLE_PICK_TOLERANCE;
+      const d = Math.hypot(clientX - screen.x, clientY - screen.y);
+      if (d <= touchR && d < bestD) {
+        bestD = d;
+        best = marble;
+      }
+    }
+    if (best) return best;
+    // Ground footprint fallback
+    const g = this.clientToGround(clientX, clientY);
+    if (!g) return null;
+    const pickR = MARBLE_RADIUS * MARBLE_PICK_TOLERANCE;
+    for (const marble of candidates) {
+      const d = Math.hypot(g.x - marble.body.position.x, g.z - marble.body.position.z);
+      if (d <= pickR && d < bestD) {
+        bestD = d;
+        best = marble;
+      }
+    }
+    return best;
   }
 
   private getActiveShooter(): MarbleEntity | null {
@@ -2005,6 +2369,24 @@ private spawnShootersInitial(): void {
   private beginTurn(side: Side): void {
     this.turn = side;
     this.updateTurnHUD();
+    // Experiment: pick/validate which marble shoots this turn (any healthy on mat).
+    if (this.isChannelRescueActive()) {
+      if (side === 'ai') {
+        const pool = this.listExperimentSelectables('ai');
+        const pick =
+          experimentAIPickShooter(pool, this.aiMarble, 'ai') ??
+          experimentAIPickShooter(this.fieldMarbles, this.aiMarble, 'ai');
+        if (pick) this.selectExperimentMarble(pick, 'ai');
+      } else {
+        const cur = this.playerMarble;
+        if (!cur || !this.isExperimentSelectable(cur, 'player')) {
+          const pool = this.listExperimentSelectables('player');
+          if (pool.length > 0) this.selectExperimentMarble(pool[0]!, 'player');
+        } else {
+          this.selectExperimentMarble(cur, 'player');
+        }
+      }
+    }
     const shooter = this.getActiveShooter();
     if (!shooter) return;
 
@@ -2699,8 +3081,40 @@ private spawnShootersInitial(): void {
     if (this.aiming) return;
     if (!this.canPlayerShoot) return;
 
-    // Miss → OrbitControls owns the drag (empty-space single finger = camera)
-    if (!this.picksPlayerMarble(e.clientX, e.clientY)) return;
+    // Experiment: tap any own healthy mat marble to select; only drag on selected shoots.
+    this.pendingSelectMarble = null;
+    if (this.isChannelRescueActive()) {
+      const hit = this.pickOwnSelectableMarble(e.clientX, e.clientY);
+      if (!hit) return; // empty space → OrbitControls
+      if (hit !== this.playerMarble) {
+        // Start a tap-to-select gesture (no aim until confirmed on pointerup if weak)
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        this.pendingSelectMarble = hit;
+        this.aiming = true; // track drag distance; weak up = select only
+        this.canPlayerShoot = false;
+        this.armPlayerIdleHint();
+        this.markerGroup.visible = false;
+        this.hideLocationBanner();
+        this.aimPointerId = e.pointerId;
+        this.aimStartClientX = e.clientX;
+        this.aimStartClientY = e.clientY;
+        this.aimSamples = [];
+        this.noteAimSample(e.clientX, e.clientY);
+        this.aimPower = 0;
+        this.hideAimLine();
+        return;
+      }
+      // hit === selected → normal aim below
+    } else if (!this.picksPlayerMarble(e.clientX, e.clientY)) {
+      // Baseline: miss → OrbitControls owns the drag
+      return;
+    }
 
     // Claim ONLY this pointerId so OrbitControls never starts a rotate on it.
     // Leave controls.enabled = true: a second non-marble finger can still orbit.
@@ -2764,6 +3178,7 @@ private spawnShootersInitial(): void {
   private onAimPointerCancel(e: PointerEvent): void {
     if (!this.aiming) return;
     if (this.aimPointerId !== null && e.pointerId !== this.aimPointerId) return;
+    this.pendingSelectMarble = null;
     this.cancelAimGesture(true);
     this.canPlayerShoot = this.phase === 'playing' && this.turn === 'player';
     if (this.canPlayerShoot) this.armPlayerIdleHint();
@@ -2798,8 +3213,27 @@ private spawnShootersInitial(): void {
     this.cancelAimGesture(true);
 
     if (!this.playerMarble || this.phase !== 'playing' || this.turn !== 'player') {
+      this.pendingSelectMarble = null;
       return;
     }
+
+    // Experiment: weak tap on another marble = select it (no shot). Strong drag only shoots selected.
+    if (this.pendingSelectMarble) {
+      const pending = this.pendingSelectMarble;
+      this.pendingSelectMarble = null;
+      if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
+        this.selectExperimentMarble(pending, 'player');
+        this.canPlayerShoot = true;
+        this.armPlayerIdleHint();
+        return;
+      }
+      // Strong drag started on non-selected: treat as select only (don't shoot wrong marble)
+      this.selectExperimentMarble(pending, 'player');
+      this.canPlayerShoot = true;
+      this.armPlayerIdleHint();
+      return;
+    }
+
     if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
       this.canPlayerShoot = true;
       this.armPlayerIdleHint();
@@ -2950,11 +3384,15 @@ private spawnShootersInitial(): void {
     return isL4ChannelRescueExperimentActive(this.sceneLevel);
   }
 
-  /** L4 shooter filter: experiment commanders collide with each other; baseline does not. */
+  /**
+   * L4 collision filter for the currently selected marble.
+   * Experiment: ALL marbles use field filter (no bridges — gravity into half-pipe).
+   * Baseline: shooter bridges (flag-off identical to d584ee0).
+   */
   private applyActiveShooterCollisionFilter(body: CANNON.Body): void {
     if (this.sceneLevel !== 4) return;
     if (this.isChannelRescueActive()) {
-      applyL4ExperimentShooterCollisionFilter(body);
+      applyL4FieldMarbleCollisionFilter(body);
     } else {
       applyL4ShooterCollisionFilter(body);
     }
@@ -3115,43 +3553,38 @@ private spawnShootersInitial(): void {
         side === 'player' ? 'banner-player' : 'banner-ai',
         1800,
       );
-      if (wasPlayerShooter || wasAiShooter) this.promoteExperimentShooter(side);
+      // No random promotion — next beginTurn selects any remaining healthy marble.
     }
     this.syncExperimentScores();
   }
 
-  /** Promote a remaining healthy teammate to shooter after shooter edge-death. */
-  private promoteExperimentShooter(side: TeamSide): void {
-    const candidates: MarbleEntity[] = [];
-    for (const m of this.fieldMarbles) {
-      if (!isHealthyTeamMarble(m)) continue;
-      if (m.owner !== side) continue;
-      if (isMarbleInLoop(m)) continue;
-      if (m.channelState === 'in_channel') continue;
-      candidates.push(m);
+
+  /** Experiment: zombie touch → eliminate healthy (flash/shrink+sparks), zombie stays. */
+  private applyExperimentZombieKill(victim: MarbleEntity): void {
+    if (!victim.active || isZombieMarble(victim)) return;
+    const vx = victim.body.position.x;
+    const vy = victim.body.position.y;
+    const vz = victim.body.position.z;
+    const wasPlayer = victim === this.playerMarble;
+    const wasAi = victim === this.aiMarble;
+    const mat = victim.mesh.material;
+    if (mat && !Array.isArray(mat) && 'emissive' in mat) {
+      const m = mat as THREE.MeshPhysicalMaterial;
+      m.emissive = new THREE.Color(0xffffff);
+      m.emissiveIntensity = 0.9;
     }
-    if (candidates.length === 0) return;
-    const pick = candidates[Math.floor(Math.random() * candidates.length)]!;
-    this.fieldMarbles = this.fieldMarbles.filter((x) => x !== pick);
-    this.scoringMarbles.delete(pick);
-    pick.body.velocity.setZero();
-    pick.body.angularVelocity.setZero();
-    pick.body.type = CANNON.Body.KINEMATIC;
-    if (this.sceneLevel === 4) this.applyActiveShooterCollisionFilter(pick.body);
-    const dist = L4_MAT_HALF - MARBLE_RADIUS * 5;
-    const x = side === 'player' ? dist : -dist;
-    if (l4IsChannelOrHoleXZ(pick.body.position.x, pick.body.position.z)) {
-      const y = l4MarbleRestY(x, 0) ?? MARBLE_REST_Y;
-      pick.body.position.set(x, y, 0);
+    victim.mesh.scale.setScalar(0.12);
+    if (this.particles) burstShatter(this.particles, vx, vy, vz, 0xb3e5fc);
+    deactivateMarble(victim);
+    victim.mesh.scale.set(1, 1, 1);
+    this.scoringMarbles.delete(victim);
+    if (wasPlayer) {
+      this.clearPlayerOutline();
+      this.playerMarble = null;
     }
-    this.snapMarblePhysics(pick, true);
-    this.syncOneMesh(pick);
-    if (side === 'player') {
-      this.playerMarble = pick;
-      this.attachPlayerOutline(pick);
-    } else {
-      this.aiMarble = pick;
-    }
+    if (wasAi) this.aiMarble = null;
+    this.syncExperimentScores();
+    this.checkExperimentVictory();
   }
 
   private removeZombie(m: MarbleEntity): void {
@@ -3161,17 +3594,27 @@ private spawnShootersInitial(): void {
 
   /** Experiment: rescue/convert/zombie/edge scoring (no knockout money). */
   private updateExperimentScoreAndWin(): boolean {
-    if (this.phase !== 'shot_flying' || !this.scoringEnabled) return false;
+    if (this.isExperimentPregame()) return false;
+    const inShotWindow = this.phase === 'shot_flying' && this.scoringEnabled;
+    const inProgress =
+      this.phase === 'shot_flying' ||
+      this.phase === 'playing' ||
+      this.phase === 'ai_thinking';
+    if (!inProgress) return false;
     const turnSide: TeamSide = this.turn === 'player' ? 'player' : 'ai';
 
-    // Shooter open-edge falls
-    for (const m of [this.playerMarble, this.aiMarble]) {
-      if (!m || !m.active) continue;
-      if (!isHealthyTeamMarble(m)) continue;
-      const { x, y, z } = m.body.position;
-      if (this.isOffL4Desk(x, y, z, { shooter: true })) {
-        this.killHealthyOffEdge(m);
-        if (this.checkExperimentVictory()) return true;
+    // Selected marble open-edge falls (no bridges — same desk edge as field)
+    if (inShotWindow) {
+      for (const m of [this.playerMarble, this.aiMarble]) {
+        if (!m || !m.active) continue;
+        if (!isHealthyTeamMarble(m)) continue;
+        // Skip if already counted via fieldMarbles (experiment keeps selected in field)
+        if (this.fieldMarbles.includes(m)) continue;
+        const { x, y, z } = m.body.position;
+        if (this.isOffL4Desk(x, y, z, { shooter: false })) {
+          this.killHealthyOffEdge(m);
+          if (this.checkExperimentVictory()) return true;
+        }
       }
     }
 
@@ -3186,7 +3629,12 @@ private spawnShootersInitial(): void {
       markInChannelIfNeeded(m, turnSide);
 
       if (isZombieMarble(m)) {
-        if (fallen || inHole) this.removeZombie(m);
+        // Open desk edge: remove, no score change. Hole: re-loop as zombie.
+        if (fallen && !inHole) {
+          this.removeZombie(m);
+        } else if (inHole) {
+          beginLoopTransit(m, this.officeDesk, 'zombie');
+        }
         continue;
       }
       if (!isHealthyTeamMarble(m)) continue;
@@ -3194,6 +3642,7 @@ private spawnShootersInitial(): void {
       // Open-edge fall (not hole). Channel trough is NOT an edge — field marbles
       // must stay alive, take drain cruise, and reach the SW hole.
       if (
+        inShotWindow &&
         fallen &&
         !inHole &&
         !isPhysicallyInChannel(m) &&
@@ -3204,7 +3653,8 @@ private spawnShootersInitial(): void {
         continue;
       }
 
-      if (inHole) {
+      // Hole: process while scoring window open OR marble already in_channel (cruise)
+      if (inHole && (inShotWindow || m.channelState === 'in_channel')) {
         const converted = !!(m as MarbleEntity & { experimentConverted?: boolean })
           .experimentConverted;
         if (converted) {
@@ -3671,15 +4121,16 @@ private spawnShootersInitial(): void {
     if (this.sceneLevel !== 4) return;
     // Match simulated time from world.step(1/120, physDt, 10)
     const dt = Math.max(1 / 240, Math.min(frameDt, 10 / 120));
-    /** Independent of color-target experiment — Carlo asked for slower channel roll. Was 0.65. */
-    const L4_CHANNEL_CRUISE_SPEED = 0.32;
+    /** Baseline 0.32 (flag off). Experiment halves to 0.16 (~0.13 m/s measured avg). */
+    const L4_CHANNEL_CRUISE_SPEED = this.isChannelRescueActive() ? 0.16 : 0.32;
     const cruiseSpeed = L4_CHANNEL_CRUISE_SPEED;
     const hole = this.officeDesk?.holeCenters[0];
     const holeR = this.officeDesk?.holeRadius ?? MARBLE_RADIUS * 1.65;
     for (const m of this.fieldMarbles) {
       if (!m.active) continue;
       if (this.isChannelRescueActive()) {
-        if (isMarbleInLoop(m) || isZombieMarble(m)) continue;
+        // Zombies also cruise to the SW hole (then re-loop). Only skip active loops.
+        if (isMarbleInLoop(m)) continue;
       }
       const body = m.body;
       if (body.type !== CANNON.Body.DYNAMIC) continue;
@@ -4007,11 +4458,13 @@ private spawnShootersInitial(): void {
 
   /** Sparks on hard marble–marble hits; dirt on ground scrapes / hard landings. */
   private processImpactFX(): void {
-    if (!this.particles) return;
+    // Experiment zombie kills / converts also need contacts during playing & settle.
     if (
       this.phase !== 'shot_flying' &&
       this.phase !== 'settling' &&
-      this.phase !== 'dropping'
+      this.phase !== 'dropping' &&
+      this.phase !== 'playing' &&
+      this.phase !== 'ai_thinking'
     ) {
       return;
     }
@@ -4026,6 +4479,48 @@ private spawnShootersInitial(): void {
 
       const mi = this.isMarbleBody(bi);
       const mj = this.isMarbleBody(bj);
+      // Experiment: zombie kills + channel convert on ANY marble–marble contact
+      // (soft bumps included). Root cause of broken zombie kills: gated behind
+      // impact>0.18 AND phase===shot_flying only.
+      if (
+        mi &&
+        mj &&
+        this.isChannelRescueActive() &&
+        !this.isExperimentPregame() &&
+        (this.phase === 'shot_flying' ||
+          this.phase === 'settling' ||
+          this.phase === 'playing' ||
+          this.phase === 'ai_thinking')
+      ) {
+        const ea = this.entityFromBody(bi);
+        const eb = this.entityFromBody(bj);
+        if (ea && eb) {
+          const result = handleMarbleContact(ea, eb, now);
+          if (result.kind === 'convert') {
+            this.syncExperimentScores();
+            if (result.prev !== result.by) {
+              this.flashLocationBanner(
+                result.by === 'player'
+                  ? `¡Rescate! Convertiste una canica (${this.playerScore}-${this.aiScore})`
+                  : `¡${this.opponentName} convirtió una canica! (${this.playerScore}-${this.aiScore})`,
+                result.by === 'player' ? 'banner-player' : 'banner-ai',
+                1600,
+              );
+            } else {
+              this.flashLocationBanner(
+                result.by === 'player'
+                  ? `¡Rescataste tu canica! (${this.playerScore}-${this.aiScore})`
+                  : `¡${this.opponentName} rescató su canica! (${this.playerScore}-${this.aiScore})`,
+                result.by === 'player' ? 'banner-player' : 'banner-ai',
+                1400,
+              );
+            }
+          } else if (result.kind === 'zombie_kill') {
+            this.applyExperimentZombieKill(result.victim);
+          }
+        }
+      }
+
       if (mi && mj && impact > 0.18 && now > this.sparkCooldownUntil) {
         // Contact point in world space
         const nx = c.ni.x;
@@ -4035,7 +4530,7 @@ private spawnShootersInitial(): void {
         const py = bi.position.y - ny * MARBLE_RADIUS;
         const pz = bi.position.z - nz * MARBLE_RADIUS;
         const intensity = Math.min(2.2, impact / 0.6);
-        this.particles.spawnSparks(px, py, pz, intensity);
+        if (this.particles) this.particles.spawnSparks(px, py, pz, intensity);
         playMarbleClack(impact);
         this.sparkCooldownUntil = now + 55;
         // Cámara lenta on heavy collisions — follow the faster marble
@@ -4056,53 +4551,6 @@ private spawnShootersInitial(): void {
         } else if (impact >= 0.18) {
           this.commentator?.say('softTap', { side: this.turn, preferLower: true });
         }
-
-        // Experiment: rescue/convert in-channel OR zombie destroys healthy
-        if (this.isChannelRescueActive() && this.phase === 'shot_flying') {
-          const ea = this.entityFromBody(bi);
-          const eb = this.entityFromBody(bj);
-          if (ea && eb) {
-            const result = handleMarbleContact(ea, eb, now);
-            if (result.kind === 'convert') {
-              this.syncExperimentScores();
-              this.flashLocationBanner(
-                result.by === 'player'
-                  ? `¡Rescate! Convertiste una canica (${this.playerScore}-${this.aiScore})`
-                  : `¡${this.opponentName} convirtió una canica! (${this.playerScore}-${this.aiScore})`,
-                result.by === 'player' ? 'banner-player' : 'banner-ai',
-                1600,
-              );
-            } else if (result.kind === 'zombie_kill') {
-              const vx = result.victim.body.position.x;
-              const vy = result.victim.body.position.y;
-              const vz = result.victim.body.position.z;
-              const wasPlayerShooter = result.victim === this.playerMarble;
-              const wasAiShooter = result.victim === this.aiMarble;
-              // Simple elimination: sparks + quick flash/scale (no spawnShatter glass burst)
-              const mat = result.victim.mesh.material;
-              if (mat && !Array.isArray(mat) && 'emissive' in mat) {
-                const m = mat as THREE.MeshPhysicalMaterial;
-                m.emissive = new THREE.Color(0xffffff);
-                m.emissiveIntensity = 0.9;
-              }
-              result.victim.mesh.scale.setScalar(0.12);
-              burstShatter(this.particles, vx, vy, vz, 0xb3e5fc);
-              deactivateMarble(result.victim);
-              result.victim.mesh.scale.set(1, 1, 1);
-              this.scoringMarbles.delete(result.victim);
-              if (wasPlayerShooter) {
-                this.clearPlayerOutline();
-                this.playerMarble = null;
-                this.promoteExperimentShooter('player');
-              } else if (wasAiShooter) {
-                this.aiMarble = null;
-                this.promoteExperimentShooter('ai');
-              }
-              this.syncExperimentScores();
-              this.checkExperimentVictory();
-            }
-          }
-        }
       }
 
       // Ground contact: one marble, other roughly static plane (mass 0)
@@ -4111,7 +4559,7 @@ private spawnShootersInitial(): void {
         const other = mi ? bj : bi;
         if (other.mass === 0 && marbleBody.position.y < MARBLE_RADIUS * 3) {
           const speed = marbleBody.velocity.length();
-          if (speed > 0.25) {
+          if (speed > 0.25 && this.particles) {
             const intensity = Math.min(0.65, speed / 1.6);
             this.particles.spawnDirt(
               marbleBody.position.x,
@@ -4765,9 +5213,10 @@ private spawnShootersInitial(): void {
       this.tryFinishShotTurn();
     }
 
-    // Aim / think: never award — only strip leftover exits from the scoring set
+    // Aim / think: strip leftover exits; still advance channel/zombie hole progress
     if (this.phase === 'playing' || this.phase === 'ai_thinking') {
       this.cullExitsWithoutScore();
+      if (this.isChannelRescueActive()) this.updateExperimentScoreAndWin();
     }
 
     this.updatePlayerIdleHint(dt);

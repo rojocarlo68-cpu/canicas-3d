@@ -6,7 +6,7 @@
  *
  * When inactive, call sites no-op — L4 matches baseline HEAD.
  *
- * Flow: MAT → CHANNEL (in_channel, DYNAMIC, cruise 0.32 via applyL4ChannelDrain)
+ * Flow: MAT → CHANNEL (in_channel, DYNAMIC, cruise 0.16 (exp) / 0.32 (baseline) via applyL4ChannelDrain)
  * → hit converts to hitter team OR unrecovered SW hole → under-desk LOOP
  * → return as converted healthy OR zombie (skull).
  *
@@ -37,7 +37,7 @@ export type ChannelState = 'none' | 'in_channel' | 'in_loop';
 export type MarbleRole = 'healthy' | 'zombie';
 
 const LOOP_DURATION_S = 1.55;
-const TEAM_FIELD_EACH = 9; // +1 shooter = 10 healthy / side
+const TEAM_FIELD_EACH = 10; // all on mat; selected shooter is one of these (no separate commander)
 const CONTACT_COOLDOWN_MS = 180;
 const SKULL_CHILD = 'l4ZombieSkull';
 
@@ -105,12 +105,20 @@ export function countHealthy(
   shooters: (MarbleEntity | null)[],
   side: TeamSide,
 ): number {
+  // Selected shooters may also live in `field` (no separate commander) — dedupe.
+  const seen = new Set<MarbleEntity>();
   let n = 0;
   for (const m of field) {
-    if (isHealthyTeamMarble(m) && m.owner === side) n += 1;
+    if (!isHealthyTeamMarble(m) || m.owner !== side) continue;
+    if (seen.has(m)) continue;
+    seen.add(m);
+    n += 1;
   }
   for (const s of shooters) {
-    if (s && isHealthyTeamMarble(s) && s.owner === side) n += 1;
+    if (!s || !isHealthyTeamMarble(s) || s.owner !== side) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    n += 1;
   }
   return n;
 }
@@ -310,6 +318,9 @@ export function applyZombieAppearance(marble: MarbleEntity): void {
   detachSkullSprite(marble.mesh);
   attachSkullSprite(marble.mesh); // no-op (kept for API stability)
   applyL4FieldMarbleCollisionFilter(marble.body);
+  // Stay awake so gentle contacts still generate world.contacts (zombie kills)
+  marble.body.allowSleep = false;
+  marble.body.wakeUp();
 }
 
 export function createExperimentFieldPlan(): { design: MarbleDesign; owner: MarbleOwner }[] {
@@ -542,8 +553,9 @@ export function handleMarbleContact(
       const prev = x.owner as TeamSide;
       const by = y.owner as TeamSide;
       contactCoolUntil.set(x, now + CONTACT_COOLDOWN_MS);
-      if (prev === by) return { kind: 'none' };
-      applyTeamAppearance(x, by);
+      // Same team = rescued (stays that color); other team = convert. Either way
+      // mark converted so unrecovered→zombie does not apply if they reach the hole.
+      if (prev !== by) applyTeamAppearance(x, by);
       x.channelState = 'in_channel';
       (x as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = true;
       return { kind: 'convert', channel: x, by, prev };
@@ -692,6 +704,57 @@ export function disposeExperiment(scene?: THREE.Scene): void {
   looping.clear();
   rescueSession = null;
   disposeExperimentVisuals(scene);
+}
+
+
+/** AI: pick which healthy marble to shoot this turn (imperfect). */
+export function experimentAIPickShooter(
+  field: MarbleEntity[],
+  current: MarbleEntity | null,
+  side: TeamSide,
+): MarbleEntity | null {
+  const candidates = field.filter(
+    (m) =>
+      m.active &&
+      m.mesh.visible &&
+      isHealthyTeamMarble(m) &&
+      m.owner === side &&
+      !looping.has(m) &&
+      m.channelState !== 'in_channel' &&
+      !isPhysicallyInChannel(m),
+  );
+  if (current && candidates.includes(current)) {
+    // Keep current sometimes for imperfect play
+    if (Math.random() < 0.35) return current;
+  }
+  if (candidates.length === 0) {
+    if (current && isHealthyTeamMarble(current) && current.owner === side) return current;
+    return null;
+  }
+  const bias = experimentAITargetBias(field, side);
+  // Prefer a marble near a rescue target, else near an enemy to shove into channel
+  const targets = bias.preferRescue.length
+    ? bias.preferRescue
+    : bias.preferIntoChannel.length
+      ? bias.preferIntoChannel
+      : [];
+  if (targets.length > 0 && Math.random() < 0.7) {
+    const t = targets[Math.floor(Math.random() * targets.length)]!;
+    let best = candidates[0]!;
+    let bestD = Infinity;
+    for (const c of candidates) {
+      const d = Math.hypot(
+        c.body.position.x - t.body.position.x,
+        c.body.position.z - t.body.position.z,
+      );
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    return best;
+  }
+  return candidates[Math.floor(Math.random() * candidates.length)]!;
 }
 
 export function experimentAITargetBias(
