@@ -88,6 +88,7 @@ import {
 } from './marbleSounds';
 import {
   ENABLE_COLOR_TARGET_EXPERIMENT,
+  EXPERIMENT_FIELD_COUNT,
   isColorTargetExperimentActive,
   shouldInterceptL4Hole,
   beginLoopTransit,
@@ -98,6 +99,7 @@ import {
   mountExperimentVisuals,
   disposeExperiment,
   createL4ExperimentFieldDesigns,
+  shuffleExperimentFieldDesigns,
   getReturnHatchXZ,
 } from './l4ColorTargetExperiment';
 import {
@@ -1342,11 +1344,30 @@ export class Game {
     triggerBriefcaseDrop(this.briefcase, () => this.spawnFieldFromBriefcase());
   }
 
+  /** Field marble count: L4 color-target experiment uses 20 (5×4); else FIELD_MARBLE_COUNT. */
+  private fieldSpawnCount(): number {
+    return isColorTargetExperimentActive(this.sceneLevel)
+      ? EXPERIMENT_FIELD_COUNT
+      : FIELD_MARBLE_COUNT;
+  }
+
   private spawnFieldFromBriefcase(): void {
-    const designs = this.fieldDesigns.slice(0, FIELD_MARBLE_COUNT);
-    for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
-      const angle = (i / FIELD_MARBLE_COUNT) * Math.PI * 2;
-      const r = CIRCLE_RADIUS * (0.04 + (i % 3) * 0.02);
+    // Reshuffle L4 experiment palette each drop so colors are not clustered.
+    if (isColorTargetExperimentActive(this.sceneLevel)) {
+      if (this.fieldDesigns.length !== EXPERIMENT_FIELD_COUNT) {
+        this.fieldDesigns = createL4ExperimentFieldDesigns(createFieldDesigns());
+      } else {
+        this.fieldDesigns = shuffleExperimentFieldDesigns(this.fieldDesigns);
+      }
+    }
+    const count = this.fieldSpawnCount();
+    const designs = this.fieldDesigns.slice(0, count);
+    // Slightly wider ring when packing 20 so briefcase drop does not over-stack.
+    const ringScale = count > 12 ? 0.055 : 0.04;
+    const ringStep = count > 12 ? 0.022 : 0.02;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      const r = CIRCLE_RADIUS * (ringScale + (i % 3) * ringStep);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
       const dropBase = this.sceneLevel === 4 ? DROP_HEIGHT - 0.02 : DROP_HEIGHT;
@@ -3002,8 +3023,8 @@ private spawnShootersInitial(): void {
   }
 
   private recordFrame(): void {
-    const frame = makeEmptyFrame(this.liveTime);
-    for (let i = 0; i < FIELD_MARBLE_COUNT; i++) {
+    const frame = makeEmptyFrame(this.liveTime, this.fieldSpawnCount());
+    for (let i = 0; i < frame.field.length; i++) {
       const m = this.fieldMarbles[i];
       if (m) {
         frame.field[i] = this.snapMarble(m)!;

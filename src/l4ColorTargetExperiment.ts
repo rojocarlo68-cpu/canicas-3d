@@ -364,21 +364,68 @@ export function disposeExperiment(scene?: THREE.Scene): void {
   points = 0;
 }
 
-/** Designs for L4 when experiment is on — guarantees several clear reds. */
+/** Exact mixed field for L4 experiment: 5 rojo + 5 azul + 5 verde + 5 amarillo. */
+export const EXPERIMENT_FIELD_COUNT = 20;
+
+const EXPERIMENT_COLORS: Array<Exclude<ColorTag, 'otro'>> = ['rojo', 'azul', 'verde', 'amarillo'];
+
+const PREFERRED_IDS: Record<Exclude<ColorTag, 'otro'>, string[]> = {
+  rojo: ['roja-cristal', 'ojo-gato'],
+  azul: ['azul-cristal', 'azul-blanco'],
+  verde: ['verde-cristal', 'verde-bosque'],
+  amarillo: ['amarillo-cristal', 'ambar', 'amarilla', 'naranja-swirl'],
+};
+
+/** In-place / copy shuffle — call each match start so colors are not clustered. */
+export function shuffleExperimentFieldDesigns<T>(arr: T[]): T[] {
+  const out = arr.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = out[i]!;
+    out[i] = out[j]!;
+    out[j] = tmp;
+  }
+  return out;
+}
+
+function poolForTag(tagged: MarbleDesign[], tag: Exclude<ColorTag, 'otro'>): MarbleDesign[] {
+  const pool = tagged.filter((d) => d.colorTag === tag);
+  const preferred = PREFERRED_IDS[tag]
+    .map((id) => pool.find((d) => d.id === id))
+    .filter((d): d is MarbleDesign => !!d);
+  const rest = pool.filter((d) => !PREFERRED_IDS[tag].includes(d.id));
+  const ordered = [...preferred, ...rest];
+  return ordered;
+}
+
+/**
+ * Builds a shuffled list of EXPERIMENT_FIELD_COUNT designs (5 of each target color).
+ * Call again each match start so colors are not clustered / order refreshes.
+ */
 export function createL4ExperimentFieldDesigns(
   base: MarbleDesign[],
 ): MarbleDesign[] {
   const tagged = base.map((d) => ({
     ...d,
-    colorTag: d.colorTag ?? inferColorTag(d.id),
+    colorTag: (d.colorTag ?? inferColorTag(d.id)) as ColorTag,
   }));
-  const red = tagged.find((d) => d.id === 'roja-cristal') ?? tagged.find((d) => d.colorTag === 'rojo');
-  if (!red) return tagged;
-  // Ensure first 4 slots include reds for ≥3–4 on the mat (FIELD_MARBLE_COUNT=10)
-  const out = tagged.slice();
-  // Place reds at indices 0, 2, 5, 8
-  for (const idx of [0, 2, 5, 8]) {
-    if (idx < out.length) out[idx] = { ...red, id: red.id, colorTag: 'rojo' };
+
+  const out: MarbleDesign[] = [];
+  const perColor = EXPERIMENT_FIELD_COUNT / EXPERIMENT_COLORS.length; // 5
+  for (const tag of EXPERIMENT_COLORS) {
+    const pool = poolForTag(tagged, tag);
+    if (pool.length === 0) {
+      // Should not happen with createFieldDesigns(); skip rather than invent physics-breaking blanks.
+      continue;
+    }
+    for (let i = 0; i < perColor; i++) {
+      const src = pool[i % pool.length]!;
+      out.push({
+        ...src,
+        id: `${src.id}`,
+        colorTag: tag,
+      });
+    }
   }
-  return out;
+  return shuffleExperimentFieldDesigns(out);
 }

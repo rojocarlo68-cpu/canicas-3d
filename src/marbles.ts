@@ -257,6 +257,32 @@ export function createFieldDesigns(): MarbleDesign[] {
       }),
     },
     {
+      id: 'verde-cristal',
+      name: 'Verde cristal',
+      colorTag: 'verde',
+      material: solidGlass('#43a047', {
+        transparent: true,
+        opacity: 0.92,
+        transmission: 0.18,
+        thickness: 0.4,
+        roughness: 0.12,
+        ior: 1.5,
+      }),
+    },
+    {
+      id: 'amarillo-cristal',
+      name: 'Amarillo cristal',
+      colorTag: 'amarillo',
+      material: solidGlass('#fdd835', {
+        transparent: true,
+        opacity: 0.92,
+        transmission: 0.16,
+        thickness: 0.4,
+        roughness: 0.12,
+        ior: 1.5,
+      }),
+    },
+    {
       id: 'rosa-cristal',
       name: 'Rosa translúcida',
       colorTag: 'otro',
