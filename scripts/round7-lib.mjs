@@ -61,8 +61,19 @@ export async function launch() {
     await api.ff(1.0);
     // quiet board; hatch zone clear
     for (let k = 0; k < 40; k++) { const c = await api.R('census'); if (c.inChannel === 0 && c.inLoop === 0) break; await api.ff(1.0); }
+    // Deterministic board: pull every mat marble that sits on the lip (within 6 cm of the channel) inwards, so no
+    // stray marble tips into the channel on its own during a scenario.
+    const d = await api.S('dump');
+    const used = d.filter((m) => m.a && Math.max(Math.abs(m.x), Math.abs(m.z)) <= 0.26).map((m) => ({ x: m.x, z: m.z }));
+    const spots = [];
+    for (let gx = -4; gx <= 4; gx++) for (let gz = -4; gz <= 4; gz++) spots.push({ x: gx * 0.05, z: gz * 0.05 });
+    for (const m of d) {
+      if (!m.a || m.lp || m.ch !== 'none' || Math.max(Math.abs(m.x), Math.abs(m.z)) <= 0.26) continue;
+      const free = spots.find((s) => used.every((u) => Math.hypot(u.x - s.x, u.z - s.z) > 0.03) && Math.hypot(s.x - 0.134, s.z + 0.122) > 0.1);
+      if (free) { await api.R('move', m.id, free.x, free.z); used.push(free); }
+    }
     await api.R('clearZone', 0.134, -0.122, 0.09, []);
-    await api.ff(0.5);
+    await api.ff(0.8);
   };
   api.placeShooter = async (side, x, z, keep) => {
     await api.R('clearZone', x, z, 0.06, keep);

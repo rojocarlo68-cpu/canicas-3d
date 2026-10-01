@@ -270,6 +270,12 @@ export class Game {
   private beginContactQueue: [CANNON.Body, CANNON.Body][] = [];
   /** Experiment (E): human intervention shots during the AI's turn. */
   private debugSkipRender = false;
+  private debugAIFrozen = false;
+  /** Round 7: AI rescue interventions during the human's turn (symmetric to the human's during the AI turn). */
+  private aiInterventionEnabled = true;
+  private aiIvShots = 0;
+  private aiIvLastMs = 0;
+  private aiIvTargetSince: number | null = null;
   private interventionShots = 0;
   private interventionLastMs = 0;
   /** Scoring/edge window opened by an intervention shot fired while the AI is still thinking. */
@@ -893,6 +899,11 @@ export class Game {
       hopStart: (id: number, windowS: number) => this.r7HopTrackStart(id, windowS),
       hopGet: () => this.r7HopTrackGet(),
       stepFrames: (n: number, frameMs = 1000 / 60) => this.r7StepFrames(n, frameMs),
+      dump: () =>
+        this.experimentAllMarbles().map((m) => ({
+          id: m.body.id, a: m.active ? 1 : 0, o: String(m.owner), r: m.role ?? 'healthy', ch: m.channelState ?? 'none',
+          lp: isMarbleInLoop(m) ? 1 : 0, rs: isRescuer(m) ? 1 : 0, x: +m.body.position.x.toFixed(3), y: +m.body.position.y.toFixed(3), z: +m.body.position.z.toFixed(3),
+        })),
       endState: () => ({
         phase: this.phase,
         endVisible: !this.els.endScreen.classList.contains('hidden'),
@@ -902,6 +913,19 @@ export class Game {
       }),
       killTeam: (side: TeamSide, keep: number) => this.r7KillTeam(side, keep),
       forceVictoryCheck: () => this.checkExperimentVictory(),
+      setAIFrozen: (on: boolean) => {
+        this.debugAIFrozen = on;
+        return true;
+      },
+      setAIIntervention: (on: boolean) => {
+        this.aiInterventionEnabled = on;
+        return true;
+      },
+      aiIvInfo: () => ({ shots: this.aiIvShots, max: Game.MAX_AI_INTERVENTION_SHOTS, gapMs: Game.AI_INTERVENTION_GAP_MS, reactMs: Game.AI_INTERVENTION_REACT_MS, enabled: this.aiInterventionEnabled }),
+      aiRescueShot: (id: number, dx: number, dz: number, power: number) => {
+        const m = this.r6ById(id);
+        return !!m && this.startAIInterventionThrow(m, dx, dz, power);
+      },
       autoPlayerShot: (aggr = 1) => this.r7AutoPlayerShot(aggr),
       releaseAI: () => {
         if (this.phase === 'ai_thinking') this.aiThinkUntil = 0;
@@ -3294,6 +3318,87 @@ private spawnShootersInitial(): void {
     return true;
   }
 
+
+  // ───────── Round 7: AI rescue phase during the human's turn ─────────
+  private static readonly MAX_AI_INTERVENTION_SHOTS = 2;
+  private static readonly AI_INTERVENTION_GAP_MS = 900;
+  private static readonly AI_INTERVENTION_REACT_MS = 1800;
+
+  /** Channel rider the AI would like to hit: prefer a blue one (convert, +1/−1), else its own (rescue). */
+  private pickAIRescueTarget(): MarbleEntity | null {
+    let best: MarbleEntity | null = null;
+    let bestScore = -Infinity;
+    for (const m of this.fieldMarbles) {
+      if (!m.active || !m.mesh.visible || isMarbleInLoop(m)) continue;
+      if (m.channelState !== 'in_channel' || !isHealthyTeamMarble(m) || isRescuer(m)) continue;
+      const d = l4ChannelArcDistToSW(m.body.position.x, m.body.position.z);
+      if (d === null || d < 0.3) continue; // too close to the hole to reach in time
+      const score = (m.owner === 'player' ? 10 : 0) + d;
+      if (score > bestScore) {
+        bestScore = score;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  private planAIRescueShot(target: MarbleEntity): { shooter: MarbleEntity; dirX: number; dirZ: number; power: number } | null {
+    const pool = this.listExperimentSelectables('ai');
+    let best: { shooter: MarbleEntity; dirX: number; dirZ: number; power: number } | null = null;
+    let bestD = Infinity;
+    const tp = target.body.position;
+    const tv = target.body.velocity;
+    for (const sh of pool) {
+      const sp = sh.body.position;
+      const d0 = Math.hypot(tp.x - sp.x, tp.z - sp.z);
+      const flight = d0 / 1.5; // ≈ mean shot speed
+      const px = tp.x + tv.x * flight;
+      const pz = tp.z + tv.z * flight;
+      const d = Math.hypot(px - sp.x, pz - sp.z);
+      if (d > 0.5 || d < MARBLE_RADIUS * 3) continue;
+      if (d < bestD) {
+        bestD = d;
+        const ang = Math.atan2(pz - sp.z, px - sp.x) + (Math.random() - 0.5) * 0.06; // ±1.7° aim error
+        best = { shooter: sh, dirX: Math.cos(ang), dirZ: Math.sin(ang), power: Math.min(0.6, Math.max(0.3, 0.28 + d * 0.8)) };
+      }
+    }
+    return best;
+  }
+
+  /** AI rescue shot: touches only its own marble; the human's turn state is left untouched. */
+  private startAIInterventionThrow(shooter: MarbleEntity, dirX: number, dirZ: number, power01: number): boolean {
+    if (!this.isChannelRescueActive() || !shooter.active) return false;
+    if (this.aiIvShots >= Game.MAX_AI_INTERVENTION_SHOTS) return false;
+    this.aiIvShots += 1;
+    this.aiIvLastMs = performance.now();
+    tagRescuerOnShot(shooter, this.fieldMarbles);
+    shooter.body.type = CANNON.Body.DYNAMIC;
+    shooter.body.collisionResponse = true;
+    shooter.body.wakeUp();
+    const mag = impulseFromPower(power01);
+    shooter.body.applyImpulse(new CANNON.Vec3(dirX * mag, mag * 0.08, dirZ * mag), new CANNON.Vec3(0, 0, 0));
+    this.flashLocationBanner(`¡${this.opponentName} intenta rescatar!`, 'banner-ai', 1200);
+    return true;
+  }
+
+  private updateAIIntervention(): void {
+    if (!this.aiInterventionEnabled || !this.isChannelRescueActive()) return;
+    if (this.turn !== 'player' || (this.phase !== 'playing' && this.phase !== 'shot_flying')) return;
+    const now = performance.now();
+    const target = this.pickAIRescueTarget();
+    if (!target) {
+      this.aiIvTargetSince = null;
+      return;
+    }
+    if (this.aiIvTargetSince === null) this.aiIvTargetSince = now;
+    if (now - this.aiIvTargetSince < Game.AI_INTERVENTION_REACT_MS) return;
+    if (this.aiIvShots >= Game.MAX_AI_INTERVENTION_SHOTS || now - this.aiIvLastMs < Game.AI_INTERVENTION_GAP_MS) return;
+    if (this.aiming) return; // never fire while the human is drawing a flick
+    const plan = this.planAIRescueShot(target);
+    if (!plan) return;
+    this.startAIInterventionThrow(plan.shooter, plan.dirX, plan.dirZ, plan.power);
+  }
+
   /** Camera framing for the AI's turn: open shot over the human player's healthy marbles. */
   private playerAreaFraming(): ReturnType<typeof framingPlayerArea> {
     return framingPlayerArea(
@@ -3424,6 +3529,8 @@ private spawnShootersInitial(): void {
 
     this.showLocationMarker(shooter, side);
     this.interventionShots = 0;
+    this.aiIvShots = 0;
+    this.aiIvTargetSince = null;
     if (this.isChannelRescueActive() && side === 'ai') {
       // Round 6 (D): camera returns to the human's marbles (open shot), not the AI's marble.
       this.easeCameraToPlayerArea();
@@ -5481,7 +5588,7 @@ private spawnShootersInitial(): void {
     this.els.powerBar.style.width = `${pct}%`;
     this.els.powerPct.textContent = `${pct}%`;
 
-    if (performance.now() < this.aiThinkUntil) return;
+    if (this.debugAIFrozen || performance.now() < this.aiThinkUntil) return;
 
     this.els.powerWrap.classList.add('hidden');
     this.els.powerWrap.classList.remove('visible');
@@ -6281,6 +6388,7 @@ private spawnShootersInitial(): void {
       const side = this.turn === 'player' ? 'player' : 'ai';
       for (const m of this.fieldMarbles) markInChannelIfNeeded(m, side);
       this.validateExperimentSelection();
+      this.updateAIIntervention();
       // Round 7: victory is evaluated every frame while a match is live (not only inside the
       // shot scoring window) so a side with 0 healthy ends the game immediately.
       if (
