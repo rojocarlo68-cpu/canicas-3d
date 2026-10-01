@@ -16,6 +16,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { MARBLE_RADIUS, MARBLE_REST_Y, PLAY_SURFACE_Y } from './constants';
+import { clampCamAboveSurface, LOOK_MIN_Y } from './cameraDirector';
 import {
   L4_MAT_HALF,
   L4_PIPE_R,
@@ -26,6 +27,12 @@ import {
   type OfficeDeskBuild,
   applyL4FieldMarbleCollisionFilter,
 } from './officeDesk';
+import {
+  l4ChannelArcLengthFromSW,
+  l4ChannelPointAtArcLength,
+  l4ChannelCenterlinePerimeter,
+} from './officeDesk';
+import { playRescueChime } from './marbleSounds';
 import type { MarbleDesign, MarbleEntity, MarbleOwner } from './marbles';
 import type { ParticleFX } from './particles';
 
@@ -77,7 +84,7 @@ export function isMarbleInLoop(marble: MarbleEntity): boolean {
 }
 
 export function hasActiveLoopTransits(): boolean {
-  return looping.size > 0;
+  return looping.size > 0 || slides.size > 0;
 }
 
 export function getChannelState(m: MarbleEntity): ChannelState {
@@ -468,9 +475,15 @@ export function isPhysicallyInChannel(m: MarbleEntity): boolean {
 
 export function markInChannelIfNeeded(m: MarbleEntity, turnSide: TeamSide): void {
   if (!m.active || isZombieMarble(m) || looping.has(m)) return;
+  if (slides.has(m)) return; // rescuer being guided into the channel (kinematic glide)
   if (!isHealthyTeamMarble(m)) return;
   if (!isPhysicallyInChannel(m)) {
-    if (m.channelState === 'in_channel') m.channelState = 'none';
+    if (m.channelState === 'in_channel') {
+      m.channelState = 'none';
+      rescueRegistered.delete(m);
+      // Knocked back onto the mat (rescued/converted stays healthy there): drop the stale flag.
+      (m as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = false;
+    }
     return;
   }
   if (m.channelState !== 'in_channel') {
@@ -528,9 +541,9 @@ export function shouldBlockSettleMaxForce(field: MarbleEntity[]): boolean {
 
 export type ContactResult =
   | { kind: 'none' }
-  | { kind: 'convert'; channel: MarbleEntity; by: TeamSide; prev: TeamSide }
   | { kind: 'zombie_kill'; zombie: MarbleEntity; victim: MarbleEntity; victimSide: TeamSide };
 
+/** Zombie touching a healthy team marble (any phase) → victim eliminated. */
 export function handleMarbleContact(
   a: MarbleEntity,
   b: MarbleEntity,
@@ -540,27 +553,6 @@ export function handleMarbleContact(
     [a, b],
     [b, a],
   ];
-  for (const [x, y] of pairs) {
-    if (
-      x.channelState === 'in_channel' &&
-      !looping.has(x) &&
-      isHealthyTeamMarble(x) &&
-      isHealthyTeamMarble(y) &&
-      (y.owner === 'player' || y.owner === 'ai')
-    ) {
-      const cool = contactCoolUntil.get(x) ?? 0;
-      if (now < cool) return { kind: 'none' };
-      const prev = x.owner as TeamSide;
-      const by = y.owner as TeamSide;
-      contactCoolUntil.set(x, now + CONTACT_COOLDOWN_MS);
-      // Same team = rescued (stays that color); other team = convert. Either way
-      // mark converted so unrecovered→zombie does not apply if they reach the hole.
-      if (prev !== by) applyTeamAppearance(x, by);
-      x.channelState = 'in_channel';
-      (x as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = true;
-      return { kind: 'convert', channel: x, by, prev };
-    }
-  }
   for (const [x, y] of pairs) {
     if (
       isZombieMarble(x) &&
@@ -581,6 +573,328 @@ export function handleMarbleContact(
   return { kind: 'none' };
 }
 
+// ───────────────────────── Rescuers / interception (Round 6) ─────────────────────────
+//
+// RESCUER = any marble shot (human flick, intervention flick, or AI shot) while at least one
+// healthy marble is traveling in the channel. A rescuer can never become a zombie (hard guard in
+// beginLoopTransit/finishLoop) — it rides the channel/loop and exits HEALTHY, own colour.
+// Immunity is cleared once it has settled on the mat or exited the loop.
+//
+// CONTACT = a cannon-es `beginContact` event between the in_channel marble and any healthy team
+// marble (queued by Game, processed after world.step). Registered ONCE per channel marble.
+
+export const RESCUE_FLASHES = 3;
+const RESCUE_FLASH_ON_S = 0.4;
+const RESCUE_FLASH_OFF_S = 0.4;
+const RESCUER_MAX_IMMUNITY_MS = 30000;
+const GUIDE_SLIDE_S = 0.45;
+
+const rescuers = new Map<MarbleEntity, number>();
+const rescueRegistered = new WeakSet<MarbleEntity>();
+type Slide = {
+  marble: MarbleEntity;
+  target: MarbleEntity;
+  t0: number;
+  from: THREE.Vector3;
+  savedGroup: number;
+  savedMask: number;
+};
+const slides = new Map<MarbleEntity, Slide>();
+type RescueFx = { t0: number; flashes: number; wasOn: boolean };
+const rescueFx = new Map<MarbleEntity, RescueFx>();
+
+export const rescueDebug = {
+  contacts: 0,
+  rescued: 0,
+  converted: 0,
+  rescuerZombieBlocked: 0,
+  guided: 0,
+  eliminations: 0,
+  log: [] as { id: number; hitterId: number; kind: 'rescued' | 'converted'; t: number }[],
+};
+
+export function isRescuer(m: MarbleEntity): boolean {
+  return rescuers.has(m);
+}
+
+export function rescuerCount(): number {
+  return rescuers.size;
+}
+
+export function isGuideSliding(m: MarbleEntity): boolean {
+  return slides.has(m);
+}
+
+export function rescueFlashesDone(m: MarbleEntity): number {
+  return rescueFx.get(m)?.flashes ?? -1;
+}
+
+/** Tag the shooter as a rescuer if any healthy marble is in the channel right now. */
+export function tagRescuerOnShot(shooter: MarbleEntity, field: MarbleEntity[]): boolean {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return false;
+  if (!hasInChannelMarbles(field)) return false;
+  rescuers.set(shooter, performance.now());
+  return true;
+}
+
+export type RescueResult =
+  | { kind: 'none' }
+  | {
+      kind: 'rescue';
+      channel: MarbleEntity;
+      hitter: MarbleEntity;
+      prev: TeamSide;
+      by: TeamSide;
+      same: boolean;
+    };
+
+/**
+ * Real physics contact (from beginContact) between `a` and `b`. If one is an unregistered
+ * in_channel healthy marble and the other a healthy team marble → RESCUED (same team) or
+ * CONVERTED (enemy → hitter's team). Registered once; target never becomes a zombie.
+ */
+export function handleRescueContact(
+  a: MarbleEntity,
+  b: MarbleEntity,
+  desk: OfficeDeskBuild | null,
+  allMarbles: MarbleEntity[],
+): RescueResult {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return { kind: 'none' };
+  const pairs: [MarbleEntity, MarbleEntity][] = [
+    [a, b],
+    [b, a],
+  ];
+  for (const [x, y] of pairs) {
+    if (
+      !x.active ||
+      !y.active ||
+      x.channelState !== 'in_channel' ||
+      looping.has(x) ||
+      looping.has(y) ||
+      !isHealthyTeamMarble(x) ||
+      !isHealthyTeamMarble(y) ||
+      rescuers.has(x) || // rescuers are already immune — they are not the target
+      rescueRegistered.has(x) ||
+      slides.has(x)
+    ) {
+      continue;
+    }
+    // Two plain channel riders touching each other is convoy traffic, not an interception.
+    if (y.channelState === 'in_channel' && !rescuers.has(y)) continue;
+    const prev = x.owner as TeamSide;
+    const by = y.owner as TeamSide;
+    rescueRegistered.add(x);
+    rescueDebug.contacts += 1;
+    if (prev !== by) {
+      applyTeamAppearance(x, by);
+      rescueDebug.converted += 1;
+    } else {
+      rescueDebug.rescued += 1;
+    }
+    rescueDebug.log.push({
+      id: x.body.id,
+      hitterId: y.body.id,
+      kind: prev === by ? 'rescued' : 'converted',
+      t: performance.now(),
+    });
+    const flagged = x as MarbleEntity & { experimentConverted?: boolean };
+    flagged.experimentConverted = true; // → exits the loop HEALTHY (never zombie)
+    x.channelState = 'in_channel';
+    // Hitter becomes an immune rescuer and is guided into the hole system too.
+    rescuers.set(y, performance.now());
+    (y as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = true;
+    rescueFx.set(x, { t0: performance.now(), flashes: 0, wasOn: false });
+    playRescueChime();
+    if (y.channelState !== 'in_channel') startGuideSlide(y, x, desk, allMarbles);
+    return { kind: 'rescue', channel: x, hitter: y, prev, by, same: prev === by };
+  }
+  return { kind: 'none' };
+}
+
+function startGuideSlide(
+  hitter: MarbleEntity,
+  target: MarbleEntity,
+  _desk: OfficeDeskBuild | null,
+  _all: MarbleEntity[],
+): void {
+  if (slides.has(hitter)) return;
+  const body = hitter.body;
+  rescueDebug.guided += 1;
+  hitter.channelState = 'in_channel';
+  slides.set(hitter, {
+    marble: hitter,
+    target,
+    t0: performance.now(),
+    from: new THREE.Vector3(body.position.x, body.position.y, body.position.z),
+    savedGroup: body.collisionFilterGroup,
+    savedMask: body.collisionFilterMask,
+  });
+  body.velocity.setZero();
+  body.angularVelocity.setZero();
+  body.type = CANNON.Body.KINEMATIC;
+  body.collisionFilterGroup = 0;
+  body.collisionFilterMask = 0;
+  body.wakeUp();
+}
+
+/** Centerline spot `back` metres behind `target` (away from the SW hole), or null. */
+function spotBehind(target: MarbleEntity, back: number): { x: number; z: number } | null {
+  const tp = target.body.position;
+  const s = l4ChannelArcLengthFromSW(tp.x, tp.z);
+  if (s === null) return null;
+  const peri = l4ChannelCenterlinePerimeter();
+  // Marble travels toward s=0 along the shorter arc → "behind" is the other way.
+  const towardDecreasing = s <= peri - s;
+  const sb = towardDecreasing ? s + back : s - back;
+  return l4ChannelPointAtArcLength(sb);
+}
+
+function updateGuideSlides(now: number, others: MarbleEntity[]): void {
+  for (const [m, sl] of [...slides]) {
+    if (!m.active) {
+      slides.delete(m);
+      continue;
+    }
+    const body = m.body;
+    const hole = l4HoleCentersLocal()[0]!;
+    const u = Math.min(1, (now - sl.t0) / (GUIDE_SLIDE_S * 1000));
+    const e = u * u * (3 - 2 * u);
+    // Destination: behind the target in the channel; if the target already left the channel,
+    // go straight to the hole.
+    let dest: { x: number; y: number; z: number };
+    const back = MARBLE_RADIUS * 2.4;
+    const spot =
+      sl.target.active && !looping.has(sl.target) && sl.target.channelState === 'in_channel'
+        ? spotBehind(sl.target, back)
+        : null;
+    if (spot) {
+      dest = {
+        x: spot.x,
+        y: l4MarbleRestY(spot.x, spot.z) ?? PLAY_SURFACE_Y - L4_PIPE_R + MARBLE_RADIUS,
+        z: spot.z,
+      };
+    } else {
+      dest = { x: hole.x, y: PLAY_SURFACE_Y - L4_PIPE_R * 0.4, z: hole.z };
+    }
+    body.position.set(
+      sl.from.x + (dest.x - sl.from.x) * e,
+      sl.from.y + (dest.y - sl.from.y) * e,
+      sl.from.z + (dest.z - sl.from.z) * e,
+    );
+    body.previousPosition.copy(body.position);
+    if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
+    body.velocity.setZero();
+    m.mesh.position.set(body.position.x, body.position.y, body.position.z);
+    if (u < 1) continue;
+    // Landed in the channel (or hole): hand over to normal physics + channel drain.
+    // Never land on top of another marble — slide further back until clear.
+    if (spot) {
+      const clearance = MARBLE_RADIUS * 2 * 1.04;
+      for (let k = 0; k < 6; k++) {
+        const bx = body.position.x;
+        const bz = body.position.z;
+        let clash: MarbleEntity | null = null;
+        for (const o of others) {
+          if (o === m || !o.active || !o.mesh.visible || looping.has(o)) continue;
+          const p = o.body.position;
+          if (Math.hypot(p.x - bx, p.y - body.position.y, p.z - bz) < clearance) {
+            clash = o;
+            break;
+          }
+        }
+        if (!clash) break;
+        const nb = spotBehind(clash, back);
+        if (!nb) break;
+        body.position.set(nb.x, l4MarbleRestY(nb.x, nb.z) ?? body.position.y, nb.z);
+      }
+    }
+    slides.delete(m);
+    body.type = CANNON.Body.DYNAMIC;
+    body.collisionResponse = true;
+    applyL4FieldMarbleCollisionFilter(body);
+    body.allowSleep = false;
+    body.velocity.setZero();
+    body.angularVelocity.setZero();
+    body.wakeUp();
+    m.channelState = 'in_channel';
+    m.mesh.position.set(body.position.x, body.position.y, body.position.z);
+  }
+}
+
+function setEmissive(m: MarbleEntity, on: boolean): void {
+  const mat = m.mesh.material;
+  if (!mat || Array.isArray(mat) || !('emissive' in mat)) return;
+  const pm = mat as THREE.MeshPhysicalMaterial;
+  if (on) {
+    pm.emissive.setHex(0xffffff);
+    pm.emissiveIntensity = 0.9;
+  } else {
+    pm.emissive.setHex(0x000000);
+    pm.emissiveIntensity = 1;
+  }
+}
+
+/** Exactly RESCUE_FLASHES slow flashes: 0.4 s on / 0.4 s off each. */
+function updateRescueFx(now: number): void {
+  const period = RESCUE_FLASH_ON_S + RESCUE_FLASH_OFF_S;
+  for (const [m, fx] of [...rescueFx]) {
+    if (!m.active) {
+      rescueFx.delete(m);
+      continue;
+    }
+    const el = (now - fx.t0) / 1000;
+    const total = RESCUE_FLASHES * period;
+    if (el >= total) {
+      setEmissive(m, false);
+      fx.flashes = RESCUE_FLASHES;
+      fx.wasOn = false;
+      // keep the record (flashes==3) but stop touching the material
+      rescueFx.set(m, fx);
+      continue;
+    }
+    const on = el % period < RESCUE_FLASH_ON_S;
+    if (on && !fx.wasOn) fx.flashes += 1;
+    fx.wasOn = on;
+    setEmissive(m, on);
+  }
+}
+
+function updateRescuerImmunity(now: number): void {
+  for (const [m, since] of [...rescuers]) {
+    if (!m.active) {
+      rescuers.delete(m);
+      continue;
+    }
+    if (looping.has(m) || slides.has(m) || m.channelState === 'in_channel') continue;
+    const age = now - since;
+    if (age > RESCUER_MAX_IMMUNITY_MS) {
+      rescuers.delete(m);
+      continue;
+    }
+    if (age < 700) continue;
+    // Settled on the mat (not in the trough, not moving) → immunity ends.
+    if (isPhysicallyInChannel(m)) continue;
+    const v = m.body.velocity.length();
+    const w = m.body.angularVelocity.length();
+    if (v < 0.02 && w < 0.6) rescuers.delete(m);
+  }
+}
+
+/** Per-frame rescue bookkeeping (guide slides, flashes, immunity expiry). */
+export function updateRescueSystem(others: MarbleEntity[]): void {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
+  const now = performance.now();
+  updateGuideSlides(now, others);
+  updateRescueFx(now);
+  updateRescuerImmunity(now);
+}
+
+export function clearRescueState(): void {
+  rescuers.clear();
+  slides.clear();
+  rescueFx.clear();
+}
+
 export function beginLoopTransit(
   marble: MarbleEntity,
   desk: OfficeDeskBuild | null,
@@ -588,6 +902,11 @@ export function beginLoopTransit(
 ): void {
   if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
   if (looping.has(marble)) return;
+  // Rescuers NEVER become zombies (hit or miss): force a healthy exit.
+  if (exitAs === 'zombie' && rescuers.has(marble)) {
+    exitAs = 'converted';
+    rescueDebug.rescuerZombieBlocked += 1;
+  }
   const teamAtExit: TeamSide | 'neutral' =
     exitAs === 'zombie'
       ? 'neutral'
@@ -609,6 +928,7 @@ export function beginLoopTransit(
   body.wakeUp();
   marble.mesh.visible = true;
   marble.channelState = 'in_loop';
+  slides.delete(marble);
   looping.set(marble, {
     marble,
     t0: performance.now(),
@@ -721,11 +1041,27 @@ function finishLoop(
   marble.mesh.scale.set(1, 1, 1);
   marble.active = true;
   marble.channelState = 'none';
-  if (st.exitAs === 'zombie' || st.teamAtExit === 'neutral') {
+  if ((st.exitAs === 'zombie' || st.teamAtExit === 'neutral') && !rescuers.has(marble)) {
     applyZombieAppearance(marble);
   } else {
-    applyTeamAppearance(marble, st.teamAtExit);
+    const side: TeamSide =
+      st.teamAtExit !== 'neutral'
+        ? st.teamAtExit
+        : marble.owner === 'player' || marble.owner === 'ai'
+          ? marble.owner
+          : 'player';
+    // Keep the existing material when it is already the right team colour so a rescue flash
+    // that is still running is not cut off at the loop exit.
+    if (!(marble.role === 'healthy' && marble.owner === side && marble.design === createTeamSolidDesign(side))) {
+      applyTeamAppearance(marble, side);
+    } else {
+      applyL4FieldMarbleCollisionFilter(marble.body);
+    }
   }
+  // Exited the loop → rescue immunity ends.
+  rescuers.delete(marble);
+  rescueRegistered.delete(marble);
+  (marble as MarbleEntity & { experimentConverted?: boolean }).experimentConverted = false;
   // Loop exit always returns a field marble (never the bridge shooter).
   applyL4FieldMarbleCollisionFilter(marble.body);
 }
@@ -747,6 +1083,10 @@ export function abortLoopTransit(marble: MarbleEntity): void {
 
 export function deactivateMarble(marble: MarbleEntity): void {
   looping.delete(marble);
+  rescuers.delete(marble);
+  slides.delete(marble);
+  rescueFx.delete(marble);
+  if (marble.active) rescueDebug.eliminations += 1;
   detachSkullSprite(marble.mesh);
   marble.active = false;
   marble.mesh.visible = false;
@@ -760,6 +1100,7 @@ export function deactivateMarble(marble: MarbleEntity): void {
 export function disposeExperiment(scene?: THREE.Scene): void {
   for (const m of [...looping.keys()]) finishLoop(m);
   looping.clear();
+  clearRescueState();
   rescueSession = null;
   disposeExperimentVisuals(scene);
 }
@@ -915,4 +1256,58 @@ export function clearEliminationFX(): void {
     fx.marble.mesh.scale.set(1, 1, 1);
   }
   pendingEliminations.length = 0;
+}
+
+
+/**
+ * Round 6 (D): camera framing used during the AI's turn in the experiment — back on the human
+ * player's side. Open shot centred on the centroid of the player's healthy marbles with enough
+ * distance for all/most of them to be visible and tappable (never a close-up on one marble).
+ */
+export function framingPlayerArea(
+  field: MarbleEntity[],
+  fallbackAz: number,
+  portrait: boolean,
+  aspect: number,
+  fovDeg: number,
+): { pos: THREE.Vector3; target: THREE.Vector3; centroid: { x: number; z: number }; radius: number; count: number } {
+  let cx = 0;
+  let cz = 0;
+  let n = 0;
+  const pts: { x: number; z: number }[] = [];
+  const seen = new Set<MarbleEntity>();
+  for (const m of field) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    if (!isHealthyTeamMarble(m) || m.owner !== 'player' || looping.has(m) || !m.mesh.visible) continue;
+    const { x, z } = m.body.position;
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    cx += x;
+    cz += z;
+    n += 1;
+    pts.push({ x, z });
+  }
+  if (n === 0) {
+    cx = 0;
+    cz = 0;
+  } else {
+    cx /= n;
+    cz /= n;
+  }
+  let r = 0;
+  for (const p of pts) r = Math.max(r, Math.hypot(p.x - cx, p.z - cz));
+  const reach = r + MARBLE_RADIUS * 6; // margin so edge marbles stay selectable
+  const tanHalf = Math.tan((fovDeg * Math.PI) / 360);
+  const fit = Math.min(1, aspect) * tanHalf;
+  const dist = Math.max(0.5, Math.min(2.4, reach / (fit * 0.78)));
+  const polar = portrait ? 0.95 : 1.0;
+  const az = fallbackAz;
+  const target = new THREE.Vector3(cx, LOOK_MIN_Y, cz);
+  const pos = new THREE.Vector3(
+    cx + Math.sin(az) * Math.sin(polar) * dist,
+    Math.cos(polar) * dist,
+    cz + Math.cos(az) * Math.sin(polar) * dist,
+  );
+  clampCamAboveSurface(pos, target);
+  return { pos, target, centroid: { x: cx, z: cz }, radius: r, count: n };
 }

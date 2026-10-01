@@ -490,3 +490,44 @@ export function isMarbleWoodRollActive(): boolean {
 export function areMarbleSamplesReady(): boolean {
   return samplesReady;
 }
+
+
+/** Rescue/interception chime trigger counter (probe-visible; counts REAL contacts only). */
+export const rescueSoundStats = { triggers: 0 };
+
+/**
+ * L4 channel-rescue experiment: short, distinct two-note chime (E6 → B6, bell-like).
+ * Independent of ENABLE_MARBLE_SFX (marble SFX stay silenced); only called on a real
+ * marble/channel-marble physics contact. Respects the user's mute switch.
+ */
+export function playRescueChime(): void {
+  rescueSoundStats.triggers += 1;
+  try {
+    const audio = ensureAudio();
+    if (!audio || !master || muted) return;
+    if (audio.state === 'suspended') void audio.resume().catch(() => undefined);
+    const t0 = audio.currentTime + 0.01;
+    const note = (freq: number, start: number, dur: number, vol: number) => {
+      for (const [mul, v] of [
+        [1, 1],
+        [2.01, 0.28],
+      ] as const) {
+        const osc = audio.createOscillator();
+        const g = audio.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq * mul;
+        g.gain.setValueAtTime(0.0001, t0 + start);
+        g.gain.exponentialRampToValueAtTime(vol * v, t0 + start + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + start + dur);
+        osc.connect(g);
+        g.connect(master!);
+        osc.start(t0 + start);
+        osc.stop(t0 + start + dur + 0.02);
+      }
+    };
+    note(1318.5, 0, 0.32, 0.22);
+    note(1975.5, 0.11, 0.5, 0.2);
+  } catch {
+    /* ignore */
+  }
+}

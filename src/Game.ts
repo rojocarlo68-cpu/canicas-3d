@@ -158,9 +158,20 @@ import {
   applyTeamAppearance,
   finishEliminationFX,
   applyZombieAppearance,
+  tagRescuerOnShot,
+  hasInChannelMarbles,
+  handleRescueContact,
+  updateRescueSystem,
+  clearRescueState,
+  framingPlayerArea,
+  rescueDebug,
+  rescueFlashesDone,
+  isRescuer,
+  isGuideSliding,
   type TeamSide,
 } from './l4ChannelRescueExperiment';
 import { planAIShot, impulseFromPower } from './ai';
+import { rescueSoundStats } from './marbleSounds';
 import {
   resolveControlMode,
   controlModeHint,
@@ -247,6 +258,17 @@ export class Game {
   private controlMode: ControlMode = resolveControlMode();
 
   private aiming = false;
+  /** Experiment: world beginContact pairs queued during world.step (processed after it). */
+  private beginContactQueue: [CANNON.Body, CANNON.Body][] = [];
+  /** Experiment (E): human intervention shots during the AI's turn. */
+  private interventionShots = 0;
+  private interventionLastMs = 0;
+  /** Scoring/edge window opened by an intervention shot fired while the AI is still thinking. */
+  private interventionWindow = false;
+  /** Marker ring currently shown for this marble (experiment: follows owner, not the active shooter). */
+  private markerFollow: MarbleEntity | null = null;
+  /** Experiment: the player's selection ring stays until selection changes (no 2.8 s fade). */
+  private markerPersistent = false;
   /** Experiment: tap-to-select candidate (not yet confirmed as aim). */
   private pendingSelectMarble: MarbleEntity | null = null;
   private aimPointerId: number | null = null;
@@ -286,6 +308,8 @@ export class Game {
     /** Push: world-space finger velocity on ground (m/s). When set, overrides power impulse. */
     pushVx?: number;
     pushVz?: number;
+    /** Experiment: human intervention shot during the AI's turn (touches only its own marble). */
+    intervention?: boolean;
   } | null = null;
 
   private markerGroup: THREE.Group;
@@ -608,6 +632,13 @@ export class Game {
     // Extra iterations help small spheres stay on the play surface under cañonazo hits
     (this.world.solver as CANNON.GSSolver).iterations = 20;
 
+    // Experiment: real physics contacts (beginContact) feed the rescue/interception system.
+    this.world.addEventListener('beginContact', (e: { bodyA: CANNON.Body | null; bodyB: CANNON.Body | null }) => {
+      if (e.bodyA && e.bodyB && isL4ChannelRescueExperimentActive(this.sceneLevel)) {
+        this.beginContactQueue.push([e.bodyA, e.bodyB]);
+      }
+    });
+
     this.groundMat = new CANNON.Material('ground');
     const marbleMat = getMarbleCannonMaterial();
     this.world.addContactMaterial(
@@ -780,6 +811,59 @@ export class Game {
       state: () => this.debugState(),
       selectablesScreen: () => this.debugSelectablesScreen(),
     };
+    // Round 6 probe hooks (rescue / intervention / camera / invariants). Debug only.
+    (window as unknown as { __TAMA_R6__?: unknown }).__TAMA_R6__ = {
+      census: () => this.r6Census(),
+      placeChannel: (side: TeamSide, x: number, z: number) => this.r6PlaceChannel(side, x, z),
+      placeMat: (side: TeamSide, x: number, z: number, exceptIds?: number[]) =>
+        this.r6PlaceMat(side, x, z, exceptIds),
+      select: (id: number) => this.r6Select(id),
+      move: (id: number, x: number, z: number) => this.r6Move(id, x, z),
+      selectedIds: () => ({ player: this.playerMarble?.body.id ?? null, ai: this.aiMarble?.body.id ?? null }),
+      makeZombieAt: (x: number, z: number) => this.r6ZombieAt(x, z),
+      shoot: (dirX: number, dirZ: number, power: number) => this.r6Shoot(dirX, dirZ, power),
+      holdAI: () => {
+        this.aiThinkUntil = performance.now() + 1e9;
+        return true;
+      },
+      releaseAI: () => {
+        this.aiThinkUntil = performance.now() + 50;
+        return true;
+      },
+      info: (id: number) => this.r6Info(id),
+      clearZone: (x: number, z: number, r: number, keepIds: number[]) => this.r6ClearZone(x, z, r, keepIds),
+      shootAI: (dirX: number, dirZ: number, power: number) => this.r6ShootAI(dirX, dirZ, power),
+      setScoringOpen: () => {
+        this.scoringEnabled = true;
+        return true;
+      },
+      sounds: () => ({ ...rescueSoundStats }),
+      rescueStats: () => ({
+        contacts: rescueDebug.contacts,
+        rescued: rescueDebug.rescued,
+        converted: rescueDebug.converted,
+        rescuerZombieBlocked: rescueDebug.rescuerZombieBlocked,
+        guided: rescueDebug.guided,
+        eliminations: rescueDebug.eliminations,
+        log: rescueDebug.log.slice(),
+      }),
+      camera: () => this.r6CameraReport(),
+      interventionInfo: () => ({
+        shots: this.interventionShots,
+        max: Game.MAX_INTERVENTION_SHOTS,
+        gapMs: Game.INTERVENTION_GAP_MS,
+        mode: this.playerInputMode(),
+      }),
+      resetInterventionGap: () => {
+        this.interventionLastMs = 0;
+        return true;
+      },
+      anyInChannel: () => hasInChannelMarbles(this.fieldMarbles),
+      clearRescue: () => {
+        clearRescueState();
+        return true;
+      },
+    };
     const loop = () => {
       this.animId = requestAnimationFrame(loop);
       this.update();
@@ -787,7 +871,292 @@ export class Game {
     loop();
   }
 
+  private r6All(): MarbleEntity[] {
+    return this.experimentAllMarbles();
+  }
 
+  private r6ById(id: number): MarbleEntity | null {
+    return this.r6All().find((m) => m.body.id === id) ?? null;
+  }
+
+  /** Entity census: every marble is in exactly one category; total never grows. */
+  private r6Census(): Record<string, unknown> {
+    const all = this.r6All();
+    const ids = new Set(all.map((m) => m.body.id));
+    let blue = 0, red = 0, zombies = 0, inChannel = 0, inLoop = 0, inactive = 0;
+    for (const m of all) {
+      if (!m.active) {
+        inactive += 1;
+        continue;
+      }
+      if (isMarbleInLoop(m)) {
+        inLoop += 1;
+        continue;
+      }
+      if (isZombieMarble(m)) zombies += 1;
+      else if (m.owner === 'player') blue += 1;
+      else if (m.owner === 'ai') red += 1;
+      if (m.channelState === 'in_channel') inChannel += 1;
+    }
+    const sc = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+    return {
+      entities: all.length,
+      uniqueBodies: ids.size,
+      blue,
+      red,
+      zombies,
+      inChannel,
+      inLoop,
+      inactive,
+      active: all.length - inactive,
+      eliminationsCounted: rescueDebug.eliminations,
+      scores: sc,
+      scoreText: {
+        player: this.els.scorePlayer.textContent,
+        ai: this.els.scoreAI.textContent,
+        money: this.els.scoreMoney.textContent,
+      },
+    };
+  }
+
+  private r6Info(id: number): Record<string, unknown> | null {
+    const m = this.r6ById(id);
+    if (!m) return null;
+    const mat = m.mesh.material as THREE.MeshPhysicalMaterial;
+    return {
+      id,
+      active: m.active,
+      owner: String(m.owner),
+      role: m.role ?? 'healthy',
+      ch: m.channelState ?? 'none',
+      loop: isMarbleInLoop(m),
+      rescuer: isRescuer(m),
+      sliding: isGuideSliding(m),
+      flashes: rescueFlashesDone(m),
+      emissiveOn: !!mat && 'emissiveIntensity' in mat && mat.emissive.getHex() === 0xffffff && mat.emissiveIntensity > 0.5,
+      x: m.body.position.x,
+      y: m.body.position.y,
+      z: m.body.position.z,
+      speed: m.body.velocity.length(),
+      vx: m.body.velocity.x,
+      vz: m.body.velocity.z,
+    };
+  }
+
+  private r6PlaceChannel(side: TeamSide, x: number, z: number): { ok: boolean; id?: number } {
+    const pick = this.fieldMarbles.find(
+      (m) =>
+        m.active &&
+        isHealthyTeamMarble(m) &&
+        m.owner === side &&
+        m !== this.playerMarble &&
+        m !== this.aiMarble &&
+        !isMarbleInLoop(m) &&
+        m.channelState !== 'in_channel',
+    );
+    if (!pick) return { ok: false };
+    const y = l4MarbleRestY(x, z) ?? PLAY_SURFACE_Y - L4_PIPE_R + MARBLE_RADIUS;
+    applyL4FieldMarbleCollisionFilter(pick.body);
+    pick.body.type = CANNON.Body.DYNAMIC;
+    pick.body.allowSleep = false;
+    pick.body.position.set(x, y, z);
+    pick.body.previousPosition.copy(pick.body.position);
+    pick.body.velocity.setZero();
+    pick.body.angularVelocity.setZero();
+    pick.body.wakeUp();
+    pick.mesh.visible = true;
+    this.syncOneMesh(pick);
+    markInChannelIfNeeded(pick, this.turn === 'player' ? 'player' : 'ai');
+    pick.channelState = 'in_channel';
+    return { ok: true, id: pick.body.id };
+  }
+
+  private r6PlaceMat(side: TeamSide, x: number, z: number, exceptIds: number[] = []): { ok: boolean; id?: number } {
+    const pick = this.fieldMarbles.find(
+      (m) =>
+        m.active &&
+        isHealthyTeamMarble(m) &&
+        m.owner === side &&
+        !exceptIds.includes(m.body.id) &&
+        !isMarbleInLoop(m) &&
+        m.channelState !== 'in_channel' &&
+        m !== this.aiMarble,
+    );
+    if (!pick) return { ok: false };
+    const y = l4MarbleRestY(x, z) ?? MARBLE_REST_Y;
+    pick.body.position.set(x, y, z);
+    pick.body.previousPosition.copy(pick.body.position);
+    pick.body.velocity.setZero();
+    pick.body.angularVelocity.setZero();
+    pick.body.wakeUp();
+    this.syncOneMesh(pick);
+    return { ok: true, id: pick.body.id };
+  }
+
+  /** Move every other marble out of a circular zone (deterministic test setup only). */
+  private r6ClearZone(x: number, z: number, r: number, keepIds: number[]): number {
+    let moved = 0;
+    for (const m of this.r6All()) {
+      if (!m.active || isMarbleInLoop(m) || keepIds.includes(m.body.id)) continue;
+      if (m.channelState === 'in_channel') continue;
+      const p = m.body.position;
+      if (Math.hypot(p.x - x, p.z - z) >= r) continue;
+      if (isPhysicallyInChannel(m)) continue;
+      // push toward mat centre, outside the zone
+      const nx = 0.12 * (moved % 3) - 0.1;
+      const nz = -0.2 + 0.1 * Math.floor(moved / 3);
+      m.body.position.set(nx, l4MarbleRestY(nx, nz) ?? MARBLE_REST_Y, nz);
+      m.body.previousPosition.copy(m.body.position);
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      m.body.wakeUp();
+      this.syncOneMesh(m);
+      moved += 1;
+    }
+    return moved;
+  }
+
+  private r6ShootAI(dirX: number, dirZ: number, power: number): { ok: boolean; phase: string } {
+    if (this.turn !== 'ai' || !this.aiMarble) return { ok: false, phase: this.phase };
+    this.aiPlan = null;
+    this.els.powerWrap.classList.add('hidden');
+    this.startThrow('ai', dirX, dirZ, power);
+    return { ok: true, phase: this.phase };
+  }
+
+  private r6Move(id: number, x: number, z: number): boolean {
+    const m = this.r6ById(id);
+    if (!m) return false;
+    m.body.position.set(x, l4MarbleRestY(x, z) ?? MARBLE_REST_Y, z);
+    m.body.previousPosition.copy(m.body.position);
+    m.body.velocity.setZero();
+    m.body.angularVelocity.setZero();
+    m.body.wakeUp();
+    this.syncOneMesh(m);
+    return true;
+  }
+
+  private r6ZombieAt(x: number, z: number): { ok: boolean; id?: number } {
+    const donor = this.fieldMarbles.find(
+      (m) =>
+        m.active &&
+        m.mesh.visible &&
+        isHealthyTeamMarble(m) &&
+        m !== this.playerMarble &&
+        m !== this.aiMarble &&
+        !isMarbleInLoop(m) &&
+        m.channelState !== 'in_channel',
+    );
+    if (!donor) return { ok: false };
+    applyZombieAppearance(donor);
+    donor.body.type = CANNON.Body.DYNAMIC;
+    donor.body.position.set(x, l4MarbleRestY(x, z) ?? MARBLE_REST_Y, z);
+    donor.body.previousPosition.copy(donor.body.position);
+    donor.body.velocity.setZero();
+    donor.body.wakeUp();
+    this.syncOneMesh(donor);
+    return { ok: true, id: donor.body.id };
+  }
+
+  private r6Select(id: number): { ok: boolean } {
+    const m = this.r6ById(id);
+    if (!m) return { ok: false };
+    const side = m.owner === 'ai' ? 'ai' : 'player';
+    return { ok: this.selectExperimentMarble(m, side) };
+  }
+
+  /** Fire the CURRENT selection through the same entry points as the real flick release. */
+  private r6Shoot(dirX: number, dirZ: number, power: number): { ok: boolean; mode: string | null } {
+    const mode = this.playerInputMode();
+    if (mode === 'own') {
+      this.startThrow('player', dirX, dirZ, power);
+      return { ok: true, mode };
+    }
+    if (mode === 'intervention') {
+      return { ok: this.startInterventionThrow(dirX, dirZ, power), mode };
+    }
+    return { ok: false, mode };
+  }
+
+  /** Where the camera looks vs the centroid of the human's healthy marbles + frustum coverage. */
+  private r6CameraReport(): Record<string, unknown> {
+    this.camera.updateMatrixWorld(true);
+    const pts = this.r6All().filter(
+      (m) => m.active && m.mesh.visible && isHealthyTeamMarble(m) && m.owner === 'player' && !isMarbleInLoop(m),
+    );
+    let cx = 0, cz = 0;
+    for (const m of pts) {
+      cx += m.body.position.x;
+      cz += m.body.position.z;
+    }
+    if (pts.length) {
+      cx /= pts.length;
+      cz /= pts.length;
+    }
+    const frustum = new THREE.Frustum();
+    const pm = new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(pm);
+    let inView = 0;
+    let inViewMargin = 0;
+    const v = new THREE.Vector3();
+    for (const m of pts) {
+      v.set(m.body.position.x, m.body.position.y, m.body.position.z);
+      if (frustum.containsPoint(v)) inView += 1;
+      const n = v.clone().project(this.camera);
+      if (Math.abs(n.x) < 0.92 && Math.abs(n.y) < 0.92 && n.z < 1) inViewMargin += 1;
+    }
+    const aiPos = this.aiMarble ? this.aiMarble.body.position : null;
+    const t = this.controls.target;
+    return {
+      turn: this.turn,
+      phase: this.phase,
+      camTarget: { x: t.x, y: t.y, z: t.z },
+      camPos: { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z },
+      blueCentroid: { x: cx, z: cz },
+      targetToCentroid_m: Math.hypot(t.x - cx, t.z - cz),
+      aiMarble: aiPos ? { x: aiPos.x, z: aiPos.z } : null,
+      targetToAiMarble_m: aiPos ? Math.hypot(t.x - aiPos.x, t.z - aiPos.z) : null,
+      blueHealthy: pts.length,
+      blueInFrustum: inView,
+      blueInSafeView: inViewMargin,
+      camDistToTarget_m: this.camera.position.distanceTo(t),
+      easing: !!this.camEase?.active,
+    };
+  }
+
+
+
+  /** Experiment: drain the beginContact queue; real contacts only → rescue / conversion. */
+  private processRescueContacts(): void {
+    const q = this.beginContactQueue;
+    if (q.length === 0) return;
+    this.beginContactQueue = [];
+    for (const [ba, bb] of q) {
+      const ea = this.entityFromBody(ba);
+      const eb = this.entityFromBody(bb);
+      if (!ea || !eb) continue;
+      const r = handleRescueContact(ea, eb, this.officeDesk, this.experimentAllMarbles());
+      if (r.kind !== 'rescue') continue;
+      this.syncExperimentScores();
+      if (r.same) {
+        this.flashLocationBanner(
+          r.by === 'player'
+            ? `¡Rescataste tu canica! (${this.playerScore}-${this.aiScore})`
+            : `¡${this.opponentName} rescató su canica! (${this.playerScore}-${this.aiScore})`,
+          r.by === 'player' ? 'banner-player' : 'banner-ai',
+          1400,
+        );
+      } else {
+        this.flashLocationBanner(
+          r.by === 'player'
+            ? `¡Rescate! Convertiste una canica (${this.playerScore}-${this.aiScore})`
+            : `¡${this.opponentName} convirtió una canica! (${this.playerScore}-${this.aiScore})`,
+          r.by === 'player' ? 'banner-player' : 'banner-ai',
+          1600,
+        );
+      }
+    }
+  }
 
   /** Experiment: field marbles + current shooters (deduped) for exit-spot occupancy checks. */
   private experimentAllMarbles(): MarbleEntity[] {
@@ -2436,9 +2805,8 @@ private spawnShootersInitial(): void {
     }
     // Experiment: faint selection highlight always; baseline: X-ray only when occluded.
     if (this.isChannelRescueActive()) {
-      this.playerOutline.visible = true;
-      const mat = this.playerOutline.material as THREE.MeshBasicMaterial;
-      mat.opacity = this.isPlayerMarbleOccluded() ? 0.72 : 0.28;
+      // Round 6: NO white translucent overlay on the selected marble — circle only.
+      this.playerOutline.visible = false;
     } else {
       this.playerOutline.visible = this.isPlayerMarbleOccluded();
     }
@@ -2571,7 +2939,10 @@ private spawnShootersInitial(): void {
       if (side === 'player') this.attachPlayerOutline(m);
       return true;
     }
-    if (prev && prev.active && prev !== m) {
+    // Intervention (human selecting during the AI's turn): the marble stays a live DYNAMIC
+    // body (it can still be hit / pushed), and the AI-turn camera is NOT pulled onto it.
+    const live = side === 'player' && this.playerInputMode() === 'intervention';
+    if (prev && prev.active && prev !== m && !live) {
       prev.body.type = CANNON.Body.DYNAMIC;
       prev.body.velocity.setZero();
       prev.body.angularVelocity.setZero();
@@ -2583,20 +2954,111 @@ private spawnShootersInitial(): void {
     }
     if (!this.fieldMarbles.includes(m)) this.fieldMarbles.push(m);
     this.applyActiveShooterCollisionFilter(m.body);
-    m.body.velocity.setZero();
-    m.body.angularVelocity.setZero();
-    m.body.type = CANNON.Body.KINEMATIC;
-    this.snapMarblePhysics(m, true);
-    this.syncOneMesh(m);
+    if (!live) {
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      m.body.type = CANNON.Body.KINEMATIC;
+      this.snapMarblePhysics(m, true);
+      this.syncOneMesh(m);
+    } else {
+      m.body.wakeUp();
+    }
     if (side === 'player') {
       this.playerMarble = m;
       this.attachPlayerOutline(m);
       this.showLocationMarker(m, 'player');
-      this.easeCameraToward(m);
+      this.markerPersistent = live;
+      if (!live) this.easeCameraToward(m);
     } else {
       this.aiMarble = m;
     }
     return true;
+  }
+
+  /** Intervention limits (E): max shots per AI turn and min gap between them. */
+  private static readonly MAX_INTERVENTION_SHOTS = 2;
+  private static readonly INTERVENTION_GAP_MS = 900;
+
+  /**
+   * Who may use the player's marbles right now: 'own' (normal turn), 'intervention' (experiment:
+   * during the AI's aim/shot phases), or null.
+   */
+  private playerInputMode(): 'own' | 'intervention' | null {
+    if (this.phase === 'playing' && this.turn === 'player') return 'own';
+    if (
+      this.isChannelRescueActive() &&
+      this.turn === 'ai' &&
+      (this.phase === 'ai_thinking' || this.phase === 'shot_flying')
+    ) {
+      return 'intervention';
+    }
+    return null;
+  }
+
+  private interventionShotAllowed(): boolean {
+    return (
+      this.playerInputMode() === 'intervention' &&
+      this.interventionShots < Game.MAX_INTERVENTION_SHOTS &&
+      performance.now() - this.interventionLastMs >= Game.INTERVENTION_GAP_MS
+    );
+  }
+
+  /**
+   * Intervention shot: same flick physics/impulse as a normal shot, but the AI's turn state
+   * (phase, scoring window owner, turn order, AI shooter) is left untouched.
+   */
+  private startInterventionThrow(
+    dirX: number,
+    dirZ: number,
+    power01: number,
+    push?: { pushVx: number; pushVz: number },
+  ): boolean {
+    const shooter = this.playerMarble;
+    if (!shooter || !this.interventionShotAllowed()) return false;
+    this.interventionShots += 1;
+    this.interventionLastMs = performance.now();
+    tagRescuerOnShot(shooter, this.fieldMarbles);
+    this.throwPendingImpulse = {
+      side: 'player',
+      dirX,
+      dirZ,
+      power01,
+      pushVx: push?.pushVx,
+      pushVz: push?.pushVz,
+      intervention: true,
+    };
+    this.applyPendingImpulse();
+    this.interventionWindow = true;
+    this.markerGroup.visible = false;
+    this.hideAimLine();
+    return true;
+  }
+
+  /** Camera framing for the AI's turn: open shot over the human player's healthy marbles. */
+  private playerAreaFraming(): ReturnType<typeof framingPlayerArea> {
+    return framingPlayerArea(
+      this.experimentAllMarbles(),
+      this.defaultCamAzimuth,
+      window.innerHeight > window.innerWidth,
+      this.camera.aspect,
+      this.camera.fov,
+    );
+  }
+
+  private easeCameraToPlayerArea(): void {
+    const f = this.playerAreaFraming();
+    clampCamAboveSurface(f.pos, f.target);
+    this.controls.enabled = false;
+    this.controls.enableDamping = false;
+    this.camEase = {
+      active: true,
+      t: 0,
+      dur: 0.7,
+      fromPos: this.camera.position.clone(),
+      toPos: f.pos,
+      fromTarget: this.controls.target.clone(),
+      toTarget: f.target,
+    };
   }
 
   /** Screen/world pick of any selectable own marble (experiment). */
@@ -2701,7 +3163,14 @@ private spawnShootersInitial(): void {
     }
 
     this.showLocationMarker(shooter, side);
-    this.easeCameraToward(shooter);
+    this.interventionShots = 0;
+    this.interventionWindow = false;
+    if (this.isChannelRescueActive() && side === 'ai') {
+      // Round 6 (D): camera returns to the human's marbles (open shot), not the AI's marble.
+      this.easeCameraToPlayerArea();
+    } else {
+      this.easeCameraToward(shooter);
+    }
 
     if (side === 'player') {
       this.setPhase('playing');
@@ -2816,6 +3285,8 @@ private spawnShootersInitial(): void {
     this.markerGroup.visible = true;
     this.markerLife = 2.8;
     this.markerHintBoost = 2.6;
+    this.markerFollow = shooter;
+    this.markerPersistent = false;
   }
 
   private armPlayerIdleHint(): void {
@@ -3358,14 +3829,17 @@ private spawnShootersInitial(): void {
       return;
     }
     if (e.button !== 0 && e.pointerType === 'mouse') return;
-    if (this.phase !== 'playing' || this.turn !== 'player') return;
+    const inputMode = this.playerInputMode();
+    if (!inputMode) return;
     // Experiment: with no current selection (it was eliminated) any own marble can still be tapped.
     if (!this.playerMarble && !this.isChannelRescueActive()) return;
 
     // Already aiming with another pointer → ignore this down for shoot;
     // do NOT stopPropagation so OrbitControls can orbit/pan with it.
     if (this.aiming) return;
-    if (!this.canPlayerShoot) return;
+    if (inputMode === 'own' && !this.canPlayerShoot) return;
+    // Intervention (AI's turn): limited number of shots per AI turn
+    if (inputMode === 'intervention' && this.interventionShots >= Game.MAX_INTERVENTION_SHOTS) return;
 
     // Experiment: tap any own healthy mat marble to select; only drag on selected shoots.
     this.pendingSelectMarble = null;
@@ -3499,10 +3973,14 @@ private spawnShootersInitial(): void {
 
     this.cancelAimGesture(true);
 
-    if (this.phase !== 'playing' || this.turn !== 'player' || (!this.playerMarble && !this.pendingSelectMarble)) {
+    const upMode = this.playerInputMode();
+    if (!upMode || (!this.playerMarble && !this.pendingSelectMarble)) {
       this.pendingSelectMarble = null;
       return;
     }
+    const restoreCanShoot = () => {
+      this.canPlayerShoot = upMode === 'own';
+    };
 
     // Experiment: weak tap on another marble = select it (no shot). Strong drag only shoots selected.
     if (this.pendingSelectMarble) {
@@ -3510,25 +3988,35 @@ private spawnShootersInitial(): void {
       this.pendingSelectMarble = null;
       if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
         this.selectExperimentMarble(pending, 'player');
-        this.canPlayerShoot = true;
+        restoreCanShoot();
         this.armPlayerIdleHint();
         return;
       }
       // Strong drag started on non-selected: treat as select only (don't shoot wrong marble)
       this.selectExperimentMarble(pending, 'player');
-      this.canPlayerShoot = true;
+      restoreCanShoot();
       this.armPlayerIdleHint();
       return;
     }
 
     if (!this.playerMarble) {
-      this.canPlayerShoot = true;
+      restoreCanShoot();
       return;
     }
 
     if (!isGestureStrongEnough(mode, dragPx, speed, world.speed)) {
-      this.canPlayerShoot = true;
+      restoreCanShoot();
       this.armPlayerIdleHint();
+      return;
+    }
+
+    if (upMode === 'intervention') {
+      const power = Math.max(0.08, Math.min(1, power01));
+      const ok =
+        mode === 'push'
+          ? this.startInterventionThrow(dirX, dirZ, power, { pushVx: world.vx, pushVz: world.vz })
+          : this.startInterventionThrow(dirX, dirZ, power);
+      if (!ok) restoreCanShoot();
       return;
     }
 
@@ -3560,6 +4048,8 @@ private spawnShootersInitial(): void {
       pushVx: push?.pushVx,
       pushVz: push?.pushVz,
     };
+    // Experiment: any marble shot while a healthy marble rides the channel is a rescuer.
+    if (this.isChannelRescueActive()) tagRescuerOnShot(shooter, this.fieldMarbles);
     // Apply immediately (no hand wind-up)
     this.applyPendingImpulse();
 
@@ -3595,7 +4085,8 @@ private spawnShootersInitial(): void {
     // Both personal marbles must be DYNAMIC so they share field-marble physics
     // (can be struck / moved by any marble, including each other).
     const l4impulse = this.sceneLevel === 4;
-    for (const m of [this.playerMarble, this.aiMarble]) {
+    const wakeList = pending.intervention ? [shooter] : [this.playerMarble, this.aiMarble];
+    for (const m of wakeList) {
       if (!m || !m.active) continue;
       m.body.type = CANNON.Body.DYNAMIC;
       // L4: don't yank shooters up out of channels; only fix NaN / deep sinks
@@ -3890,7 +4381,11 @@ private spawnShootersInitial(): void {
   /** Experiment: rescue/convert/zombie/edge scoring (no knockout money). */
   private updateExperimentScoreAndWin(): boolean {
     if (this.isExperimentPregame()) return false;
-    const inShotWindow = this.phase === 'shot_flying' && this.scoringEnabled;
+    const inShotWindow =
+      (this.phase === 'shot_flying' && this.scoringEnabled) ||
+      (this.interventionWindow &&
+        this.turn === 'ai' &&
+        (this.phase === 'ai_thinking' || this.phase === 'shot_flying'));
     const inProgress =
       this.phase === 'shot_flying' ||
       this.phase === 'playing' ||
@@ -3949,7 +4444,7 @@ private spawnShootersInitial(): void {
       }
 
       // Hole: process while scoring window open OR marble already in_channel (cruise)
-      if (inHole && (inShotWindow || m.channelState === 'in_channel')) {
+      if (inHole && (inShotWindow || m.channelState === 'in_channel' || isRescuer(m))) {
         const converted = !!(m as MarbleEntity & { experimentConverted?: boolean })
           .experimentConverted;
         if (converted) {
@@ -4832,26 +5327,7 @@ private spawnShootersInitial(): void {
         const eb = this.entityFromBody(bj);
         if (ea && eb) {
           const result = handleMarbleContact(ea, eb, now);
-          if (result.kind === 'convert') {
-            this.syncExperimentScores();
-            if (result.prev !== result.by) {
-              this.flashLocationBanner(
-                result.by === 'player'
-                  ? `¡Rescate! Convertiste una canica (${this.playerScore}-${this.aiScore})`
-                  : `¡${this.opponentName} convirtió una canica! (${this.playerScore}-${this.aiScore})`,
-                result.by === 'player' ? 'banner-player' : 'banner-ai',
-                1600,
-              );
-            } else {
-              this.flashLocationBanner(
-                result.by === 'player'
-                  ? `¡Rescataste tu canica! (${this.playerScore}-${this.aiScore})`
-                  : `¡${this.opponentName} rescató su canica! (${this.playerScore}-${this.aiScore})`,
-                result.by === 'player' ? 'banner-player' : 'banner-ai',
-                1400,
-              );
-            }
-          } else if (result.kind === 'zombie_kill') {
+          if (result.kind === 'zombie_kill') {
             this.applyExperimentZombieKill(result.victim);
           }
         }
@@ -4965,8 +5441,29 @@ private spawnShootersInitial(): void {
   }
 
   private updateMarker(dt: number): void {
+    if (this.isChannelRescueActive()) {
+      const f = this.markerFollow;
+      if (this.markerGroup.visible && f && (!f.active || !f.mesh.visible)) {
+        this.markerGroup.visible = false;
+        this.markerFollow = null;
+        this.markerPersistent = false;
+      }
+      // AI's transient ring has faded: keep the human's own selection ringed (existing circle).
+      if (
+        !this.markerGroup.visible &&
+        this.turn === 'ai' &&
+        (this.phase === 'ai_thinking' || this.phase === 'shot_flying') &&
+        this.playerMarble &&
+        this.experimentSelectionValid(this.playerMarble, 'player') &&
+        !this.aiming
+      ) {
+        this.showLocationMarker(this.playerMarble, 'player');
+        this.markerPersistent = true;
+        this.markerHintBoost = 0;
+      }
+    }
     if (!this.markerGroup.visible) return;
-    this.markerLife -= dt;
+    if (!this.markerPersistent) this.markerLife -= dt;
     if (this.markerHintBoost > 0) this.markerHintBoost -= dt;
     const boost = this.markerHintBoost > 0;
     const now = performance.now();
@@ -4980,8 +5477,9 @@ private spawnShootersInitial(): void {
       this.markerGroup.visible = false;
       this.markerHintBoost = 0;
     } else {
-      const shooter = this.getActiveShooter();
-      if (shooter && (this.phase === 'playing' || this.phase === 'ai_thinking')) {
+      const shooter =
+        this.isChannelRescueActive() && this.markerFollow ? this.markerFollow : this.getActiveShooter();
+      if (shooter && (this.phase === 'playing' || this.phase === 'ai_thinking' || (this.isChannelRescueActive() && this.phase === 'shot_flying'))) {
         this.markerGroup.position.x = shooter.body.position.x;
         this.markerGroup.position.y = PLAY_SURFACE_Y + 0.0045;
         this.markerGroup.position.z = shooter.body.position.z;
@@ -5039,7 +5537,7 @@ private spawnShootersInitial(): void {
       return;
     }
     // AI 2-phase cam owns framing — slow-mo time only (stay on aim/wide shot)
-    if (this.shouldAIDirectorRun()) {
+    if (this.shouldAIDirectorRun() || (this.isChannelRescueActive() && this.turn === 'ai')) {
       this.timeScale = SLOWMO_SCALE;
       this.slowMoTimer = Math.max(this.slowMoTimer, SLOWMO_DURATION * 0.55);
       this.slowMoFollow = null;
@@ -5297,6 +5795,8 @@ private spawnShootersInitial(): void {
   // ─── AI 2-phase camera (aim → wide) ─────────────────────────────────
 
   private shouldAIDirectorRun(): boolean {
+    // Round 6 (D): in the experiment the AI's turn never follows/focuses the AI shot.
+    if (this.isChannelRescueActive()) return false;
     return (
       this.turn === 'ai' &&
       (this.phase === 'ai_thinking' || this.phase === 'shot_flying')
@@ -5510,6 +6010,8 @@ private spawnShootersInitial(): void {
     }
     if (this.isChannelRescueActive() && !this.isExperimentPregame()) {
       updateLoopTransits(simDt, this.experimentAllMarbles());
+      this.processRescueContacts();
+      updateRescueSystem(this.experimentAllMarbles());
       finishEliminationFX();
       // Keep channel residency marked even between turns (cruise continues)
       const side = this.turn === 'player' ? 'player' : 'ai';
