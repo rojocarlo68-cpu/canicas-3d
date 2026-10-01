@@ -621,7 +621,49 @@ export function beginLoopTransit(
   });
 }
 
-export function updateLoopTransits(dt: number): void {
+/**
+ * Find a free spot for a marble leaving the loop at the return hatch: the hatch itself
+ * if no other body overlaps it, else rings of candidate offsets around it. Returns null
+ * if every candidate is occupied (caller keeps the marble waiting under the desk).
+ * Root cause of "fused zombies": every exit used the exact same point, so a marble that
+ * exited on top of another (distance 0 → degenerate zero contact normal) was never pushed apart.
+ */
+function findFreeExitSpot(
+  marble: MarbleEntity,
+  others: MarbleEntity[],
+): { x: number; z: number; y: number } | null {
+  const exit = getReturnHatchXZ();
+  const clearance = MARBLE_RADIUS * 2 * 1.04;
+  const free = (x: number, z: number): boolean => {
+    for (const o of others) {
+      if (o === marble || !o.active || !o.mesh.visible || looping.has(o)) continue;
+      if (o.body.type === CANNON.Body.STATIC) continue;
+      const p = o.body.position;
+      if (Math.hypot(p.x - x, p.z - z) < clearance && Math.abs(p.y - (MARBLE_REST_Y)) < 0.05) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const cands: { x: number; z: number }[] = [{ x: exit.x, z: exit.z }];
+  for (let ring = 1; ring <= 2; ring++) {
+    const r = clearance * ring;
+    const n = ring === 1 ? 6 : 12;
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2 + ring * 0.5;
+      cands.push({ x: exit.x + Math.cos(a) * r, z: exit.z + Math.sin(a) * r });
+    }
+  }
+  for (const c of cands) {
+    if (!free(c.x, c.z)) continue;
+    const y = l4MarbleRestY(c.x, c.z);
+    if (y === null) continue;
+    return { x: c.x, z: c.z, y };
+  }
+  return null;
+}
+
+export function updateLoopTransits(dt: number, others: MarbleEntity[] = []): void {
   if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT || looping.size === 0) return;
   const now = performance.now();
   const done: MarbleEntity[] = [];
@@ -638,15 +680,30 @@ export function updateLoopTransits(dt: number): void {
     st.marble.mesh.position.set(pos.x, pos.y, pos.z);
     if (u >= 1) done.push(st.marble);
   }
-  for (const m of done) finishLoop(m);
+  // Sequential: each released marble becomes an obstacle for the next one this frame.
+  for (const m of done) {
+    const spot = findFreeExitSpot(m, others);
+    if (!spot) {
+      // Exit occupied: wait under the hatch (still in loop, collisions off) and retry.
+      const st = looping.get(m)!;
+      const hold = st.path[st.path.length - 2]!;
+      m.body.position.set(hold.x, hold.y, hold.z);
+      m.mesh.position.set(hold.x, hold.y, hold.z);
+      continue;
+    }
+    finishLoop(m, spot);
+  }
 }
 
-function finishLoop(marble: MarbleEntity): void {
+function finishLoop(
+  marble: MarbleEntity,
+  spot?: { x: number; z: number; y: number } | null,
+): void {
   const st = looping.get(marble);
   if (!st) return;
   looping.delete(marble);
-  const exit = getReturnHatchXZ();
-  const rest = l4MarbleRestY(exit.x, exit.z) ?? MARBLE_REST_Y;
+  const exit = spot ?? getReturnHatchXZ();
+  const rest = spot?.y ?? l4MarbleRestY(exit.x, exit.z) ?? MARBLE_REST_Y;
   const body = marble.body;
   body.position.set(exit.x, rest, exit.z);
   body.previousPosition.copy(body.position);
@@ -661,6 +718,7 @@ function finishLoop(marble: MarbleEntity): void {
   body.velocity.set((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.04);
   marble.mesh.visible = true;
   marble.mesh.position.set(exit.x, rest, exit.z);
+  marble.mesh.scale.set(1, 1, 1);
   marble.active = true;
   marble.channelState = 'none';
   if (st.exitAs === 'zombie' || st.teamAtExit === 'neutral') {

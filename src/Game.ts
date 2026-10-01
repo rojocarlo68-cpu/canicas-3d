@@ -72,6 +72,7 @@ import {
   l4IsChannelOrHoleXZ,
   l4ChannelDrainDirXZ,
   l4ChannelStepTowardSW,
+  l4ChannelPointAtArcLength,
   l4ChannelArcDistToSW,
   l4ChannelLateral,
   L4_PIPE_R,
@@ -153,6 +154,7 @@ import {
   experimentVictoryMessage,
   burstShatter,
   abortLoopTransit,
+  getReturnHatchXZ,
   applyTeamAppearance,
   finishEliminationFX,
   applyZombieAppearance,
@@ -703,6 +705,8 @@ export class Game {
         selected: () => { player: { x: number; z: number } | null; ai: { x: number; z: number } | null };
         forceAITurn: () => { ok: boolean; selected?: { x: number; z: number } };
         forcePlayerTurn: () => { ok: boolean };
+        spawnZombies: (n: number, mode: 'exit' | 'hole' | 'loop' | 'channel') => { ok: boolean; reason?: string; n?: number };
+        snapshot: () => Array<{ id: number; x: number; y: number; z: number; role: string; owner: string; loop: boolean; ch: string }>;
         sampleZombie: () => {
           found: boolean;
           role?: string;
@@ -766,6 +770,9 @@ export class Game {
       },
       simulateSelectAndFlick: () => this.debugSimulateSelectAndFlick(),
       sampleZombie: () => this.debugSampleZombie(),
+      spawnZombies: (n: number, mode: 'exit' | 'hole' | 'loop' | 'channel') =>
+        this.debugSpawnZombies(n, mode),
+      snapshot: () => this.debugSnapshot(),
     };
     const loop = () => {
       this.animId = requestAnimationFrame(loop);
@@ -775,6 +782,98 @@ export class Game {
   }
 
 
+
+  /** Experiment: field marbles + current shooters (deduped) for exit-spot occupancy checks. */
+  private experimentAllMarbles(): MarbleEntity[] {
+    const list = this.fieldMarbles.slice();
+    for (const m of [this.playerMarble, this.aiMarble]) {
+      if (m && !list.includes(m)) list.push(m);
+    }
+    return list;
+  }
+
+  /** Debug: every active, visible marble (for pairwise-overlap probes). */
+  private debugSnapshot(): Array<{
+    id: number;
+    x: number;
+    y: number;
+    z: number;
+    role: string;
+    owner: string;
+    loop: boolean;
+    ch: string;
+  }> {
+    const list = this.fieldMarbles.slice();
+    for (const m of [this.playerMarble, this.aiMarble]) {
+      if (m && !list.includes(m)) list.push(m);
+    }
+    return list
+      .filter((m) => m.active && m.mesh.visible)
+      .map((m) => ({
+        id: m.body.id,
+        x: m.body.position.x,
+        y: m.body.position.y,
+        z: m.body.position.z,
+        role: m.role ?? 'healthy',
+        owner: String(m.owner),
+        loop: isMarbleInLoop(m),
+        ch: m.channelState ?? 'none',
+      }));
+  }
+
+  /** Debug: turn n healthy marbles into zombies and drop them at exit/hole/loop/channel. */
+  private debugSpawnZombies(
+    n: number,
+    mode: 'exit' | 'hole' | 'loop' | 'channel',
+  ): { ok: boolean; reason?: string; n?: number } {
+    if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
+    const picks = this.fieldMarbles
+      .filter(
+        (m) =>
+          m.active &&
+          m.mesh.visible &&
+          isHealthyTeamMarble(m) &&
+          !isMarbleInLoop(m) &&
+          m !== this.playerMarble &&
+          m !== this.aiMarble,
+      )
+      .slice(0, n);
+    if (picks.length < n) return { ok: false, reason: 'not_enough_marbles' };
+    const hole = this.officeDesk?.holeCenters[0];
+    const exit = getReturnHatchXZ();
+    let i = 0;
+    for (const m of picks) {
+      applyZombieAppearance(m);
+      m.body.type = CANNON.Body.DYNAMIC;
+      m.body.wakeUp();
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      let x = 0;
+      let z = 0;
+      if (mode === 'exit') {
+        x = exit.x + (i % 2 ? 1 : -1) * MARBLE_RADIUS * 0.3 * i;
+        z = exit.z + MARBLE_RADIUS * 0.2 * i;
+      } else if (mode === 'channel') {
+        const s = 0.35 + i * MARBLE_RADIUS * 0.5;
+        const pt = l4ChannelPointAtArcLength(s);
+        x = pt.x;
+        z = pt.z;
+      } else {
+        x = (hole?.x ?? 0) + i * 0.0005;
+        z = (hole?.z ?? 0) + i * 0.0005;
+      }
+      const y =
+        (mode === 'channel' ? l4MarbleRestY(x, z) : mode === 'exit' ? l4MarbleRestY(x, z) : null) ??
+        PLAY_SURFACE_Y - L4_PIPE_R * 0.4;
+      m.body.position.set(x, y, z);
+      m.body.previousPosition.copy(m.body.position);
+      m.mesh.position.set(x, y, z);
+      m.channelState = 'none';
+      if (mode === 'loop') beginLoopTransit(m, this.officeDesk, 'zombie');
+      i += 1;
+    }
+    return { ok: true, n: picks.length };
+  }
 
   private debugMakeZombie(side: TeamSide): { ok: boolean; reason?: string } {
     if (!this.isChannelRescueActive()) return { ok: false, reason: 'experiment_off' };
@@ -4168,9 +4267,14 @@ private spawnShootersInitial(): void {
       // Near SW hole — let gravity pull through the open shaft
       if (hole && Math.hypot(x - hole.x, z - hole.z) < holeR * 1.15) {
         body.velocity.y = Math.min(body.velocity.y, -0.55);
-        // Still nudge XZ into hole center so they don't orbit the rim
-        body.velocity.x += (hole.x - x) * 2.5;
-        body.velocity.z += (hole.z - z) * 2.5;
+        // Still nudge XZ into hole center so they don't orbit the rim — but never
+        // pull a marble into another one already over the shaft (zombie fusion bug).
+        if (
+          !(this.isChannelRescueActive() && this.channelStepBlocked(m, x, body.position.y, z, dist))
+        ) {
+          body.velocity.x += (hole.x - x) * 2.5;
+          body.velocity.z += (hole.z - z) * 2.5;
+        }
         continue;
       }
 
@@ -4182,6 +4286,13 @@ private spawnShootersInitial(): void {
 
       const next = l4ChannelStepTowardSW(x, z, speed * dt);
       if (!next) continue;
+      // Experiment: the kinematic centerline override ignores contacts, so two marbles
+      // could be driven onto the same spot (fused zombies). Queue behind the one ahead.
+      if (this.isChannelRescueActive() && this.channelStepBlocked(m, next.x, body.position.y, next.z, dist)) {
+        body.velocity.x = 0;
+        body.velocity.z = 0;
+        continue;
+      }
       // Force onto trough floor at new centerline — kinematic override after solver
       const support = l4SupportLocalY(next.x, next.z);
       body.position.x = next.x;
@@ -4206,6 +4317,35 @@ private spawnShootersInitial(): void {
       body.previousPosition.copy(body.position);
       if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
     }
+  }
+
+  /**
+   * Experiment: would moving marble `m` to (nx, nz) overlap another marble that is ahead
+   * of it (nearer the SW hole along the channel, ties broken by body id)? Used to queue
+   * channel marbles instead of letting the kinematic drain stack them.
+   */
+  private channelStepBlocked(
+    m: MarbleEntity,
+    nx: number,
+    ny: number,
+    nz: number,
+    myDist: number,
+  ): boolean {
+    const minD = MARBLE_RADIUS * 2 * 1.01;
+    for (const o of this.experimentAllMarbles()) {
+      if (o === m || !o.active || !o.mesh.visible || isMarbleInLoop(o)) continue;
+      if (o.body.type !== CANNON.Body.DYNAMIC) continue;
+      const p = o.body.position;
+      const d = Math.hypot(p.x - nx, p.y - ny, p.z - nz);
+      if (d >= minD) continue;
+      const od = l4ChannelArcDistToSW(p.x, p.z);
+      // Other is outside the channel band (on mat / falling) → physics handles it
+      if (od === null) continue;
+      if (od < myDist - 1e-6 || (Math.abs(od - myDist) <= 1e-6 && o.body.id < m.body.id)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -5184,7 +5324,7 @@ private spawnShootersInitial(): void {
       this.applyL4ChannelDrain(simDt);
     }
     if (this.isChannelRescueActive() && !this.isExperimentPregame()) {
-      updateLoopTransits(simDt);
+      updateLoopTransits(simDt, this.experimentAllMarbles());
       finishEliminationFX();
       // Keep channel residency marked even between turns (cruise continues)
       const side = this.turn === 'player' ? 'player' : 'ai';
