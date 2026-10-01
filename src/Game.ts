@@ -135,6 +135,14 @@ import {
   mountExperimentVisuals,
   disposeExperiment,
   updateLoopTransits,
+  watchChannelRiders,
+  flushExperimentAtEnd,
+  exitDebug,
+  exitTuning,
+  legacyDebug,
+  healthyCountTeam,
+  loopSnapshot,
+  exitCandidateSpots,
   markInChannelIfNeeded,
   isPhysicallyInChannel,
   getChannelState,
@@ -261,10 +269,10 @@ export class Game {
   /** Experiment: world beginContact pairs queued during world.step (processed after it). */
   private beginContactQueue: [CANNON.Body, CANNON.Body][] = [];
   /** Experiment (E): human intervention shots during the AI's turn. */
+  private debugSkipRender = false;
   private interventionShots = 0;
   private interventionLastMs = 0;
   /** Scoring/edge window opened by an intervention shot fired while the AI is still thinking. */
-  private interventionWindow = false;
   /** Marker ring currently shown for this marble (experiment: follows owner, not the active shooter). */
   private markerFollow: MarbleEntity | null = null;
   /** Experiment: the player's selection ring stays until selection changes (no 2.8 s fade). */
@@ -864,11 +872,264 @@ export class Game {
         return true;
       },
     };
+    this.world.addEventListener('postStep', () => this.r7HopTrackStep(1 / 120));
+    // Round 7 probe hooks (victory / loop exit / hop / rescue scoreboard / full-match simulation). Debug only.
+    (window as unknown as { __TAMA_R7__?: unknown }).__TAMA_R7__ = {
+      loops: () => loopSnapshot(),
+      exitStats: () => ({ ...exitDebug, log: exitDebug.log.slice(-40) }),
+      setExitTuning: (rings: number, maxWaitMs: number) => {
+        exitTuning.rings = rings;
+        exitTuning.maxWaitMs = maxWaitMs;
+        return true;
+      },
+      setLegacy: (oldExit: boolean, loopZombieCountsHealthy: boolean) => {
+        legacyDebug.oldExit = oldExit;
+        legacyDebug.loopZombieCountsHealthy = loopZombieCountsHealthy;
+        return true;
+      },
+      blockExit: (rings: number, count: number, exclude?: number[]) => this.r7BlockExit(rings, count, exclude ?? []),
+      toLoop: (id: number, as: 'zombie' | 'converted') => this.r7ToLoop(id, as),
+      board: () => this.r7Board(),
+      hopStart: (id: number, windowS: number) => this.r7HopTrackStart(id, windowS),
+      hopGet: () => this.r7HopTrackGet(),
+      stepFrames: (n: number, frameMs = 1000 / 60) => this.r7StepFrames(n, frameMs),
+      endState: () => ({
+        phase: this.phase,
+        endVisible: !this.els.endScreen.classList.contains('hidden'),
+        victoryVisible: !document.getElementById('victory-overlay')?.classList.contains('hidden'),
+        endTitle: this.els.endTitle.textContent,
+        endMessage: this.els.endMessage.textContent,
+      }),
+      killTeam: (side: TeamSide, keep: number) => this.r7KillTeam(side, keep),
+      forceVictoryCheck: () => this.checkExperimentVictory(),
+      autoPlayerShot: (aggr = 1) => this.r7AutoPlayerShot(aggr),
+      releaseAI: () => {
+        if (this.phase === 'ai_thinking') this.aiThinkUntil = 0;
+        return true;
+      },
+      matchStats: () => ({ ...this.r7MatchStats, exit: { ...exitDebug, log: [] }, loops: loopSnapshot(), channelAge: this.r7ChannelAges() }),
+      zombieToLoopHole: (id: number) => this.r7HoleDrop(id),
+      offDesk: (id: number) => {
+        const m = this.r6ById(id);
+        if (!m) return false;
+        m.body.type = CANNON.Body.DYNAMIC;
+        m.body.position.set(L4_MAT_HALF + 0.9, L4_ROOM_FLOOR_Y + 0.05, 0);
+        m.body.previousPosition.copy(m.body.position);
+        m.body.velocity.setZero();
+        m.body.wakeUp();
+        return true;
+      },
+      listTeam: (side: TeamSide) =>
+        this.experimentAllMarbles()
+          .filter((m) => m.active && m.owner === side && isHealthyTeamMarble(m))
+          .map((m) => ({ id: m.body.id, x: m.body.position.x, z: m.body.position.z, ch: m.channelState ?? 'none', loop: isMarbleInLoop(m) })),
+    };
     const loop = () => {
       this.animId = requestAnimationFrame(loop);
       this.update();
     };
     loop();
+  }
+
+
+  // ───────── Round 7 debug helpers (probe only; no gameplay effect) ─────────
+  /** Fill the hatch neighbourhood with zombies (up to `count`) on the first `rings` rings. */
+  private r7BlockExit(rings: number, count: number, exclude: number[]): { placed: number; spots: number } {
+    const spots = exitCandidateSpots(rings);
+    const donors = this.fieldMarbles.filter(
+      (m) =>
+        m.active && m.mesh.visible && isHealthyTeamMarble(m) && !isMarbleInLoop(m) && !exclude.includes(m.body.id) &&
+        m !== this.playerMarble && m !== this.aiMarble && m.channelState !== 'in_channel',
+    );
+    let placed = 0;
+    for (let i = 0; i < Math.min(count, spots.length, donors.length); i++) {
+      const m = donors[i]!;
+      const sp = spots[i]!;
+      applyZombieAppearance(m);
+      m.body.type = CANNON.Body.KINEMATIC; // pinned: a deliberate wall of obstacles
+      m.body.position.set(sp.x, l4MarbleRestY(sp.x, sp.z) ?? MARBLE_REST_Y, sp.z);
+      m.body.previousPosition.copy(m.body.position);
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      this.syncOneMesh(m);
+      placed += 1;
+    }
+    return { placed, spots: spots.length };
+  }
+
+  /** Put a marble straight into the under-desk loop (as if it had just fallen in the hole). */
+  private r7ToLoop(id: number, as: 'zombie' | 'converted'): boolean {
+    const m = this.r6ById(id);
+    if (!m) return false;
+    if (m === this.playerMarble) this.dropPlayerSelection();
+    if (m === this.aiMarble) this.aiMarble = null;
+    beginLoopTransit(m, this.officeDesk, as);
+    this.syncExperimentScores();
+    return true;
+  }
+
+  private r7Board(): Record<string, unknown> {
+    const all = this.experimentAllMarbles();
+    const t = {
+      blueMat: 0, blueCh: 0, blueLoopOut: 0, redMat: 0, redCh: 0, redLoopOut: 0,
+      zombiesMat: 0, zombiesLoop: 0, loopTotal: 0, channel: 0, inactive: 0,
+    };
+    for (const m of all) {
+      if (!m.active) { t.inactive += 1; continue; }
+      const lp = isMarbleInLoop(m);
+      if (lp) t.loopTotal += 1;
+      if (m.channelState === 'in_channel') t.channel += 1;
+      const team = healthyCountTeam(m);
+      if (lp) {
+        if (team === 'player') t.blueLoopOut += 1;
+        else if (team === 'ai') t.redLoopOut += 1;
+        else t.zombiesLoop += 1;
+        continue;
+      }
+      if (isZombieMarble(m)) { t.zombiesMat += 1; continue; }
+      const ch = m.channelState === 'in_channel';
+      if (m.owner === 'player') { if (ch) t.blueCh += 1; else t.blueMat += 1; }
+      else if (m.owner === 'ai') { if (ch) t.redCh += 1; else t.redMat += 1; }
+    }
+    const sc = syncHealthyScores(this.fieldMarbles, this.playerMarble, this.aiMarble);
+    return {
+      ...t,
+      scores: sc,
+      scoreText: { player: this.els.scorePlayer.textContent, ai: this.els.scoreAI.textContent, money: this.els.scoreMoney.textContent },
+      phase: this.phase,
+      turn: this.turn,
+      entities: all.length,
+    };
+  }
+
+  private hopRec: {
+    id: number; simT: number; started: boolean; startT: number; maxY: number; minY: number;
+    p0: { x: number; y: number; z: number } | null; maxHoriz: number; apexT: number; last: { x: number; y: number; z: number };
+    landT: number | null; horizAtLand: number; window: number; samples: number;
+  } | null = null;
+
+  /** Record (every physics sub-step) the hop of marble `id` for `windowS` simulated seconds after it leaves the loop. */
+  private r7HopTrackStart(id: number, windowS: number): boolean {
+    const m = this.r6ById(id);
+    if (!m) return false;
+    this.hopRec = {
+      id, simT: 0, started: false, startT: 0, maxY: -Infinity, minY: Infinity, p0: null, maxHoriz: 0, apexT: 0,
+      last: { x: 0, y: 0, z: 0 }, landT: null, horizAtLand: 0, window: windowS, samples: 0,
+    };
+    return true;
+  }
+
+  private r7HopTrackStep(dt: number): void {
+    const r = this.hopRec;
+    if (!r) return;
+    const m = this.r6ById(r.id);
+    if (!m) return;
+    r.simT += dt;
+    if (!r.started) {
+      if (isMarbleInLoop(m) || m.body.type !== CANNON.Body.DYNAMIC) return;
+      r.started = true;
+      r.startT = r.simT;
+      r.p0 = { x: m.body.position.x, y: m.body.position.y, z: m.body.position.z };
+    }
+    const t = r.simT - r.startT;
+    if (t > r.window) return;
+    const b = m.body.position;
+    r.samples += 1;
+    if (b.y > r.maxY) { r.maxY = b.y; r.apexT = t; }
+    r.minY = Math.min(r.minY, b.y);
+    r.maxHoriz = Math.max(r.maxHoriz, Math.hypot(b.x - r.p0!.x, b.z - r.p0!.z));
+    r.last = { x: b.x, y: b.y, z: b.z };
+    const rest = l4MarbleRestY(r.p0!.x, r.p0!.z) ?? MARBLE_REST_Y;
+    if (r.landT === null && t > 0.05 && b.y <= rest + 0.0006 && m.body.velocity.y <= 0.02) {
+      r.landT = t;
+      r.horizAtLand = Math.hypot(b.x - r.p0!.x, b.z - r.p0!.z);
+    }
+  }
+
+  private r7HopTrackGet(): Record<string, unknown> | null {
+    const r = this.hopRec;
+    if (!r || !r.p0) return r ? { started: false } : null;
+    const rest = l4MarbleRestY(r.p0.x, r.p0.z) ?? MARBLE_REST_Y;
+    const m = this.r6ById(r.id)!;
+    return {
+      started: true,
+      samples: r.samples,
+      apexAboveRest_mm: +((r.maxY - rest) * 1000).toFixed(2),
+      startAboveRest_mm: +((r.p0.y - rest) * 1000).toFixed(2),
+      apexAt_ms: Math.round(r.apexT * 1000),
+      landedAt_ms: r.landT === null ? null : Math.round(r.landT * 1000),
+      horizAtLand_mm: +(r.horizAtLand * 1000).toFixed(1),
+      maxHoriz_mm: +(r.maxHoriz * 1000).toFixed(1),
+      endHoriz_mm: +(Math.hypot(m.body.position.x - r.p0.x, m.body.position.z - r.p0.z) * 1000).toFixed(1),
+      end: { x: m.body.position.x, y: m.body.position.y, z: m.body.position.z },
+      onMat: !this.isOffL4Desk(m.body.position.x, m.body.position.y, m.body.position.z) && m.body.position.y > PLAY_SURFACE_Y - 0.01,
+      active: m.active,
+    };
+  }
+
+  /** Probe-only fast-forward: advance a virtual clock (performance.now is patched by the probe) and run update(). */
+  private r7StepFrames(n: number, frameMs: number): number {
+    const vt = (window as unknown as { __VT__?: { on: boolean; t: number } }).__VT__;
+    this.debugSkipRender = true;
+    try {
+      for (let i = 0; i < n; i++) {
+        if (vt) vt.t += frameMs;
+        this.update();
+      }
+    } finally {
+      this.debugSkipRender = false;
+    }
+    return vt ? vt.t : performance.now();
+  }
+
+  /** Remove (deactivate) healthy marbles of `side` until `keep` remain on the board (probe setup). */
+  private r7KillTeam(side: TeamSide, keep: number): number {
+    const list = this.experimentAllMarbles().filter((m) => m.active && !isMarbleInLoop(m) && isHealthyTeamMarble(m) && m.owner === side && m.channelState !== 'in_channel');
+    let killed = 0;
+    for (let i = 0; i < list.length - keep; i++) {
+      const m = list[i]!;
+      if (m === this.playerMarble) this.dropPlayerSelection();
+      if (m === this.aiMarble) this.aiMarble = null;
+      deactivateMarble(m);
+      killed += 1;
+    }
+    this.syncExperimentScores();
+    return killed;
+  }
+
+  private r7HoleDrop(id: number): boolean {
+    const m = this.r6ById(id);
+    const hole = this.officeDesk?.holeCenters[0];
+    if (!m || !hole) return false;
+    m.body.type = CANNON.Body.DYNAMIC;
+    m.body.position.set(hole.x, PLAY_SURFACE_Y - L4_PIPE_R * 0.4, hole.z);
+    m.body.previousPosition.copy(m.body.position);
+    m.body.velocity.set(0, -0.4, 0);
+    m.body.wakeUp();
+    return true;
+  }
+
+  private r7MatchStats = { playerShots: 0, aiShots: 0, interventions: 0, turns: 0 };
+
+  private r7ChannelAges(): { id: number; ch: string }[] {
+    return this.experimentAllMarbles().filter((m) => m.active && m.channelState === 'in_channel').map((m) => ({ id: m.body.id, ch: m.channelState ?? 'none' }));
+  }
+
+  /** Scripted human: pick a marble (rescue-biased like the AI) and shoot it with the real shot path. */
+  private r7AutoPlayerShot(aggr: number): { ok: boolean; reason?: string } {
+    if (this.phase !== 'playing' || this.turn !== 'player') return { ok: false, reason: 'not_player_turn' };
+    const pool = this.listExperimentSelectables('player');
+    if (pool.length === 0) return { ok: false, reason: 'no_selectable' };
+    const pick = experimentAIPickShooter(pool, this.playerMarble, 'player') ?? pool[0]!;
+    if (!this.selectExperimentMarble(pick, 'player')) return { ok: false, reason: 'select_failed' };
+    const bias = experimentAITargetBias(this.fieldMarbles, 'player');
+    let field = this.fieldMarbles;
+    if (bias.preferRescue.length > 0) field = [...bias.preferRescue, ...this.fieldMarbles];
+    else if (bias.preferIntoChannel.length > 0) field = [...bias.preferIntoChannel, ...this.fieldMarbles];
+    const plan = planAIShot(pick, field, this.sceneLevel, 'channel_out', L3_HOLE_RADIUS);
+    this.r7MatchStats.playerShots += 1;
+    this.startThrow('player', plan.dirX, plan.dirZ, Math.min(1, plan.power01 * aggr));
+    return { ok: true };
   }
 
   private r6All(): MarbleEntity[] {
@@ -3028,7 +3289,6 @@ private spawnShootersInitial(): void {
       intervention: true,
     };
     this.applyPendingImpulse();
-    this.interventionWindow = true;
     this.markerGroup.visible = false;
     this.hideAimLine();
     return true;
@@ -3164,7 +3424,6 @@ private spawnShootersInitial(): void {
 
     this.showLocationMarker(shooter, side);
     this.interventionShots = 0;
-    this.interventionWindow = false;
     if (this.isChannelRescueActive() && side === 'ai') {
       // Round 6 (D): camera returns to the human's marbles (open shot), not the AI's marble.
       this.easeCameraToPlayerArea();
@@ -4381,11 +4640,6 @@ private spawnShootersInitial(): void {
   /** Experiment: rescue/convert/zombie/edge scoring (no knockout money). */
   private updateExperimentScoreAndWin(): boolean {
     if (this.isExperimentPregame()) return false;
-    const inShotWindow =
-      (this.phase === 'shot_flying' && this.scoringEnabled) ||
-      (this.interventionWindow &&
-        this.turn === 'ai' &&
-        (this.phase === 'ai_thinking' || this.phase === 'shot_flying'));
     const inProgress =
       this.phase === 'shot_flying' ||
       this.phase === 'playing' ||
@@ -4394,7 +4648,7 @@ private spawnShootersInitial(): void {
     const turnSide: TeamSide = this.turn === 'player' ? 'player' : 'ai';
 
     // Selected marble open-edge falls (no bridges — same desk edge as field)
-    if (inShotWindow) {
+    {
       for (const m of [this.playerMarble, this.aiMarble]) {
         if (!m || !m.active) continue;
         if (!isHealthyTeamMarble(m)) continue;
@@ -4431,8 +4685,10 @@ private spawnShootersInitial(): void {
 
       // Open-edge fall (not hole). Channel trough is NOT an edge — field marbles
       // must stay alive, take drain cruise, and reach the SW hole.
+      // Round 7: NOT gated on the shot window any more. A healthy marble that leaves the desk
+      // while no shot is in flight (nudged by a zombie, a late roll) used to stay "healthy" at the
+      // room floor forever and block the victory check.
       if (
-        inShotWindow &&
         fallen &&
         !inHole &&
         !isPhysicallyInChannel(m) &&
@@ -4443,8 +4699,10 @@ private spawnShootersInitial(): void {
         continue;
       }
 
-      // Hole: process while scoring window open OR marble already in_channel (cruise)
-      if (inHole && (inShotWindow || m.channelState === 'in_channel' || isRescuer(m))) {
+      // Hole: ANY healthy marble that drops into the hole is resolved (Round 7: previously only while
+      // the scoring window was open or the marble was flagged in_channel → a marble that reached the
+      // hole late stayed 'healthy' in the shaft forever).
+      if (inHole) {
         const converted = !!(m as MarbleEntity & { experimentConverted?: boolean })
           .experimentConverted;
         if (converted) {
@@ -4611,6 +4869,11 @@ private spawnShootersInitial(): void {
 
 
   private endGame(): void {
+    // Round 7: nothing may stay queued in the loop / channel / guide slide when the match ends.
+    if (this.isChannelRescueActive()) {
+      flushExperimentAtEnd(this.experimentAllMarbles());
+      this.syncExperimentScores();
+    }
     this.setPhase('ended');
     this.canPlayerShoot = false;
     this.disarmPlayerIdleHint();
@@ -6010,6 +6273,7 @@ private spawnShootersInitial(): void {
     }
     if (this.isChannelRescueActive() && !this.isExperimentPregame()) {
       updateLoopTransits(simDt, this.experimentAllMarbles());
+      watchChannelRiders(simDt, this.fieldMarbles, this.officeDesk);
       this.processRescueContacts();
       updateRescueSystem(this.experimentAllMarbles());
       finishEliminationFX();
@@ -6017,6 +6281,15 @@ private spawnShootersInitial(): void {
       const side = this.turn === 'player' ? 'player' : 'ai';
       for (const m of this.fieldMarbles) markInChannelIfNeeded(m, side);
       this.validateExperimentSelection();
+      // Round 7: victory is evaluated every frame while a match is live (not only inside the
+      // shot scoring window) so a side with 0 healthy ends the game immediately.
+      if (
+        this.phase === 'playing' ||
+        this.phase === 'ai_thinking' ||
+        this.phase === 'shot_flying'
+      ) {
+        this.checkExperimentVictory();
+      }
     } else if (this.isExperimentPregame()) {
       this.rescueExperimentFallenDuringPregame();
     }
@@ -6093,7 +6366,7 @@ private spawnShootersInitial(): void {
     ) {
       this.controls.update();
     }
-    this.renderer.render(this.scene, this.camera);
+    if (!this.debugSkipRender) this.renderer.render(this.scene, this.camera);
   }
 
   /**

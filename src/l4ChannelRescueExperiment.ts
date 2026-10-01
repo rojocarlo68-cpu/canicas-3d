@@ -15,7 +15,7 @@
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { MARBLE_RADIUS, MARBLE_REST_Y, PLAY_SURFACE_Y } from './constants';
+import { GRAVITY, MARBLE_RADIUS, MARBLE_REST_Y, PLAY_SURFACE_Y } from './constants';
 import { clampCamAboveSurface, LOOK_MIN_Y } from './cameraDirector';
 import {
   L4_MAT_HALF,
@@ -24,6 +24,7 @@ import {
   l4HoleCentersLocal,
   l4MarbleRestY,
   l4ChannelLateral,
+  l4IsChannelOrHoleXZ,
   type OfficeDeskBuild,
   applyL4FieldMarbleCollisionFilter,
 } from './officeDesk';
@@ -44,6 +45,36 @@ export type ChannelState = 'none' | 'in_channel' | 'in_loop';
 export type MarbleRole = 'healthy' | 'zombie';
 
 const LOOP_DURATION_S = 1.55;
+
+/** Round 7 loop-exit guarantees. */
+const EXIT_RINGS = 8; // free-spot search radius = EXIT_RINGS × (1.04 × 2R) ≈ 0.133 m around the hatch
+const EXIT_MAX_WAIT_MS = 700; // max time a marble may wait for a free spot, then forced launch
+const LOOP_MAX_TOTAL_MS = 6000; // absolute cap for one loop (path + waiting) → forced launch
+const HOP_HEIGHT_M = 0.005; // exit hop apex ≈ 0.5 cm
+const HOP_VY = Math.sqrt(2 * Math.abs(GRAVITY) * HOP_HEIGHT_M) * 1.1; // ≈ 0.344 m/s (×1.1 compensates linear damping + substep: measured apex ≈ 5 mm)
+const HOP_VH = 0.25; // slight outward speed (m/s) ≈ 16 mm (one marble diameter) of travel while airborne
+const HOP_LAND_SPEED = 0.012; // horizontal speed kept after touching down (below the sleep limit → it stays put)
+const hopping = new Map<MarbleEntity, number>(); // marble → hop start (ms)
+
+/** Debug-only switches that restore the pre-Round-7 behaviour so the probes can reproduce the bug. */
+export const legacyDebug = {
+  /** old exit: 19 candidate spots, wait forever, no hop */
+  oldExit: false,
+  /** old counting: zombie-bound marble inside the loop still counts as healthy */
+  loopZombieCountsHealthy: false,
+};
+
+/** Mutable so probes can shrink the search / wait to force the "everything occupied" case. */
+export const exitTuning = { rings: EXIT_RINGS, maxWaitMs: EXIT_MAX_WAIT_MS };
+
+export const exitDebug = {
+  exits: 0,
+  forced: 0,
+  hops: 0,
+  maxWaitMs: 0,
+  watchdogChannel: 0,
+  log: [] as { id: number; waitMs: number; forced: boolean; x: number; z: number }[],
+};
 const TEAM_FIELD_EACH = 10; // all on mat; selected shooter is one of these (no separate commander)
 const CONTACT_COOLDOWN_MS = 180;
 const SKULL_CHILD = 'l4ZombieSkull';
@@ -57,6 +88,8 @@ type LoopState = {
   savedFilterMask: number;
   exitAs: 'converted' | 'zombie';
   teamAtExit: TeamSide | 'neutral';
+  /** wall-clock ms when the marble first wanted out (path finished) but had no free spot yet */
+  waitSince: number | null;
 };
 
 type RescueSession = {
@@ -107,6 +140,29 @@ export function isZombieMarble(m: MarbleEntity): boolean {
   return !!m.active && getMarbleRole(m) === 'zombie';
 }
 
+/**
+ * Which team does `m` count for in the healthy score right now (null = nobody)?
+ *  - on the mat / riding the channel (not yet resolved, can still be rescued): its owner
+ *  - zombie: nobody
+ *  - inside the under-desk loop: the team it WILL exit for (exitAs 'converted' → its team,
+ *    exitAs 'zombie' → nobody; it is already a zombie as soon as it drops in the hole)
+ * This is what keeps the scoreboard / victory check from counting a zombie-bound marble that is
+ * merely still travelling through the loop as a living marble.
+ */
+export function healthyCountTeam(m: MarbleEntity): TeamSide | null {
+  if (!m.active) return null;
+  const st = looping.get(m);
+  if (st) {
+    if (legacyDebug.loopZombieCountsHealthy) {
+      return m.owner === 'player' || m.owner === 'ai' ? m.owner : null;
+    }
+    if (st.exitAs === 'zombie' || st.teamAtExit === 'neutral') return null;
+    return st.teamAtExit;
+  }
+  if (!isHealthyTeamMarble(m)) return null;
+  return m.owner as TeamSide;
+}
+
 export function countHealthy(
   field: MarbleEntity[],
   shooters: (MarbleEntity | null)[],
@@ -116,13 +172,13 @@ export function countHealthy(
   const seen = new Set<MarbleEntity>();
   let n = 0;
   for (const m of field) {
-    if (!isHealthyTeamMarble(m) || m.owner !== side) continue;
+    if (healthyCountTeam(m) !== side) continue;
     if (seen.has(m)) continue;
     seen.add(m);
     n += 1;
   }
   for (const s of shooters) {
-    if (!s || !isHealthyTeamMarble(s) || s.owner !== side) continue;
+    if (!s || healthyCountTeam(s) !== side) continue;
     if (seen.has(s)) continue;
     seen.add(s);
     n += 1;
@@ -938,44 +994,59 @@ export function beginLoopTransit(
     savedFilterMask,
     exitAs,
     teamAtExit,
+    waitSince: null,
   });
 }
 
-/**
- * Find a free spot for a marble leaving the loop at the return hatch: the hatch itself
- * if no other body overlaps it, else rings of candidate offsets around it. Returns null
- * if every candidate is occupied (caller keeps the marble waiting under the desk).
- * Root cause of "fused zombies": every exit used the exact same point, so a marble that
- * exited on top of another (distance 0 → degenerate zero contact normal) was never pushed apart.
- */
-function findFreeExitSpot(
-  marble: MarbleEntity,
-  others: MarbleEntity[],
-): { x: number; z: number; y: number } | null {
+const EXIT_SAFE = L4_MAT_HALF - MARBLE_RADIUS * 5; // keep exits well inside the mat (not on the lip)
+
+function exitSpotFree(marble: MarbleEntity, others: MarbleEntity[], x: number, z: number, clearance: number): boolean {
+  for (const o of others) {
+    if (o === marble || !o.active || !o.mesh.visible || looping.has(o)) continue;
+    if (o.body.type === CANNON.Body.STATIC) continue;
+    const p = o.body.position;
+    if (Math.hypot(p.x - x, p.z - z) < clearance && Math.abs(p.y - MARBLE_REST_Y) < 0.05) return false;
+  }
+  return true;
+}
+
+/** Candidate exit spots: hatch first, then rings around it (nearest first). */
+function exitCandidates(rings: number): { x: number; z: number }[] {
   const exit = getReturnHatchXZ();
   const clearance = MARBLE_RADIUS * 2 * 1.04;
-  const free = (x: number, z: number): boolean => {
-    for (const o of others) {
-      if (o === marble || !o.active || !o.mesh.visible || looping.has(o)) continue;
-      if (o.body.type === CANNON.Body.STATIC) continue;
-      const p = o.body.position;
-      if (Math.hypot(p.x - x, p.z - z) < clearance && Math.abs(p.y - (MARBLE_REST_Y)) < 0.05) {
-        return false;
-      }
-    }
-    return true;
-  };
   const cands: { x: number; z: number }[] = [{ x: exit.x, z: exit.z }];
-  for (let ring = 1; ring <= 2; ring++) {
+  for (let ring = 1; ring <= rings; ring++) {
     const r = clearance * ring;
-    const n = ring === 1 ? 6 : 12;
+    const n = ring === 1 ? 6 : ring === 2 ? 12 : 6 * ring;
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2 + ring * 0.5;
       cands.push({ x: exit.x + Math.cos(a) * r, z: exit.z + Math.sin(a) * r });
     }
   }
-  for (const c of cands) {
-    if (!free(c.x, c.z)) continue;
+  return cands;
+}
+
+/**
+ * Find a free spot for a marble leaving the loop at the return hatch: the hatch itself if no
+ * other body overlaps it, else rings of candidate offsets around it. Returns null if every
+ * candidate is occupied (caller waits a bounded time, then force-launches).
+ * Root cause of "fused zombies": every exit used the exact same point, so a marble that exited
+ * on top of another (distance 0 → degenerate zero contact normal) was never pushed apart.
+ * Root cause of the Round-7 stuck loop: only 19 spots were tried and the marble waited forever;
+ * a clump of zombies at the hatch could fill all 19.
+ */
+function findFreeExitSpot(
+  marble: MarbleEntity,
+  others: MarbleEntity[],
+): { x: number; z: number; y: number } | null {
+  const clearance = MARBLE_RADIUS * 2 * 1.04;
+  const rings = legacyDebug.oldExit ? Math.min(2, exitTuning.rings) : exitTuning.rings;
+  for (const c of exitCandidates(rings)) {
+    if (!legacyDebug.oldExit) {
+      if (Math.abs(c.x) > EXIT_SAFE || Math.abs(c.z) > EXIT_SAFE) continue;
+      if (l4IsChannelOrHoleXZ(c.x, c.z)) continue;
+    }
+    if (!exitSpotFree(marble, others, c.x, c.z, clearance)) continue;
     const y = l4MarbleRestY(c.x, c.z);
     if (y === null) continue;
     return { x: c.x, z: c.z, y };
@@ -983,9 +1054,156 @@ function findFreeExitSpot(
   return null;
 }
 
-export function updateLoopTransits(dt: number, others: MarbleEntity[] = []): void {
-  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT || looping.size === 0) return;
+/** Forced launch: the spot (on the mat) with the largest clearance to every other body. */
+function bestEffortExitSpot(
+  marble: MarbleEntity,
+  others: MarbleEntity[],
+): { x: number; z: number; y: number } {
+  let best: { x: number; z: number; y: number } | null = null;
+  let bestScore = -Infinity;
+  for (const c of exitCandidates(EXIT_RINGS + 4)) {
+    if (Math.abs(c.x) > EXIT_SAFE || Math.abs(c.z) > EXIT_SAFE) continue;
+    if (l4IsChannelOrHoleXZ(c.x, c.z)) continue;
+    const y = l4MarbleRestY(c.x, c.z);
+    if (y === null) continue;
+    let minD = Infinity;
+    for (const o of others) {
+      if (o === marble || !o.active || !o.mesh.visible || looping.has(o)) continue;
+      if (o.body.type === CANNON.Body.STATIC) continue;
+      const p = o.body.position;
+      minD = Math.min(minD, Math.hypot(p.x - c.x, p.z - c.z));
+    }
+    const hatch = getReturnHatchXZ();
+    const score = Math.min(minD, 0.05) - Math.hypot(c.x - hatch.x, c.z - hatch.z) * 0.05;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { x: c.x, z: c.z, y };
+    }
+  }
+  if (best) return best;
+  const h = getReturnHatchXZ();
+  return { x: h.x, z: h.z, y: l4MarbleRestY(h.x, h.z) ?? MARBLE_REST_Y };
+}
+
+/**
+ * Hop direction: the most open way out (largest clearance to other marbles and to the mat edge),
+ * preferring the side towards the mat centre. Returns a unit vector.
+ */
+function chooseHopDir(
+  marble: MarbleEntity,
+  others: MarbleEntity[],
+  sx: number,
+  sz: number,
+): { x: number; z: number } {
+  let best = { x: -sx, z: -sz };
+  const bl = Math.hypot(best.x, best.z) || 1;
+  best = { x: best.x / bl, z: best.z / bl };
+  let bestScore = -Infinity;
+  const reach = 0.05;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    const dx = Math.cos(a);
+    const dz = Math.sin(a);
+    let minD = Infinity;
+    for (const f of [0.35, 0.7, 1]) {
+      const px = sx + dx * reach * f;
+      const pz = sz + dz * reach * f;
+      for (const o of others) {
+        if (o === marble || !o.active || !o.mesh.visible || looping.has(o)) continue;
+        if (o.body.type === CANNON.Body.STATIC) continue;
+        const p = o.body.position;
+        minD = Math.min(minD, Math.hypot(p.x - px, p.z - pz));
+      }
+    }
+    const ex = sx + dx * reach;
+    const ez = sz + dz * reach;
+    const edge = L4_MAT_HALF - Math.max(Math.abs(ex), Math.abs(ez)); // distance to the mat lip
+    const centre = (-sx * dx - sz * dz) / (Math.hypot(sx, sz) || 1); // 1 = straight to the centre
+    const score = Math.min(minD, 0.06) + Math.min(edge, 0.06) * 0.8 + centre * 0.01;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { x: dx, z: dz };
+    }
+  }
+  return best;
+}
+
+const channelClock = new Map<MarbleEntity, number>();
+const CHANNEL_MAX_SIM_S = 45; // a rider that has not reached the hole after this long (sim time) is forced in
+
+/**
+ * Hard guarantee for channel riders: a healthy marble that stays `in_channel` for > 45 s of
+ * simulated time (normal worst case ≈ 8 s) is moved into the hole so it resolves (zombie unless
+ * rescued) instead of blocking the turn / the victory check forever.
+ */
+export function watchChannelRiders(dt: number, field: MarbleEntity[], desk: OfficeDeskBuild | null): void {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
+  for (const m of field) {
+    if (!m.active || m.channelState !== 'in_channel' || looping.has(m) || slides.has(m)) {
+      channelClock.delete(m);
+      continue;
+    }
+    const t = (channelClock.get(m) ?? 0) + dt;
+    channelClock.set(m, t);
+    if (t < CHANNEL_MAX_SIM_S) continue;
+    channelClock.delete(m);
+    exitDebug.watchdogChannel += 1;
+    const hole = desk?.holeCenters[0] ?? l4HoleCentersLocal()[0]!;
+    m.body.type = CANNON.Body.DYNAMIC;
+    m.body.position.set(hole.x, PLAY_SURFACE_Y - L4_PIPE_R * 0.4, hole.z);
+    m.body.previousPosition.copy(m.body.position);
+    m.body.velocity.set(0, -0.4, 0);
+    m.body.wakeUp();
+  }
+}
+
+/** Debug: who is inside the loop and for how long (wall-clock ms). */
+export function loopSnapshot(): { id: number; ageMs: number; waitMs: number; exitAs: string; team: string }[] {
   const now = performance.now();
+  return [...looping.values()].map((st) => ({
+    id: st.marble.body.id,
+    ageMs: Math.round(now - st.t0),
+    waitMs: st.waitSince === null ? 0 : Math.round(now - st.waitSince),
+    exitAs: st.exitAs,
+    team: String(st.teamAtExit),
+  }));
+}
+
+/** Debug: the candidate exit spots in search order (hatch first). */
+export function exitCandidateSpots(rings: number): { x: number; z: number }[] {
+  return exitCandidates(rings).filter(
+    (c) => Math.abs(c.x) <= EXIT_SAFE && Math.abs(c.z) <= EXIT_SAFE && !l4IsChannelOrHoleXZ(c.x, c.z),
+  );
+}
+
+/** After the hop touches down, drop the horizontal speed so the marble settles beside the hatch. */
+function updateHops(now: number): void {
+  for (const [m, t0] of [...hopping]) {
+    if (!m.active || m.body.type !== CANNON.Body.DYNAMIC || looping.has(m)) {
+      hopping.delete(m);
+      continue;
+    }
+    const el = now - t0;
+    const b = m.body;
+    const rest = l4MarbleRestY(b.position.x, b.position.z) ?? MARBLE_REST_Y;
+    const landed = el > 40 && b.velocity.y <= 0.02 && b.position.y <= rest + 0.0012;
+    if (!landed && el < 350) continue;
+    hopping.delete(m);
+    const hv = Math.hypot(b.velocity.x, b.velocity.z);
+    if (hv > HOP_LAND_SPEED) {
+      const k = HOP_LAND_SPEED / hv;
+      b.velocity.x *= k;
+      b.velocity.z *= k;
+      b.angularVelocity.scale(k, b.angularVelocity);
+    }
+  }
+}
+
+export function updateLoopTransits(dt: number, others: MarbleEntity[] = []): void {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
+  const now = performance.now();
+  updateHops(now);
+  if (looping.size === 0) return;
   const done: MarbleEntity[] = [];
   for (const [, st] of looping) {
     const u = Math.min(1, (now - st.t0) / st.duration);
@@ -1002,30 +1220,45 @@ export function updateLoopTransits(dt: number, others: MarbleEntity[] = []): voi
   }
   // Sequential: each released marble becomes an obstacle for the next one this frame.
   for (const m of done) {
-    const spot = findFreeExitSpot(m, others);
+    const st = looping.get(m)!;
+    if (st.waitSince === null) st.waitSince = now;
+    const waited = now - st.waitSince;
+    const total = now - st.t0;
+    let spot = findFreeExitSpot(m, others);
+    let forced = false;
     if (!spot) {
-      // Exit occupied: wait under the hatch (still in loop, collisions off) and retry.
-      const st = looping.get(m)!;
-      const hold = st.path[st.path.length - 2]!;
-      m.body.position.set(hold.x, hold.y, hold.z);
-      m.mesh.position.set(hold.x, hold.y, hold.z);
-      continue;
+      const mustGo = !legacyDebug.oldExit && (waited >= exitTuning.maxWaitMs || total >= LOOP_MAX_TOTAL_MS);
+      if (!mustGo) {
+        // Exit crowded: wait (bounded) under the hatch, collisions off, and retry next frame.
+        const hold = st.path[st.path.length - 2]!;
+        m.body.position.set(hold.x, hold.y, hold.z);
+        m.mesh.position.set(hold.x, hold.y, hold.z);
+        continue;
+      }
+      spot = bestEffortExitSpot(m, others);
+      forced = true;
+      exitDebug.forced += 1;
     }
-    finishLoop(m, spot);
+    exitDebug.maxWaitMs = Math.max(exitDebug.maxWaitMs, waited);
+    exitDebug.log.push({ id: m.body.id, waitMs: Math.round(waited), forced, x: spot.x, z: spot.z });
+    if (exitDebug.log.length > 400) exitDebug.log.shift();
+    finishLoop(m, spot, others);
   }
 }
 
 function finishLoop(
   marble: MarbleEntity,
   spot?: { x: number; z: number; y: number } | null,
+  others: MarbleEntity[] = [],
 ): void {
   const st = looping.get(marble);
   if (!st) return;
   looping.delete(marble);
+  exitDebug.exits += 1;
   const exit = spot ?? getReturnHatchXZ();
   const rest = spot?.y ?? l4MarbleRestY(exit.x, exit.z) ?? MARBLE_REST_Y;
   const body = marble.body;
-  body.position.set(exit.x, rest, exit.z);
+  body.position.set(exit.x, rest + 0.0004, exit.z);
   body.previousPosition.copy(body.position);
   if (body.interpolatedPosition) body.interpolatedPosition.copy(body.position);
   body.velocity.setZero();
@@ -1035,7 +1268,18 @@ function finishLoop(
   body.collisionFilterGroup = st.savedFilterGroup || 1;
   body.collisionFilterMask = st.savedFilterMask || 1;
   body.wakeUp();
-  body.velocity.set((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.04);
+  if (legacyDebug.oldExit) {
+    body.velocity.set((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.04);
+  } else {
+    // Exit hop: ~0.5 cm up (vy = √(2·g·h) ≈ 0.313 m/s) + a slight outward push along the most open
+    // direction so the marble lands clear of the hatch (≈ 7 mm of airborne travel, then it rolls out).
+    const dir = chooseHopDir(marble, others, exit.x, exit.z);
+    body.velocity.set(dir.x * HOP_VH, HOP_VY, dir.z * HOP_VH);
+    // roll spin consistent with the push (ω = v × n / r)
+    body.angularVelocity.set(-dir.z * HOP_VH / MARBLE_RADIUS, 0, dir.x * HOP_VH / MARBLE_RADIUS);
+    exitDebug.hops += 1;
+    hopping.set(marble, performance.now());
+  }
   marble.mesh.visible = true;
   marble.mesh.position.set(exit.x, rest, exit.z);
   marble.mesh.scale.set(1, 1, 1);
@@ -1066,6 +1310,52 @@ function finishLoop(
   applyL4FieldMarbleCollisionFilter(marble.body);
 }
 
+/**
+ * Match is over: nothing may stay queued. Finish every loop (forced launch, zombie/healthy as
+ * decided), complete guide slides. Returns the marbles still riding the channel so the caller can
+ * set them down on the mat.
+ */
+export function flushExperimentAtEnd(others: MarbleEntity[]): MarbleEntity[] {
+  if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return [];
+  for (const m of [...looping.keys()]) {
+    const spot = bestEffortExitSpot(m, others);
+    exitDebug.forced += 1;
+    finishLoop(m, spot, others);
+  }
+  for (const [m, sl] of [...slides]) {
+    slides.delete(m);
+    const body = m.body;
+    body.type = CANNON.Body.DYNAMIC;
+    body.collisionResponse = true;
+    body.collisionFilterGroup = sl.savedGroup || 1;
+    body.collisionFilterMask = sl.savedMask || 1;
+    applyL4FieldMarbleCollisionFilter(body);
+    m.channelState = 'in_channel';
+  }
+  const riders: MarbleEntity[] = [];
+  for (const m of others) {
+    if (m.active && (m.channelState === 'in_channel' || (isHealthyTeamMarble(m) && isPhysicallyInChannel(m)))) {
+      riders.push(m);
+      // Match over: a rider is set down on the mat (still healthy, same team, already counted) so
+      // nothing stays in the channel.
+      const spot = bestEffortExitSpot(m, others);
+      m.channelState = 'none';
+      m.body.type = CANNON.Body.DYNAMIC;
+      m.body.position.set(spot.x, spot.y, spot.z);
+      m.body.previousPosition.copy(m.body.position);
+      if (m.body.interpolatedPosition) m.body.interpolatedPosition.copy(m.body.position);
+      m.body.velocity.setZero();
+      m.body.angularVelocity.setZero();
+      m.mesh.position.set(spot.x, spot.y, spot.z);
+      applyL4FieldMarbleCollisionFilter(m.body);
+      m.body.wakeUp();
+    }
+  }
+  channelClock.clear();
+  rescuers.clear();
+  return riders;
+}
+
 /** Cancel an in-progress under-desk loop without zombie/convert finish (pre-game rescue). */
 export function abortLoopTransit(marble: MarbleEntity): void {
   const st = looping.get(marble);
@@ -1083,6 +1373,7 @@ export function abortLoopTransit(marble: MarbleEntity): void {
 
 export function deactivateMarble(marble: MarbleEntity): void {
   looping.delete(marble);
+  hopping.delete(marble);
   rescuers.delete(marble);
   slides.delete(marble);
   rescueFx.delete(marble);
@@ -1100,6 +1391,8 @@ export function deactivateMarble(marble: MarbleEntity): void {
 export function disposeExperiment(scene?: THREE.Scene): void {
   for (const m of [...looping.keys()]) finishLoop(m);
   looping.clear();
+  hopping.clear();
+  channelClock.clear();
   clearRescueState();
   rescueSession = null;
   disposeExperimentVisuals(scene);
