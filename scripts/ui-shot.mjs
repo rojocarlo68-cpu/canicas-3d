@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer';
+const [,, level, out, w='1100', h='700'] = process.argv;
+const b = await puppeteer.launch({headless:true,executablePath:'/usr/bin/google-chrome',args:['--no-sandbox','--use-angle=swiftshader','--enable-webgl','--ignore-gpu-blocklist']});
+const p = await b.newPage(); await p.setViewport({width:+w,height:+h});
+await p.goto(`http://127.0.0.1:4190/canicas-3d/?level=${level}&control=mouse&debugChannel=1`,{waitUntil:'domcontentloaded'});
+await new Promise(r=>setTimeout(r,9000));
+await p.screenshot({path:out});
+const info = await p.evaluate(()=>[...document.querySelectorAll('#ui-actions button, #btn-l4-personalizar')].map(e=>{const r=e.getBoundingClientRect();return {id:e.id,hidden:e.classList.contains('hidden'),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}}));
+console.log(JSON.stringify(info));
+await b.close();

@@ -1740,14 +1740,19 @@ body {
 
 /* ——— L4 Personalizar ——— */
 .l4-personalizar {
+  /* Icon button (same .ui-img-btn style/size as the action icons), bottom of the screen.
+     Visibility is toggled by Game.syncL4PersonalizarVisibility (customizable levels only). */
   position: absolute;
-  top: max(10px, env(safe-area-inset-top));
-  /* Sit just left of the circular action cluster (top-right), not under it */
-  right: max(86px, calc(env(safe-area-inset-right) + 76px));
+  top: auto;
+  left: auto;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  /* centre-aligned with the right-hand action icon column */
+  right: max(14px, env(safe-area-inset-right));
   z-index: 22;
-  font-size: 13px;
-  padding: 8px 12px;
   pointer-events: auto;
+}
+.l4-personalizar.hidden {
+  display: none;
 }
 #l4-mat-menu {
   position: absolute;
