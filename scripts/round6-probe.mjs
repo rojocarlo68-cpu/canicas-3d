@@ -41,6 +41,8 @@ async function fresh() {
   await D('drop');
   await waitFor(async () => ['playing', 'ai_thinking', 'shot_flying'].includes(await D('phase')), 60000);
   await D('forcePlayerTurn');
+  // Round 7: the AI now reacts to channel riders on its own; these Round-6 scenarios assume nobody else shoots.
+  await page.evaluate(() => window.__TAMA_R7__ && window.__TAMA_R7__.setAIIntervention(false));
   await waitFor(async () => (await D('phase')) === 'playing', 20000);
   await sleep(300);
   // quiet board: nothing riding the channel / looping; keep the loop-exit hatch area clear
