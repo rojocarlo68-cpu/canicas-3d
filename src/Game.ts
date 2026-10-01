@@ -1151,6 +1151,14 @@ export class Game {
     if (bias.preferRescue.length > 0) field = [...bias.preferRescue, ...this.fieldMarbles];
     else if (bias.preferIntoChannel.length > 0) field = [...bias.preferIntoChannel, ...this.fieldMarbles];
     const plan = planAIShot(pick, field, this.sceneLevel, 'channel_out', L3_HOLE_RADIUS);
+    if (aggr <= 0) {
+      // weak human (probe): a gentle shove towards the mat centre, no targeting
+      const hx = -pick.body.position.x, hz = -pick.body.position.z, hl = Math.hypot(hx, hz) || 1;
+      plan.dirX = hx / hl;
+      plan.dirZ = hz / hl;
+      plan.power01 = 0.12;
+      aggr = 1;
+    }
     this.r7MatchStats.playerShots += 1;
     this.startThrow('player', plan.dirX, plan.dirZ, Math.min(1, plan.power01 * aggr));
     return { ok: true };
