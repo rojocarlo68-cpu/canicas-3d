@@ -56,6 +56,28 @@ const HOP_VH = 0.25; // slight outward speed (m/s) ≈ 16 mm (one marble diamete
 const HOP_LAND_SPEED = 0.012; // horizontal speed kept after touching down (below the sleep limit → it stays put)
 const hopping = new Map<MarbleEntity, number>(); // marble → hop start (ms)
 
+
+/** Round 8: zombies slowly drift away from the loop hatch after their exit hop so the exit never piles up. */
+const DRIFT_SPEED = 0.065; // m/s (gentle; a rolling marble this slow cannot move another one hard)
+const DRIFT_MIN_DIST = 0.16; // m from the hatch
+const DRIFT_MAX_DIST = 0.2;
+const DRIFT_RAMP_S = 0.6; // speed ramp-up after the hop has landed
+const DRIFT_SLOW_ZONE = 0.03; // m before the target: ramp the speed down
+const DRIFT_MAX_S = 12; // hard cap per drift
+const DRIFT_CLEAR = MARBLE_RADIUS * 2 * 1.12; // never get closer than this (centre-centre) to another marble
+const DRIFT_MAX_REPLANS = 2;
+const DRIFT_KNOCK_SPEED = 0.14; // velocity deviating this much from the drift velocity = something hit us → cancel
+type Drift = {
+  marble: MarbleEntity;
+  tx: number; tz: number;
+  startMs: number; startedAt: number | null;
+  replans: number;
+  idx: number;
+};
+const drifters = new Map<MarbleEntity, Drift>();
+let driftCounter = 0;
+export const driftDebug = { started: 0, arrived: 0, blocked: 0, knocked: 0, timedOut: 0, replans: 0, enabled: true };
+
 /** Debug-only switches that restore the pre-Round-7 behaviour so the probes can reproduce the bug. */
 export const legacyDebug = {
   /** old exit: 19 candidate spots, wait forever, no hop */
@@ -1199,10 +1221,199 @@ function updateHops(now: number): void {
   }
 }
 
+
+function driftTargetOk(x: number, z: number): boolean {
+  return Math.abs(x) <= EXIT_SAFE && Math.abs(z) <= EXIT_SAFE && !l4IsChannelOrHoleXZ(x, z);
+}
+
+/**
+ * Pick the roomiest target 15–20 cm from the hatch for a zombie: far from every other marble, from the
+ * targets already reserved by other drifting zombies, from the mat edge, with a clear straight path.
+ */
+function pickDriftTarget(m: MarbleEntity, others: MarbleEntity[], idx: number, avoid?: { x: number; z: number }[]): { x: number; z: number } | null {
+  const hatch = getReturnHatchXZ();
+  const sx = m.body.position.x;
+  const sz = m.body.position.z;
+  const radii = [0, 1, 2, 3].map((k) => DRIFT_MIN_DIST + ((DRIFT_MAX_DIST - DRIFT_MIN_DIST) * ((k + idx) % 4)) / 3);
+  const reserved: { x: number; z: number }[] = [];
+  for (const d of drifters.values()) if (d.marble !== m) reserved.push({ x: d.tx, z: d.tz });
+  const obstacles: { x: number; z: number }[] = [];
+  for (const o of others) {
+    if (o === m || !o.active || !o.mesh.visible || looping.has(o)) continue;
+    if (o.body.type === CANNON.Body.STATIC) continue;
+    if (Math.abs(o.body.position.y - MARBLE_REST_Y) > 0.05) continue;
+    obstacles.push({ x: o.body.position.x, z: o.body.position.z });
+  }
+  let best: { x: number; z: number } | null = null;
+  let bestScore = -Infinity;
+  const NA = 32;
+  for (let ia = 0; ia < NA; ia++) {
+    const a = (ia / NA) * Math.PI * 2;
+    for (const r of radii) {
+      const tx = hatch.x + Math.cos(a) * r;
+      const tz = hatch.z + Math.sin(a) * r;
+      if (!driftTargetOk(tx, tz)) continue;
+      let minObs = Infinity;
+      for (const o of obstacles) minObs = Math.min(minObs, Math.hypot(o.x - tx, o.z - tz));
+      let minRes = Infinity;
+      for (const q of reserved) minRes = Math.min(minRes, Math.hypot(q.x - tx, q.z - tz));
+      for (const q of avoid ?? []) minRes = Math.min(minRes, Math.hypot(q.x - tx, q.z - tz) * 0.5);
+      // straight path from the current position
+      let pathMin = Infinity;
+      let pathOk = true;
+      const len = Math.hypot(tx - sx, tz - sz);
+      const n = Math.max(2, Math.ceil(len / 0.01));
+      for (let k = 1; k <= n; k++) {
+        const t = k / n;
+        const px = sx + (tx - sx) * t;
+        const pz = sz + (tz - sz) * t;
+        if (!driftTargetOk(px, pz)) { pathOk = false; break; }
+        if (t * len < MARBLE_RADIUS * 2) continue; // neighbours right at the start are passed by sliding away
+        for (const o of obstacles) {
+          const d = Math.hypot(o.x - px, o.z - pz);
+          if (d < pathMin) pathMin = d;
+        }
+      }
+      if (!pathOk) continue;
+      const edge = L4_MAT_HALF - Math.max(Math.abs(tx), Math.abs(tz));
+      let score =
+        Math.min(minObs, 0.06) * 1.0 +
+        Math.min(minRes, 0.06) * 1.2 +
+        Math.min(edge, 0.08) * 0.5 +
+        Math.min(pathMin, 0.04) * 1.0;
+      if (pathMin < DRIFT_CLEAR) score -= 1; // would have to push someone
+      if (minObs < DRIFT_CLEAR) score -= 1;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x: tx, z: tz };
+      }
+    }
+  }
+  return best;
+}
+
+function registerDrift(m: MarbleEntity): void {
+  if (!driftDebug.enabled) return;
+  drifters.set(m, { marble: m, tx: 0, tz: 0, startMs: performance.now(), startedAt: null, replans: 0, idx: driftCounter++ });
+}
+
+/** Per-frame: gentle sustained drift of freshly exited zombies. */
+function updateDrift(now: number, dt: number, others: MarbleEntity[]): void {
+  if (drifters.size === 0) return;
+  const hatch = getReturnHatchXZ();
+  for (const [m, d] of [...drifters]) {
+    const b = m.body;
+    if (!m.active || looping.has(m) || slides.has(m) || !isZombieMarble(m) || b.type !== CANNON.Body.DYNAMIC || m.channelState === 'in_channel') {
+      drifters.delete(m);
+      continue;
+    }
+    if (hopping.has(m)) continue; // still in the exit hop
+    if (d.startedAt === null) {
+      const tgt = pickDriftTarget(m, others, d.idx);
+      if (!tgt) {
+        drifters.delete(m);
+        continue;
+      }
+      d.tx = tgt.x;
+      d.tz = tgt.z;
+      d.startedAt = now;
+      driftDebug.started += 1;
+    }
+    const t = (now - d.startedAt) / 1000;
+    const px = b.position.x;
+    const pz = b.position.z;
+    // stop conditions
+    if (t > DRIFT_MAX_S) {
+      driftDebug.timedOut += 1;
+      finishDrift(m);
+      continue;
+    }
+    const hatchDist = Math.hypot(px - hatch.x, pz - hatch.z);
+    const toT = Math.hypot(d.tx - px, d.tz - pz);
+    if (toT < 0.006 || hatchDist >= DRIFT_MAX_DIST) {
+      driftDebug.arrived += 1;
+      finishDrift(m);
+      continue;
+    }
+    if (Math.abs(px) > EXIT_SAFE || Math.abs(pz) > EXIT_SAFE) {
+      driftDebug.blocked += 1;
+      finishDrift(m);
+      continue;
+    }
+    const dx = (d.tx - px) / toT;
+    const dz = (d.tz - pz) / toT;
+    // knocked by a shot / pushed by something else → give up (physics takes over)
+    const v = b.velocity;
+    const cur = Math.hypot(v.x, v.z);
+    if (t > DRIFT_RAMP_S + 0.2 && cur > DRIFT_SPEED + DRIFT_KNOCK_SPEED) {
+      driftDebug.knocked += 1;
+      drifters.delete(m);
+      continue;
+    }
+    // blocked: another marble directly ahead within the clearance → never push it
+    let blocked = false;
+    for (const o of others) {
+      if (o === m || !o.active || !o.mesh.visible || looping.has(o)) continue;
+      if (o.body.type === CANNON.Body.STATIC) continue;
+      const rx = o.body.position.x - px;
+      const rz = o.body.position.z - pz;
+      const rl = Math.hypot(rx, rz);
+      if (rl < DRIFT_CLEAR && (rx * dx + rz * dz) / (rl || 1) > 0.2) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) {
+      driftDebug.blocked += 1;
+      if (d.replans < DRIFT_MAX_REPLANS) {
+        d.replans += 1;
+        driftDebug.replans += 1;
+        const tgt = pickDriftTarget(m, others, d.idx + d.replans, [{ x: d.tx, z: d.tz }]);
+        if (tgt) {
+          d.tx = tgt.x;
+          d.tz = tgt.z;
+        }
+      }
+      b.velocity.x = 0;
+      b.velocity.z = 0;
+      b.angularVelocity.set(0, 0, 0);
+      if (d.replans >= DRIFT_MAX_REPLANS) finishDrift(m);
+      continue;
+    }
+    // speed profile: ramp up, ramp down near the target
+    const ramp = Math.min(1, t / DRIFT_RAMP_S);
+    const slow = Math.min(1, Math.max(0.25, toT / DRIFT_SLOW_ZONE));
+    const sp = DRIFT_SPEED * ramp * slow;
+    // soft steering: blend towards the desired velocity (no jerks)
+    const k = Math.min(1, dt * 8);
+    v.x += (dx * sp - v.x) * k;
+    v.z += (dz * sp - v.z) * k;
+    // no-slip rolling spin on the flat mat: ω = (ŷ × v) / r  (a wrong-sign spin makes ground friction brake the marble)
+    b.angularVelocity.x = v.z / MARBLE_RADIUS;
+    b.angularVelocity.z = -v.x / MARBLE_RADIUS;
+    b.angularVelocity.y = 0;
+    b.wakeUp();
+  }
+}
+
+function finishDrift(m: MarbleEntity): void {
+  drifters.delete(m);
+  m.body.velocity.x = 0;
+  m.body.velocity.z = 0;
+  m.body.angularVelocity.set(0, 0, 0);
+}
+
+/** Debug: current drift state. */
+export function driftSnapshot(): { id: number; tx: number; tz: number; replans: number; t: number | null }[] {
+  const now = performance.now();
+  return [...drifters.values()].map((d) => ({ id: d.marble.body.id, tx: d.tx, tz: d.tz, replans: d.replans, t: d.startedAt === null ? null : (now - d.startedAt) / 1000 }));
+}
+
 export function updateLoopTransits(dt: number, others: MarbleEntity[] = []): void {
   if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return;
   const now = performance.now();
   updateHops(now);
+  updateDrift(now, dt, others);
   if (looping.size === 0) return;
   const done: MarbleEntity[] = [];
   for (const [, st] of looping) {
@@ -1287,6 +1498,7 @@ function finishLoop(
   marble.channelState = 'none';
   if ((st.exitAs === 'zombie' || st.teamAtExit === 'neutral') && !rescuers.has(marble)) {
     applyZombieAppearance(marble);
+    registerDrift(marble); // Round 8: zombies slowly move away from the hatch
   } else {
     const side: TeamSide =
       st.teamAtExit !== 'neutral'
@@ -1317,6 +1529,7 @@ function finishLoop(
  */
 export function flushExperimentAtEnd(others: MarbleEntity[]): MarbleEntity[] {
   if (!ENABLE_L4_CHANNEL_RESCUE_EXPERIMENT) return [];
+  for (const m of [...drifters.keys()]) finishDrift(m);
   for (const m of [...looping.keys()]) {
     const spot = bestEffortExitSpot(m, others);
     exitDebug.forced += 1;
@@ -1374,6 +1587,7 @@ export function abortLoopTransit(marble: MarbleEntity): void {
 export function deactivateMarble(marble: MarbleEntity): void {
   looping.delete(marble);
   hopping.delete(marble);
+  drifters.delete(marble);
   rescuers.delete(marble);
   slides.delete(marble);
   rescueFx.delete(marble);
@@ -1392,6 +1606,7 @@ export function disposeExperiment(scene?: THREE.Scene): void {
   for (const m of [...looping.keys()]) finishLoop(m);
   looping.clear();
   hopping.clear();
+  drifters.clear();
   channelClock.clear();
   clearRescueState();
   rescueSession = null;

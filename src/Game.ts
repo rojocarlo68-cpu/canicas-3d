@@ -141,6 +141,8 @@ import {
   exitTuning,
   legacyDebug,
   healthyCountTeam,
+  driftDebug,
+  driftSnapshot,
   loopSnapshot,
   exitCandidateSpots,
   markInChannelIfNeeded,
@@ -882,6 +884,11 @@ export class Game {
     // Round 7 probe hooks (victory / loop exit / hop / rescue scoreboard / full-match simulation). Debug only.
     (window as unknown as { __TAMA_R7__?: unknown }).__TAMA_R7__ = {
       loops: () => loopSnapshot(),
+      driftStats: () => ({ ...driftDebug, active: driftSnapshot() }),
+      setDrift: (on: boolean) => {
+        driftDebug.enabled = on;
+        return true;
+      },
       exitStats: () => ({ ...exitDebug, log: exitDebug.log.slice(-40) }),
       setExitTuning: (rings: number, maxWaitMs: number) => {
         exitTuning.rings = rings;
